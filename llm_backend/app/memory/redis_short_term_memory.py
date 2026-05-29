@@ -16,8 +16,11 @@ import zstandard as zstd
 from app.memory.config import SHORT_TERM_MEMORY_CONFIG
 from app.memory.schemas import MessageRecord, SessionMeta, SessionSummary
 
-_zstd_compressor = zstd.ZstdCompressor(level=3)
-_zstd_decompressor = zstd.ZstdDecompressor()
+# 多级压缩器：按消息大小选择压缩级别，平衡 CPU 和存储
+_zstd_fast   = zstd.ZstdCompressor(level=1)   # 500MB/s,  2-4KB 中型消息
+_zstd_normal = zstd.ZstdCompressor(level=3)   # 200MB/s, 4-16KB 大型消息
+_zstd_high   = zstd.ZstdCompressor(level=9)   #  50MB/s, >16KB 超大型消息，存储优先
+_zstd_decompressor = zstd.ZstdDecompressor()   # 解压器不关心压缩级别，全兼容
 
 
 class RedisShortTermMemory:
@@ -49,14 +52,28 @@ class RedisShortTermMemory:
     # ------------------------------------------------------------------ #
 
     def _compress(self, message: MessageRecord) -> bytes:
+        """MsgPack + 多级 Zstd 压缩。
+
+        ≤2KB   → 仅 MsgPack（\x00 前缀）
+        2-4KB  → MsgPack + Zstd level=1（\x01 前缀，快速）
+        4-16KB → MsgPack + Zstd level=3（\x02 前缀，平衡）
+        >16KB  → MsgPack + Zstd level=9（\x03 前缀，高压缩比）
+        """
         packed = msgpack.packb(message.model_dump(), use_bin_type=True)
-        if len(packed) > 1024:
-            return b'\x01' + _zstd_compressor.compress(packed)
-        return b'\x00' + packed
+
+        if len(packed) <= 2048:
+            return b'\x00' + packed
+        elif len(packed) <= 4096:
+            return b'\x01' + _zstd_fast.compress(packed)
+        elif len(packed) <= 16384:
+            return b'\x02' + _zstd_normal.compress(packed)
+        else:
+            return b'\x03' + _zstd_high.compress(packed)
 
     def _decompress(self, data: bytes) -> MessageRecord:
+        """解压：解压器不关心压缩级别，flag >= 0x01 均走 zstd 解压。"""
         flag, payload = data[0], data[1:]
-        if flag == 0x01:
+        if flag in (0x01, 0x02, 0x03):
             unpacked = msgpack.unpackb(_zstd_decompressor.decompress(payload), raw=False)
         else:
             unpacked = msgpack.unpackb(payload, raw=False)

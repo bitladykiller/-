@@ -3,8 +3,8 @@ from typing import Any, Callable, Coroutine, Dict, List, Optional
 from langchain_core.language_models import BaseChatModel
 from langchain_neo4j import Neo4jGraph
 
-from ....retrievers.cypher_examples.base import BaseCypherExampleRetriever
-from ....workflows.single_agent import create_text2cypher_agent
+from ...retrievers.cypher_examples.base import BaseCypherExampleRetriever
+from ...workflows.single_agent import create_text2cypher_agent
 
 
 def create_cypher_query_node(
