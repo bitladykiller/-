@@ -6,7 +6,7 @@ sys.path.append(str(ROOT_DIR))
 
 import asyncio
 from app.core.database import engine, Base
-from app.models import User, Conversation, Message  # User 为最简模型（无 auth 字段）
+from app.models import User, Conversation
 
 
 async def init_db():

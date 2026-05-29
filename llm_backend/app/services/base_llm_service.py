@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict, AsyncGenerator, Optional, Callable
+from typing import List, Dict, AsyncGenerator, Optional
 
 
 class BaseLLMService(ABC):
@@ -15,15 +15,13 @@ class BaseLLMService(ABC):
         messages: List[Dict],
         user_id: Optional[int] = None,
         conversation_id: Optional[int] = None,
-        on_complete: Optional[Callable] = None,
     ) -> AsyncGenerator[str, None]:
         """流式生成回复。
 
         Args:
             messages: 对话消息列表，格式为 [{"role": "user", "content": "..."}]
-            user_id: 可选的用户 ID，用于缓存等场景
-            conversation_id: 可选的会话 ID，用于持久化存储
-            on_complete: 可选的回调函数，在生成完成后执行（如保存消息到数据库）
+            user_id: 可选的用户 ID，用于日志等场景
+            conversation_id: 可选的会话 ID，用于日志等场景
 
         Yields:
             str: SSE 格式的流式数据块，格式为 "data: {...}\\n\\n"

@@ -8,6 +8,9 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 
 from app.services.indexing_service import IndexingService
+from app.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 router = APIRouter(tags=["upload"])
@@ -18,13 +21,40 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 ALLOWED_EXTENSIONS = {'.pdf', '.txt', '.csv', '.json', '.docx', '.doc', '.xlsx', '.xls', '.pptx', '.ppt'}
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
 
+# 常见文件类型的魔数签名，用于验证文件真实类型
+MAGIC_SIGNATURES: dict[str, list[bytes]] = {
+    '.pdf': [b'%PDF'],
+    '.docx': [b'PK\x03\x04'],  # OOXML 格式
+    '.doc': [b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'],  # OLE 格式
+    '.xlsx': [b'PK\x03\x04'],
+    '.xls': [b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'],
+    '.pptx': [b'PK\x03\x04'],
+    '.ppt': [b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'],
+    '.png': [b'\x89PNG\r\n\x1a\n'],
+    '.jpg': [b'\xff\xd8\xff'],
+    '.jpeg': [b'\xff\xd8\xff'],
+    '.gif': [b'GIF89a', b'GIF87a'],
+    '.webp': [b'RIFF'],
+}
+
 
 def _validate_upload(file: UploadFile):
+    """验证上传文件的扩展名和魔数签名。"""
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"不支持的文件类型: {ext}")
     if not file.content_type:
         raise HTTPException(status_code=400, detail="无法识别文件类型")
+
+
+def _validate_magic_bytes(filename: str, content: bytes) -> bool:
+    """通过魔数签名验证文件内容是否与扩展名匹配。"""
+    ext = os.path.splitext(filename)[1].lower()
+    signatures = MAGIC_SIGNATURES.get(ext)
+    if not signatures:
+        # 无魔数定义的类型（如 .txt, .csv, .json），跳过验证
+        return True
+    return any(content.startswith(sig) for sig in signatures)
 
 
 @router.post("/upload")
@@ -49,6 +79,10 @@ async def upload_file(
         content = await file.read()
         if len(content) > MAX_UPLOAD_SIZE:
             raise HTTPException(status_code=400, detail="文件大小超过限制 (50MB)")
+
+        # 验证魔数签名
+        if not _validate_magic_bytes(file.filename or "", content):
+            raise HTTPException(status_code=400, detail=f"文件内容与扩展名不匹配: {ext}")
 
         with open(file_path, "wb") as f:
             f.write(content)
@@ -75,6 +109,11 @@ async def upload_file(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(
+            f"upload_file 异常 | user_id={user_id} "
+            f"filename={file.filename} | {e}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -102,6 +141,9 @@ async def upload_image(
         image_path = image_dir / new_filename
 
         content = await image.read()
+        if len(content) > MAX_UPLOAD_SIZE:
+            raise HTTPException(status_code=400, detail="文件大小超过限制 (50MB)")
+
         with open(image_path, "wb") as f:
             f.write(content)
 
@@ -116,10 +158,14 @@ async def upload_image(
             "upload_time": timestamp
         }
 
-
         return image_info
 
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(
+            f"upload_image 异常 | user_id={user_id} "
+            f"filename={image.filename} | {e}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail="Internal server error")

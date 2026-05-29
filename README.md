@@ -1,257 +1,120 @@
 # AssistGen - 基于大语言模型构建的智能客服系统
 
-一个基于 FastAPI 和 Vue 3 构建的前后端分离的智能客服助手项目，支持多种大语言模型，如DeepSeek V3，Qwen2.5系列，Llama3系列等。涵盖了 Agent、RAG 在智能客服领域的主流应用落地需求场景。 
+基于 FastAPI + Vue 3 的前后端分离智能客服助手，支持 DeepSeek、Qwen2.5、Llama3 等多种大语言模型，覆盖 Agent、RAG、知识图谱在智能客服领域的主流应用场景。
 
 ## 功能特性
 
-### 1. 通用问答能力
-- **支持 DeepSeek V3 在线API**
-- **支持 使用 Ollama 接入任意对话模型，如Qwen2.5系列，Llama3系列**
-- **灵活的模配置**
+### 1. 通用问答 & 深度思考
+- 支持 DeepSeek V3 / R1 在线 API
+- 支持 Ollama 接入任意对话模型（Qwen2.5、Llama3 等）
+- 通过 `CHAT_SERVICE` / `REASON_SERVICE` 环境变量灵活切换
 
-### 2. 深度思考能力
-- **支持 DeepSeek R1 在线API**
-- **支持 使用 Ollama 接入任意 Deepseek r1 模型系列**
-- **灵活的模配置**
+### 2. 智能 Agent (LangGraph)
+- 三层嵌套子图：主图（路由分发）→ KG 子图（检索执行）→ Text2Cypher 子图（查询 + 5 层验证）
+- 5 路检索策略：GRAPH_ONLY / RAG_ONLY / PARALLEL / GRAPH_THEN_RAG / AGENT_REACT
+- Prompt 注入 4 层防线：XML 隔离 + 结构化输出 + Guardrails + 写操作硬拦截
+- 温度分级体系：Router 0.1 → Cypher 0.2 → General 0.7
 
+### 3. 分层记忆系统
+- **Redis 短期记忆**：ZSET 滑动窗口 + MsgPack 多级 Zstd 压缩 + LLM 压缩摘要
+- **MySQL 用户画像**：结构化画像 + 事实版本追踪 + Redis 缓存层
+- **Milvus 长期记忆**：混合检索（向量 + BM25 + RRF）+ 记忆衰减 + 敏感信息过滤
 
-### 3. ollama 性能测试工具
-- 单请求性能测试
-- 并发性能测试
-- 系统资源监控
-- 自动化测试报告
+### 4. Neo4j 知识图谱
+- 电商知识图谱（8 节点 + 8 关系，16 个 CSV 初始化）
+- 28 个预定义 Cypher 模板（bge-m3 语义匹配自动选择）
+- Text2Cypher 动态生成（Few-Shot + 5 层验证 + 最多 3 次修正循环）
 
-## 快速启动
+### 5. RAG 文档检索
+- 支持 PDF / DOCX / TXT / CSV 上传 + rag_doc_parser 解析管道
+- 混合检索（向量 + BM25 + RRF 融合）
 
-### 1. 安装依赖
+### 6. 联网搜索
+- DeepSeek Function Calling + SerpAPI
+- 结构化搜索结果 + LLM 总结
 
-```bash
-# 创建虚拟环境
-python -m venv .venv
-
-# 激活虚拟环境
-# Windows
-.venv\Scripts\activate
-# Linux/Mac
-source .venv/bin/activate
-
-# 安装依赖
-pip install -r requirements.txt
-```
-
-### 2. 配置环境变量
-
-复制 `env.example` 文件到 `llm_backend/.env` 文件中，并根据实际情况修改配置：
-
-```env
-# LLM 服务配置
-CHAT_SERVICE=OLLAMA  # 或 DEEPSEEK
-REASON_SERVICE=OLLAMA  # 或 DEEPSEEK
-
-# Ollama 配置
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_CHAT_MODEL=deepseek-coder:6.7b
-OLLAMA_REASON_MODEL=deepseek-coder:6.7b
-
-# DeepSeek 配置（如果使用）
-DEEPSEEK_API_KEY=your-api-key
-DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
-DEEPSEEK_MODEL=deepseek-chat
-```
-### 3. 安装Mysql数据库并在 `.env` 文件中配置数据库连接信息
-
-### 4. 启动服务
-
-```bash
-# 进入后端目录
-cd llm_backend
-
-# 启动服务（默认端口 9000）
-python run.py
-
-# 如果需要修改 IP 和端口，编辑 run.py 中的配置：
-uvicorn.run(
-    "main:app",
-    host="0.0.0.0",  # 修改监听地址
-    port=8000,       # 修改端口号
-    access_log=False,
-    log_level="error",
-    reload=True
-)
-```
-
-服务启动后可以访问：
-- API 文档：http://localhost:8000/docs
-- 前端界面：http://localhost:8000
+### 7. 会话管理
+- MySQL `conversations` 表只存会话元信息（标题、时间、类型）
+- **消息不存 MySQL**，只保留在 Redis STM（ZSET 滑动窗口，24h TTL）
+- 会话创建 / 列表 / 删除 / 改名
 
 ## 技术栈
 
-- 后端：
-  - FastAPI
-  - SQLAlchemy
-  - MySQL
-  - Ollama/DeepSeek
+- **后端**：FastAPI + SQLAlchemy (async) + LangGraph + LangChain
+- **数据库**：MySQL 8.0 + Neo4j + Redis 7.0 + Milvus 2.6
+- **LLM**：DeepSeek / Ollama（可切换）
+- **Embedding**：bge-m3（1024 维）
+- **前端**：Vue 3 + Element Plus + TypeScript
 
-- 前端：
-  - Vue 3
-  - Element Plus
-  - TypeScript
+## 快速启动
 
-## 注意事项
+### 1. 启动基础设施
 
-1. 生产环境部署时：
-   - 修改 `.env` 中的 `SECRET_KEY`
-   - 配置正确的 CORS 设置
-   - 使用 HTTPS
-   - 关闭 `reload=True`
+```bash
+docker-compose up -d
+```
 
-2. 开发环境：
-   - 可以启用 `reload=True` 实现热重载
-   - 可以设置 `log_level="debug"` 查看更多日志
+### 2. 安装依赖
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 3. 配置环境变量
+
+复制 `.env.example` → `llm_backend/.env`，填写 API Key 和数据库连接信息。
+
+### 4. 初始化数据库
+
+```bash
+cd llm_backend
+python scripts/init_db.py
+```
+
+### 5. 导入 Neo4j 数据
+
+```bash
+bash neo4j-import.sh
+```
+
+### 6. 启动
+
+```bash
+cd llm_backend
+python run.py
+# 访问 http://localhost:9000
+```
+
+## 项目结构
+
+```
+deepseek_agent/
+├── llm_backend/
+│   ├── main.py                 # FastAPI 入口
+│   ├── run.py                  # 启动脚本
+│   ├── app/
+│   │   ├── api/                # chat / conversations / upload / langgraph
+│   │   ├── core/               # 配置 / MySQL 连接 / 日志
+│   │   ├── lg_agent/           # LangGraph Agent（主图 + KG 子图）
+│   │   ├── memory/             # Redis STM / Milvus LTM / MemoryMiddleware
+│   │   ├── models/             # SQLAlchemy 模型
+│   │   ├── services/           # LLM 服务 / 会话 / 搜索 / 工厂
+│   │   ├── security/           # XML 隔离 + Prompt 注入防御
+│   │   └── tools/              # Function Calling 工具
+│   └── static/dist/            # 前端
+├── rag_doc_parser/             # RAG 文档解析（PDF/DOCX → Milvus）
+├── docker-compose.yml
+└── requirements.txt
+```
+
+## 相关文档
+
+- [CHANGELOG.md](CHANGELOG.md) — 版本更新日志
+- [rag_doc_parser/README.md](rag_doc_parser/README.md) — RAG 文档解析模块
+- [智能客服Agent项目详细文档.md](../智能客服Agent项目详细文档.md) — 完整架构文档
 
 ## License
 
-MIT 
-
-# 电商商品数据服务
-
-这个项目提供了一个简单的Python服务，用于从Neo4j图数据库中获取电商商品信息，并通过API或Web界面将其展示给前端。
-
-## 数据库结构
-
-项目使用Neo4j图数据库存储电商相关数据，主要包含以下节点和关系：
-
-### 节点 (Nodes)
-
-1. **Product** - 商品
-   - ProductID: 商品ID
-   - ProductName: 商品名称
-   - UnitPrice: 单价
-   - UnitsInStock: 库存数量
-   - UnitsOnOrder: 订购数量
-   - QuantityPerUnit: 单位数量
-   - Discontinued: 是否停产
-
-2. **Category** - 商品类别
-   - CategoryID: 类别ID
-   - CategoryName: 类别名称
-   - Description: 类别描述
-
-3. **Supplier** - 供应商
-   - SupplierID: 供应商ID
-   - CompanyName: 公司名称
-   - ContactName: 联系人姓名
-   - Phone: 联系电话
-
-4. **Customer** - 客户
-   - CustomerID: 客户ID
-   - CompanyName: 公司名称
-   - ContactName: 联系人姓名
-
-5. **Order** - 订单
-   - OrderID: 订单ID
-   - OrderDate: 订单日期
-
-6. **Review** - 评论
-   - ReviewID: 评论ID
-   - ReviewText: 评论内容
-   - Rating: 评分
-   - ReviewDate: 评论日期
-
-### 关系 (Relationships)
-
-1. **BELONGS_TO** - 商品属于类别: (Product)-[:BELONGS_TO]->(Category)
-2. **SUPPLIED_BY** - 商品由供应商提供: (Product)-[:SUPPLIED_BY]->(Supplier)
-3. **CONTAINS** - 订单包含商品: (Order)-[:CONTAINS]->(Product)
-4. **PLACED** - 客户下订单: (Customer)-[:PLACED]->(Order)
-5. **WROTE** - 客户写评论: (Customer)-[:WROTE]->(Review)
-6. **ABOUT** - 评论关于商品: (Review)-[:ABOUT]->(Product)
-
-## 文件说明
-
-项目包含两个主要文件：
-
-1. **product_service.py** - 提供与Neo4j数据库交互的服务类，封装了各种查询商品信息的方法
-2. **frontend_demo.py** - 基于Flask的Web应用，提供Web界面和API端点，使用product_service获取数据
-
-## 安装依赖
-
-```bash
-pip install neo4j flask
-```
-
-## 配置数据库连接
-
-默认连接参数:
-- URI: `bolt://localhost:7687`
-- 用户名: `neo4j`
-- 密码: `password`
-- 数据库: `neo4j`
-
-可以通过两种方式修改:
-
-1. 在代码中直接修改
-2. 设置环境变量:
-   ```bash
-   export NEO4J_URI=bolt://localhost:7687
-   export NEO4J_USERNAME=neo4j
-   export NEO4J_PASSWORD=your_password
-   export NEO4J_DATABASE=neo4j
-   ```
-
-## 使用ProductService
-
-```python
-from product_service import ProductService
-
-# 创建服务实例
-service = ProductService(
-    uri="bolt://localhost:7687",
-    username="neo4j",
-    password="password"
-)
-
-# 使用上下文管理器自动处理连接
-with service:
-    # 获取类别
-    categories = service.get_all_categories()
-    print(f"类别数量: {len(categories)}")
-    
-    # 根据类别获取商品
-    products = service.get_products_by_category("智能音箱")
-    print(f"智能音箱类别下的商品数量: {len(products)}")
-    
-    # 获取商品详情
-    product_details = service.get_product_details(1)
-    print(f"商品详情: {product_details}")
-    
-    # 搜索商品
-    search_results = service.search_products("智能")
-    print(f"搜索结果数量: {len(search_results)}")
-```
-
-## 运行Web应用
-
-```bash
-python frontend_demo.py
-```
-
-访问 http://localhost:5000 查看Web应用。
-
-## API端点
-
-以下是可用的API端点:
-
-- `GET /api/categories` - 获取所有商品类别
-- `GET /api/products/category/<category_name>` - 获取指定类别下的商品
-- `GET /api/products/<product_id>` - 获取指定商品的详细信息
-- `GET /api/products/search?keyword=<keyword>` - 搜索商品
-- `GET /api/products/featured` - 获取推荐商品
-- `GET /api/products/popular` - 获取热门商品
-- `GET /api/products/<product_id>/reviews` - 获取指定商品的评论
-
-## 注意事项
-
-1. 请确保Neo4j数据库已启动并已导入相关电商数据
-2. 若要在生产环境使用，请确保添加适当的认证和安全机制
-3. Web模板(HTML文件)需要自行创建在templates目录下 
+MIT

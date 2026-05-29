@@ -1,8 +1,11 @@
-from typing import List, Dict, AsyncGenerator, Callable, Optional
+from typing import List, Dict, AsyncGenerator, Optional
 from openai import AsyncOpenAI
 from app.core.config import settings
 import json
 from app.services.base_llm_service import BaseLLMService
+from app.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class DeepseekService(BaseLLMService):
@@ -18,7 +21,6 @@ class DeepseekService(BaseLLMService):
         messages: List[Dict],
         user_id: Optional[int] = None,
         conversation_id: Optional[int] = None,
-        on_complete: Optional[Callable[[int, int, List[Dict], str], None]] = None
     ) -> AsyncGenerator[str, None]:
         try:
             full_response: list[str] = []
@@ -34,12 +36,12 @@ class DeepseekService(BaseLLMService):
                     full_response.append(raw)
                     yield f"data: {json.dumps(raw, ensure_ascii=False)}\n\n"
 
-            complete_response = "".join(full_response)
-
-            if on_complete and user_id is not None and conversation_id is not None:
-                await on_complete(user_id, conversation_id, messages, complete_response)
-
         except Exception as e:
+            logger.error(
+                f"DeepseekService 流式生成异常 | user_id={user_id} "
+                f"conversation_id={conversation_id} model={self.model} | {e}",
+                exc_info=True,
+            )
             yield f"data: {json.dumps('', ensure_ascii=False)}\n\n"
 
     async def generate(self, messages: List[Dict]) -> str:
@@ -51,4 +53,8 @@ class DeepseekService(BaseLLMService):
             )
             return response.choices[0].message.content
         except Exception as e:
+            logger.error(
+                f"DeepseekService 非流式生成异常 | model={self.model} | {e}",
+                exc_info=True,
+            )
             raise
