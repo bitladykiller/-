@@ -1,10 +1,13 @@
+from app.core.logger import get_logger
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict
 
 from app.services.llm_factory import LLMFactory
-from app.services.conversation_service import ConversationService
+
+logger = get_logger(__name__)
 
 
 router = APIRouter(tags=["chat"])
@@ -24,7 +27,6 @@ class ReasonRequest(BaseModel):
 @router.post("/chat")
 async def chat_endpoint(request: ChatMessage):
     try:
-
         chat_service = LLMFactory.create_chat_service()
 
         return StreamingResponse(
@@ -32,13 +34,17 @@ async def chat_endpoint(request: ChatMessage):
                 messages=request.messages,
                 user_id=request.user_id,
                 conversation_id=request.conversation_id,
-                on_complete=ConversationService.save_message
             ),
             media_type="text/event-stream"
         )
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(
+            f"chat endpoint 异常 | user_id={request.user_id} "
+            f"conversation_id={request.conversation_id} | {e}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -55,13 +61,16 @@ async def reason_endpoint(request: ReasonRequest):
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(
+            f"reason endpoint 异常 | user_id={request.user_id} | {e}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/search")
 async def search_endpoint(request: ChatMessage):
     try:
-
         search_service = LLMFactory.create_search_service()
         return StreamingResponse(
             search_service.generate_stream(
@@ -75,4 +84,9 @@ async def search_endpoint(request: ChatMessage):
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(
+            f"search endpoint 异常 | user_id={request.user_id} "
+            f"conversation_id={request.conversation_id} | {e}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail="Internal server error")

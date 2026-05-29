@@ -1,7 +1,11 @@
-from fastapi import APIRouter, HTTPException, Query
+from app.core.logger import get_logger
+
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.services.conversation_service import ConversationService
+
+logger = get_logger(__name__)
 
 
 router = APIRouter(tags=["conversations"])
@@ -21,6 +25,10 @@ async def create_conversation(request: CreateConversationRequest):
         conversation_id = await ConversationService.create_conversation(request.user_id)
         return {"conversation_id": conversation_id}
     except Exception as e:
+        logger.error(
+            f"create_conversation 异常 | user_id={request.user_id} | {e}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -30,30 +38,23 @@ async def get_user_conversations(user_id: int):
         conversations = await ConversationService.get_user_conversations(user_id)
         return conversations
     except Exception as e:
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@router.get("/conversations/{conversation_id}/messages")
-async def get_conversation_messages(
-    conversation_id: int,
-    user_id: int = Query(...)
-):
-    try:
-        messages = await ConversationService.get_conversation_messages(conversation_id, user_id)
-        return messages
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
+        logger.error(
+            f"get_user_conversations 异常 | user_id={user_id} | {e}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.delete("/conversations/{conversation_id}")
 async def delete_conversation(conversation_id: int):
     try:
-        conversation_service = ConversationService()
-        await conversation_service.delete_conversation(conversation_id)
+        await ConversationService.delete_conversation(conversation_id)
         return {"message": "会话已删除"}
     except Exception as e:
+        logger.error(
+            f"delete_conversation 异常 | conversation_id={conversation_id} | {e}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -63,8 +64,14 @@ async def update_conversation_name(
     request: UpdateConversationNameRequest
 ):
     try:
-        conversation_service = ConversationService()
-        await conversation_service.update_conversation_name(conversation_id, request.name)
+        await ConversationService.update_conversation_name(
+            conversation_id, request.name
+        )
         return {"message": "会话名称已更新"}
     except Exception as e:
+        logger.error(
+            f"update_conversation_name 异常 | conversation_id={conversation_id} "
+            f"name={request.name} | {e}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail="Internal server error")
