@@ -1,0 +1,4 @@
+docling
+python-docx>=0.8.1
+pydantic>=1.8.0
+python-dotenv>=0.19.0

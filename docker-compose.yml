@@ -1,0 +1,130 @@
+services:
+  # MySQL 数据库服务
+  mysql:
+    image: mysql:8.0.30
+    container_name: kefu_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: 1234
+      MYSQL_DATABASE: kefu_agent
+      MYSQL_USER: kefu_user
+      MYSQL_PASSWORD: 1234
+      TZ: Asia/Shanghai
+    ports:
+      - "13306:3306"
+    volumes:
+      - ./docker_data/mysql:/var/lib/mysql
+      - ./mysql-init:/docker-entrypoint-initdb.d
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Neo4j 图数据库服务
+  neo4j:
+    image: neo4j:latest
+    container_name: kefu_neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/12345678
+    ports:
+      - "17474:7474"
+      - "17687:7687"
+    volumes:
+      - ./docker_data/neo4j/data:/data
+      - ./docker_data/neo4j/logs:/logs
+      - ./docker_data/neo4j/plugins:/plugins
+      - ./llm_backend/app/graphrag/origin_data/data/neo4j_admin:/var/lib/neo4j/import
+      - ./neo4j-import.sh:/var/lib/neo4j/scripts/neo4j-import.sh
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Redis 缓存服务
+  redis:
+    image: redis:7.0.10
+    container_name: kefu_redis
+    restart: unless-stopped
+    ports:
+      - "16379:6379"
+    volumes:
+      - ./docker_data/redis:/data
+    command: redis-server --appendonly yes --requirepass ""
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Milvus 依赖 - etcd
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.25
+    container_name: kefu_etcd
+    restart: unless-stopped
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    volumes:
+      - ./docker_data/etcd:/etcd
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Milvus 依赖 - MinIO
+  minio:
+    image: minio/minio:latest
+    container_name: kefu_minio
+    restart: unless-stopped
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    ports:
+      - "19000:9000"
+      - "19001:9001"
+    volumes:
+      - ./docker_data/minio:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Milvus 向量数据库服务
+  milvus:
+    image: milvusdb/milvus:v2.6.14
+    container_name: kefu_milvus
+    restart: unless-stopped
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    ports:
+      - "19530:19530"
+      - "19091:9091"
+    volumes:
+      - ./docker_data/milvus:/var/lib/milvus
+    command: ["milvus", "run", "standalone"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+networks:
+  default:
+    name: kefu_network
+    driver: bridge

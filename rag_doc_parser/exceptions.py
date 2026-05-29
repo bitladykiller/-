@@ -1,0 +1,66 @@
+"""
+RAG 文档解析与切分模块 — 异常类。
+
+所有异常信息必须清晰，方便定位问题。
+"""
+
+
+class UnsupportedFileTypeError(Exception):
+    """不支持的文件类型。
+
+    例如用户传入 .png / .mp4 等非 PDF/DOCX 文件。
+    """
+
+    def __init__(self, file_path: str):
+        ext = file_path.rsplit(".", 1)[-1] if "." in file_path else "unknown"
+        super().__init__(
+            f"不支持的文件类型: .{ext}（文件: {file_path}）。"
+            f"目前只支持 .pdf 和 .docx。"
+        )
+
+
+class DocumentParseError(Exception):
+    """文档解析通用异常。
+
+    所有解析器异常的基类。
+    """
+
+    def __init__(self, message: str, file_path: str = "", parser_name: str = ""):
+        detail = f"[{parser_name}] " if parser_name else ""
+        detail += f"解析失败: {message}"
+        if file_path:
+            detail += f"（文件: {file_path}）"
+        super().__init__(detail)
+
+
+class DoclingParseError(DocumentParseError):
+    """Docling 解析器异常。
+
+    用于 Docling 对 PDF 或 DOCX 解析出错时抛出。
+    """
+
+    def __init__(self, message: str, file_path: str = ""):
+        super().__init__(message, file_path=file_path, parser_name="Docling")
+
+
+class MarkdownParseError(Exception):
+    """Markdown 解析异常。
+
+    用于标题解析器、Block 识别器等 Markdown 处理阶段出错时抛出。
+    """
+
+    def __init__(self, message: str):
+        super().__init__(f"Markdown 解析失败: {message}")
+
+
+class ChunkBuildError(Exception):
+    """切分块构建异常。
+
+    用于生成 DocumentChunk 阶段出错时抛出。
+    """
+
+    def __init__(self, message: str, block_id: str = ""):
+        detail = f"Chunk 构建失败: {message}"
+        if block_id:
+            detail += f"（block_id: {block_id}）"
+        super().__init__(detail)
