@@ -1,17 +1,10 @@
-"""Agentic RAG 组件共享状态。仅保留仍被使用的类型。"""
+"""Agentic RAG 组件共享状态。"""
 from operator import add
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, List
 
 from typing_extensions import TypedDict
 
 from .text2cypher.state import CypherOutputState
-
-
-class PredefinedCypherInputState(TypedDict):
-    task: str
-    query_name: str
-    query_parameters: Dict[str, Any]
-    steps: List[str]
 
 
 class OverallState(TypedDict):

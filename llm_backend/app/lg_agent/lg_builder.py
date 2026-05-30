@@ -39,6 +39,12 @@ from app.lg_agent.kg_sub_graph.agentic_rag_agents.components.customer_tools impo
 from app.lg_agent.kg_sub_graph.agentic_rag_agents.components.summarize import (
     create_summarization_node,
 )
+from app.lg_agent.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.cypher_dict import (
+    predefined_cypher_dict,
+)
+from app.lg_agent.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.descriptions import (
+    QUERY_DESCRIPTIONS,
+)
 from app.security import wrap_user_message
 from app.memory.redis_short_term_memory import RedisShortTermMemory
 from app.memory.simple_long_term_memory import SimpleLongTermMemory
@@ -307,6 +313,8 @@ def _get_t2c(neo4j_graph):
         _t2c_cache[gid] = create_text2cypher_agent(
             llm=_cypher_model, graph=neo4j_graph,
             cypher_example_retriever=_get_retriever(),
+            predefined_cypher_dict=predefined_cypher_dict,
+            query_descriptions=QUERY_DESCRIPTIONS,
         )
     return _t2c_cache[gid]
 
