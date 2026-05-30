@@ -22,7 +22,6 @@ class OllamaService(BaseLLMService):
     ) -> AsyncGenerator[str, None]:
         try:
             model = self.chat_model
-            full_response: list[str] = []
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     f"{self.base_url}/api/chat",
@@ -39,7 +38,6 @@ class OllamaService(BaseLLMService):
                             try:
                                 chunk = json.loads(line)
                                 if content := chunk.get("message", {}).get("content"):
-                                    full_response.append(content)
                                     yield f"data: {json.dumps(content, ensure_ascii=False)}\n\n"
                             except json.JSONDecodeError:
                                 continue

@@ -9,14 +9,6 @@ logger = get_logger(__name__)
 
 class ConversationService:
     @staticmethod
-    def get_conversation_title(message: str, max_length: int = 20) -> str:
-        """从消息中提取会话标题"""
-        title = " ".join(message.split())
-        if len(title) > max_length:
-            title = title[:max_length] + "..."
-        return title
-
-    @staticmethod
     async def create_conversation(user_id: int) -> int:
         """创建新会话"""
         async with AsyncSessionLocal() as db:

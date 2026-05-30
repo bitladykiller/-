@@ -1,14 +1,14 @@
 from app.core.logger import get_logger
-
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict
+import json
 
-from app.services.llm_factory import LLMFactory
+from app.lg_agent.lg_states import InputState
+from app.lg_agent.lg_builder import graph
 
 logger = get_logger(__name__)
-
 
 router = APIRouter(tags=["chat"])
 
@@ -19,74 +19,50 @@ class ChatMessage(BaseModel):
     conversation_id: int
 
 
-class ReasonRequest(BaseModel):
-    messages: List[Dict[str, str]]
-    user_id: int
+async def _stream_graph(graph_stream):
+    async for c, metadata in graph_stream:
+        if c.content and not c.additional_kwargs.get("tool_calls") \
+                and "research_plan" not in metadata.get("tags", []):
+            yield f"data: {json.dumps(c.content, ensure_ascii=False)}\n\n"
 
 
 @router.post("/chat")
 async def chat_endpoint(request: ChatMessage):
+    """统一走 LangGraph 图 — Router + 记忆注入 + after_response。"""
     try:
-        chat_service = LLMFactory.create_chat_service()
-
+        last_user = next(
+            (m["content"] for m in reversed(request.messages) if m.get("role") == "user"),
+            request.messages[-1]["content"]
+        )
+        thread_config = {
+            "configurable": {
+                "thread_id": str(request.conversation_id),
+                "user_id": str(request.user_id),
+            }
+        }
+        graph_stream = graph.astream(
+            input=InputState(messages=last_user),
+            stream_mode="messages",
+            config=thread_config,
+        )
         return StreamingResponse(
-            chat_service.generate_stream(
-                messages=request.messages,
-                user_id=request.user_id,
-                conversation_id=request.conversation_id,
-            ),
-            media_type="text/event-stream"
+            _stream_graph(graph_stream),
+            media_type="text/event-stream",
         )
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(
-            f"chat endpoint 异常 | user_id={request.user_id} "
-            f"conversation_id={request.conversation_id} | {e}",
-            exc_info=True,
-        )
+        logger.error(f"chat endpoint 异常 | user_id={request.user_id} | {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/reason")
-async def reason_endpoint(request: ReasonRequest):
-    try:
-        reasoner = LLMFactory.create_reasoner_service()
-
-        return StreamingResponse(
-            reasoner.generate_stream(request.messages),
-            media_type="text/event-stream"
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(
-            f"reason endpoint 异常 | user_id={request.user_id} | {e}",
-            exc_info=True,
-        )
-        raise HTTPException(status_code=500, detail="Internal server error")
+async def reason_endpoint(request: ChatMessage):
+    """深度推理 — 同样走 LangGraph，但使用 REASON_SERVICE。"""
+    return await chat_endpoint(request)
 
 
 @router.post("/search")
 async def search_endpoint(request: ChatMessage):
-    try:
-        search_service = LLMFactory.create_search_service()
-        return StreamingResponse(
-            search_service.generate_stream(
-                query=request.messages[0]["content"],
-                user_id=request.user_id,
-                conversation_id=request.conversation_id,
-            ),
-            media_type="text/event-stream"
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(
-            f"search endpoint 异常 | user_id={request.user_id} "
-            f"conversation_id={request.conversation_id} | {e}",
-            exc_info=True,
-        )
-        raise HTTPException(status_code=500, detail="Internal server error")
+    """联网搜索 — 走 LangGraph 图。"""
+    return await chat_endpoint(request)

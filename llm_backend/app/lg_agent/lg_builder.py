@@ -5,8 +5,7 @@ v3.7: 顶层 Router 2 分类，KG 子图 RetrievalPlan 5 路路由 + AgentReAct 
 from __future__ import annotations
 
 import asyncio
-import sys
-from typing import cast, Literal, List, Dict, Any, Optional
+from typing import cast, Literal, List, Dict, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.messages import BaseMessage, AIMessage
@@ -14,6 +13,9 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_deepseek import ChatDeepSeek
 from langchain_ollama import ChatOllama
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.prebuilt import ToolNode
+from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from app.core.config import settings, ServiceType
@@ -23,19 +25,20 @@ from app.lg_agent.lg_prompts import (
     GENERAL_QUERY_SYSTEM_PROMPT,
     GUARDRAILS_SYSTEM_PROMPT,
     RETRIEVAL_PLAN_ROUTER_PROMPT,
-    RAGSEARCH_SYSTEM_PROMPT,
 )
 from app.lg_agent.kg_sub_graph.kg_neo4j_conn import get_neo4j_graph
 from app.lg_agent.kg_sub_graph.agentic_rag_agents.retrievers.cypher_examples.northwind_retriever import (
     NorthwindCypherRetriever,
 )
-from app.lg_agent.kg_sub_graph.agentic_rag_agents.workflows.multi_agent.multi_tool import (
-    create_multi_tool_workflow,
+from app.lg_agent.kg_sub_graph.agentic_rag_agents.workflows.single_agent import (
+    create_text2cypher_agent,
 )
-from app.lg_agent.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.cypher_dict import (
-    predefined_cypher_dict,
+from app.lg_agent.kg_sub_graph.agentic_rag_agents.components.customer_tools import (
+    create_rag_search_node,
 )
-from app.lg_agent.kg_sub_graph.kg_tools_list import cypher_query, predefined_cypher, rag_document_query
+from app.lg_agent.kg_sub_graph.agentic_rag_agents.components.summarize import (
+    create_summarization_node,
+)
 from app.security import wrap_user_message
 from app.memory.redis_short_term_memory import RedisShortTermMemory
 from app.memory.simple_long_term_memory import SimpleLongTermMemory
@@ -263,197 +266,217 @@ async def retrieval_plan_route(state: AgentState, *, config: RunnableConfig) -> 
 
 def retrieval_plan_edge(state: AgentState) -> Literal[
     "execute_graph_only", "execute_rag_only", "execute_parallel",
-    "execute_graph_then_rag", "agent_react_node"
+    "execute_then", "execute_react"
 ]:
     plan = (state.retrieval_plan or {}).get("plan", "AGENT_REACT")
     mapping = {
         "GRAPH_ONLY": "execute_graph_only",
         "RAG_ONLY": "execute_rag_only",
         "PARALLEL": "execute_parallel",
-        "GRAPH_THEN_RAG": "execute_graph_then_rag",
-        "AGENT_REACT": "agent_react_node",
+        "GRAPH_THEN_RAG": "execute_then",
+        "AGENT_REACT": "execute_react",
     }
-    return mapping.get(plan, "agent_react_node")  # type: ignore[return-value]
+    return mapping.get(plan, "execute_react")  # type: ignore[return-value]
 
 
-# ------------------------------------------------------------------ #
-# 执行节点：GRAPH_ONLY
-# ------------------------------------------------------------------ #
+# ================================================================== #
+# 执行节点 — 5 个独立函数 + 共享辅助
+# ================================================================== #
 
-async def execute_graph_only(state: AgentState, *, config: RunnableConfig) -> Dict[str, List[BaseMessage]]:
+def _question(state: AgentState) -> str:
+    return state.messages[-1].content if state.messages else ""
+
+def _no_neo4j():
+    return {"messages": [AIMessage(content="抱歉，知识库服务暂时不可用，请稍后重试。")]}
+
+# 模块级单例：避免每个执行节点重复创建
+_retriever = None
+_t2c_cache: dict = {}  # keyed by graph id, since graph connects once
+_summarize_node = None
+_rag_node = None
+
+def _get_retriever():
+    global _retriever
+    if _retriever is None:
+        _retriever = NorthwindCypherRetriever()
+    return _retriever
+
+def _get_t2c(neo4j_graph):
+    gid = id(neo4j_graph)
+    if gid not in _t2c_cache:
+        _t2c_cache[gid] = create_text2cypher_agent(
+            llm=_cypher_model, graph=neo4j_graph,
+            cypher_example_retriever=_get_retriever(),
+        )
+    return _t2c_cache[gid]
+
+def _get_summarize():
+    global _summarize_node
+    if _summarize_node is None:
+        _summarize_node = create_summarization_node(llm=_cypher_model)
+    return _summarize_node
+
+def _get_rag():
+    global _rag_node
+    if _rag_node is None:
+        _rag_node = create_rag_search_node()
+    return _rag_node
+
+async def _summarize(question: str, records: list, fallback: str = "未查询到相关信息～") -> str:
+    if not records:
+        return fallback
+    result = await _get_summarize().ainvoke({"question": question, "cyphers": [{"records": records}]})
+    return result.get("summary", "") or fallback
+
+def _safe_records(result: dict) -> list:
+    """从 RAG 或 Text2Cypher 结果中提取 records，兼容 cyc/cyphers 两种格式。"""
+    if "records" in result:
+        return result.get("records", [])
+    cyphers = result.get("cyphers", [])
+    if cyphers:
+        return cyphers[0].get("records", [])
+    return []
+
+
+async def execute_graph_only(state: AgentState, *, config: RunnableConfig) -> dict:
     neo4j_graph = get_neo4j_graph()
-    if neo4j_graph is None:
-        return {"messages": [AIMessage(content="抱歉，知识库服务暂时不可用，请稍后重试。")]}
+    if neo4j_graph is None: return _no_neo4j()
 
-    cypher_retriever = NorthwindCypherRetriever()
-    tool_schemas: List[type[BaseModel]] = [cypher_query, predefined_cypher]
-    workflow = create_multi_tool_workflow(
-        llm=_cypher_model, graph=neo4j_graph, tool_schemas=tool_schemas,
-        predefined_cypher_dict=predefined_cypher_dict,
-        cypher_example_retriever=cypher_retriever,
-        scope_description=SCOPE_DESCRIPTION, llm_cypher_validation=True,
-    )
-    last_message = state.messages[-1].content if state.messages else ""
-    response = await workflow.ainvoke({"question": last_message, "data": [], "history": []})
-    return {"messages": [
-        AIMessage(content="正在查询...  "),
-        AIMessage(content=response["answer"]),
-    ]}
+    result = await _get_t2c(neo4j_graph).ainvoke({"task": _question(state)})
+    summary = await _summarize(_question(state), _safe_records(result), "未查询到相关信息，请确认后重新咨询～")
+    return {"messages": [AIMessage(content="正在查询..."), AIMessage(content=summary)]}
 
 
-# ------------------------------------------------------------------ #
-# 执行节点：RAG_ONLY
-# ------------------------------------------------------------------ #
+async def execute_rag_only(state: AgentState, *, config: RunnableConfig) -> dict:
+    result = await _get_rag()({"task": _question(state)})
+    summary = await _summarize(_question(state), _safe_records(result), "未在文档中找到相关信息～")
+    return {"messages": [AIMessage(content="正在检索文档..."), AIMessage(content=summary)]}
 
-async def execute_rag_only(state: AgentState, *, config: RunnableConfig) -> Dict[str, List[BaseMessage]]:
+
+async def execute_parallel(state: AgentState, *, config: RunnableConfig) -> dict:
     neo4j_graph = get_neo4j_graph()
-    if neo4j_graph is None:
-        return {"messages": [AIMessage(content="抱歉，知识库服务暂时不可用，请稍后重试。")]}
+    if neo4j_graph is None: return _no_neo4j()
 
-    cypher_retriever = NorthwindCypherRetriever()
-    tool_schemas: List[type[BaseModel]] = [rag_document_query]
-    workflow = create_multi_tool_workflow(
-        llm=_cypher_model, graph=neo4j_graph, tool_schemas=tool_schemas,
-        predefined_cypher_dict=predefined_cypher_dict,
-        cypher_example_retriever=cypher_retriever,
-        scope_description=SCOPE_DESCRIPTION, llm_cypher_validation=True,
-    )
-    last_message = state.messages[-1].content if state.messages else ""
-    response = await workflow.ainvoke({"question": last_message, "data": [], "history": []})
-    return {"messages": [
-        AIMessage(content="正在检索文档...  "),
-        AIMessage(content=response["answer"]),
-    ]}
+    import asyncio as _aio
+    q = _question(state)
+    neo4j_task = _aio.create_task(_get_t2c(neo4j_graph).ainvoke(
+        {"task": q + "（仅查询结构化数据：价格、库存、订单等）"}))
+    rag_task = _aio.create_task(_get_rag()(
+        {"task": q + "（仅查询文档知识：售后政策、保修条款等）"}))
+    neo_result, rag_result = await _aio.gather(neo4j_task, rag_task)
+
+    all_records = _safe_records(neo_result) + _safe_records(rag_result)
+    summary = await _summarize(q, all_records)
+    return {"messages": [AIMessage(content="正在同时查询..."), AIMessage(content=summary)]}
 
 
-# ------------------------------------------------------------------ #
-# 执行节点：PARALLEL（Neo4j + RAG 并行）
-# ------------------------------------------------------------------ #
-
-async def execute_parallel(state: AgentState, *, config: RunnableConfig) -> Dict[str, List[BaseMessage]]:
+async def execute_then(state: AgentState, *, config: RunnableConfig) -> dict:
     neo4j_graph = get_neo4j_graph()
-    if neo4j_graph is None:
-        return {"messages": [AIMessage(content="抱歉，知识库服务暂时不可用，请稍后重试。")]}
+    if neo4j_graph is None: return _no_neo4j()
 
-    cypher_retriever = NorthwindCypherRetriever()
-    tool_schemas: List[type[BaseModel]] = [cypher_query, predefined_cypher, rag_document_query]
-    workflow = create_multi_tool_workflow(
-        llm=_cypher_model, graph=neo4j_graph, tool_schemas=tool_schemas,
-        predefined_cypher_dict=predefined_cypher_dict,
-        cypher_example_retriever=cypher_retriever,
-        scope_description=SCOPE_DESCRIPTION, llm_cypher_validation=True,
-    )
-    last_message = state.messages[-1].content if state.messages else ""
-    response = await workflow.ainvoke({"question": last_message, "data": [], "history": []})
-    return {"messages": [
-        AIMessage(content="正在同时查询数据库和文档...  "),
-        AIMessage(content=response["answer"]),
-    ]}
+    q = _question(state)
+    neo_result = await _get_t2c(neo4j_graph).ainvoke({"task": q})
+    neo_records = _safe_records(neo_result)
+
+    rag_result = await _get_rag()({"task": f"已知信息：{neo_records}\n\n查询：{q}"})
+    all_records = list(neo_records) + _safe_records(rag_result)
+    summary = await _summarize(q, all_records)
+    return {"messages": [AIMessage(content="正在先查数据库，再查文档..."), AIMessage(content=summary)]}
 
 
-# ------------------------------------------------------------------ #
-# 执行节点：GRAPH_THEN_RAG（先 Neo4j 再 RAG，串行）
-# ------------------------------------------------------------------ #
-
-async def execute_graph_then_rag(state: AgentState, *, config: RunnableConfig) -> Dict[str, List[BaseMessage]]:
+def _build_react_subgraph() -> CompiledStateGraph:
     neo4j_graph = get_neo4j_graph()
-    if neo4j_graph is None:
-        return {"messages": [AIMessage(content="抱歉，知识库服务暂时不可用，请稍后重试。")]}
+    t2c_agent = _get_t2c(neo4j_graph)
 
-    cypher_retriever = NorthwindCypherRetriever()
-    tool_schemas: List[type[BaseModel]] = [cypher_query, predefined_cypher, rag_document_query]
-    workflow = create_multi_tool_workflow(
-        llm=_cypher_model, graph=neo4j_graph, tool_schemas=tool_schemas,
-        predefined_cypher_dict=predefined_cypher_dict,
-        cypher_example_retriever=cypher_retriever,
-        scope_description=SCOPE_DESCRIPTION, llm_cypher_validation=True,
-    )
-    last_message = state.messages[-1].content if state.messages else ""
-    response = await workflow.ainvoke({"question": last_message, "data": [], "history": []})
-    return {"messages": [
-        AIMessage(content="正在先查询数据库，再检索文档...  "),
-        AIMessage(content=response["answer"]),
-    ]}
+    @tool
+    async def neo4j_query(task: str) -> str:
+        r = await t2c_agent.ainvoke({"task": task})
+        return str(r.get("records", []))
 
+    @tool
+    async def rag_search(query: str) -> str:
+        r = await _get_rag()({"task": query})
+        return str(r.get("records", []))
 
-# ------------------------------------------------------------------ #
-# AgentReAct 兜底节点（最多 3 轮）
-# ------------------------------------------------------------------ #
+    tools = [neo4j_query, rag_search]
+    tool_node = ToolNode(tools)
+    llm_with_tools = _cypher_model.bind_tools(tools)
 
-REACT_SYSTEM_PROMPT = """你是一个电商客服 Agent，可以使用工具来回答用户问题。
+    def _should_continue(state: dict) -> Literal["tools", "__end__"]:
+        messages = state.get("messages", [])
+        if not messages: return "__end__"
+        last = messages[-1]
+        if hasattr(last, "tool_calls") and last.tool_calls: return "tools"
+        return "__end__"
 
-可用工具：
-- neo4j_query: 查询 Neo4j 图数据库中的商品/订单/客户等结构化数据
-- predefined_cypher: 使用预定义的 Cypher 模板进行常见查询
-- rag_search: 检索文档知识库中的售后政策、保修条款等
+    async def _agent(state: dict) -> dict:
+        response = await llm_with_tools.ainvoke(state["messages"])
+        return {"messages": [response]}
 
-规则：
-1. 观察工具返回的结果，判断是否足够回答用户问题
-2. 如果结果不足，可以调用更多工具
-3. 如果结果足够，直接生成最终回复
-4. 最多 3 轮工具调用
-"""
+    sg = StateGraph(dict)
+    sg.add_node("agent", _agent)
+    sg.add_node("tools", tool_node)
+    sg.add_edge(START, "agent")
+    sg.add_conditional_edges("agent", _should_continue, {"tools": "tools", "__end__": END})
+    sg.add_edge("tools", "agent")
+    return sg.compile()
 
 
-async def agent_react_node(state: AgentState, *, config: RunnableConfig) -> Dict[str, List[BaseMessage] | int]:
-    neo4j_graph = get_neo4j_graph()
-    if neo4j_graph is None:
-        return {"messages": [AIMessage(content="抱歉，知识库服务暂时不可用，请稍后重试。")]}
+_react_subgraph = None
 
-    cypher_retriever = NorthwindCypherRetriever()
-    tool_schemas: List[type[BaseModel]] = [cypher_query, predefined_cypher, rag_document_query]
-    workflow = create_multi_tool_workflow(
-        llm=_cypher_model, graph=neo4j_graph, tool_schemas=tool_schemas,
-        predefined_cypher_dict=predefined_cypher_dict,
-        cypher_example_retriever=cypher_retriever,
-        scope_description=SCOPE_DESCRIPTION, llm_cypher_validation=True,
-        max_attempts=3,
-    )
-    last_message = state.messages[-1].content if state.messages else ""
+def _get_react_subgraph() -> CompiledStateGraph:
+    global _react_subgraph
+    if _react_subgraph is None:
+        _react_subgraph = _build_react_subgraph()
+    return _react_subgraph
 
-    # 最多 3 轮迭代
+
+async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
+    """AgentReAct 兜底：LangGraph ToolNode 子图，bind_tools 自由探索，最多 3 轮。"""
+    if get_neo4j_graph() is None: return _no_neo4j()
     react_round = getattr(state, "react_round", 0)
     if react_round >= 3:
-        return {"messages": [AIMessage(content="亲～抱歉，这个问题可能需要人工客服协助，我帮您转接～")]}
+        return {"messages": [AIMessage(content="亲～抱歉，这个问题可能需要人工客服协助～")]}
 
-    response = await workflow.ainvoke({"question": last_message, "data": [], "history": []})
+    q = _question(state)
+    sg = _get_react_subgraph()
+    result = await sg.ainvoke({
+        "messages": [{"role": "system", "content": "你是电商客服 Agent。使用工具查询后回复用户。最多 3 轮工具调用。"},
+                     {"role": "user", "content": q}]
+    })
+    answer = result["messages"][-1].content if result.get("messages") else "未能确定回答～"
+
     return {
-        "messages": [AIMessage(content=response["answer"])],
+        "messages": [AIMessage(content="正在综合分析..."), AIMessage(content=str(answer))],
         "react_round": react_round + 1,
-        "question": last_message,
     }
 
 
-# ------------------------------------------------------------------ #
 # after_response（记忆写入）
-# ------------------------------------------------------------------ #
-
 async def after_response(state: AgentState, *, config: RunnableConfig) -> dict:
     middleware = _get_memory_middleware()
-    if middleware is None:
-        return {}
+    if middleware is None: return {}
     try:
-        configurable = config.get("configurable", {})
-        tenant_id = configurable.get("tenant_id", "default")
-        user_id = configurable.get("user_id", "anonymous")
-        session_id = configurable.get("thread_id", "default")
-        user_message = state.messages[-2].content if len(state.messages) >= 2 else ""
-        assistant_message = state.messages[-1].content if state.messages else ""
-        if user_message and assistant_message:
-            await middleware.after_agent(tenant_id=tenant_id, user_id=user_id, session_id=session_id,
-                                         user_message=user_message, assistant_message=assistant_message)
-    except Exception:
-        pass
+        c = config.get("configurable", {})
+        u_msg = state.messages[-2].content if len(state.messages) >= 2 else ""
+        a_msg = state.messages[-1].content if state.messages else ""
+        if u_msg and a_msg:
+            await middleware.after_agent(
+                tenant_id=c.get("tenant_id", "default"),
+                user_id=c.get("user_id", "anonymous"),
+                session_id=c.get("thread_id", "default"),
+                user_message=u_msg, assistant_message=a_msg,
+            )
+    except Exception: pass
     return {}
 
 
 # ================================================================== #
-# 图构建
+# 图构建 — 6 节点
 # ================================================================== #
 
 builder = StateGraph(AgentState, input=InputState)
 
-# 节点注册
 builder.add_node(analyze_and_route_query)
 builder.add_node(respond_to_general_query)
 builder.add_node("guardrails_node", guardrails_node)
@@ -461,37 +484,30 @@ builder.add_node("retrieval_plan_route", retrieval_plan_route)
 builder.add_node("execute_graph_only", execute_graph_only)
 builder.add_node("execute_rag_only", execute_rag_only)
 builder.add_node("execute_parallel", execute_parallel)
-builder.add_node("execute_graph_then_rag", execute_graph_then_rag)
-builder.add_node("agent_react_node", agent_react_node)
+builder.add_node("execute_then", execute_then)
+builder.add_node("execute_react", execute_react)
 builder.add_node("after_response", after_response)
 
-# 边
 builder.add_edge(START, "analyze_and_route_query")
 builder.add_conditional_edges("analyze_and_route_query", route_query, {
     "respond_to_general_query": "respond_to_general_query",
     "retrieval_plan_router": "guardrails_node",
 })
-
 builder.add_edge("respond_to_general_query", "after_response")
-
 builder.add_conditional_edges("guardrails_node", guardrails_edge, {
     "retrieval_plan_route": "retrieval_plan_route",
     "after_response": "after_response",
 })
-
 builder.add_conditional_edges("retrieval_plan_route", retrieval_plan_edge, {
     "execute_graph_only": "execute_graph_only",
     "execute_rag_only": "execute_rag_only",
     "execute_parallel": "execute_parallel",
-    "execute_graph_then_rag": "execute_graph_then_rag",
-    "agent_react_node": "agent_react_node",
+    "execute_then": "execute_then",
+    "execute_react": "execute_react",
 })
 
-# 所有执行路径汇聚到 after_response
-for node in ["execute_graph_only", "execute_rag_only", "execute_parallel",
-             "execute_graph_then_rag", "agent_react_node"]:
-    builder.add_edge(node, "after_response")
-
+for n in ["execute_graph_only", "execute_rag_only", "execute_parallel", "execute_then", "execute_react"]:
+    builder.add_edge(n, "after_response")
 builder.add_edge("after_response", END)
 
 graph = builder.compile()

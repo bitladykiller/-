@@ -23,7 +23,6 @@ class DeepseekService(BaseLLMService):
         conversation_id: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
         try:
-            full_response: list[str] = []
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
@@ -33,7 +32,6 @@ class DeepseekService(BaseLLMService):
             async for chunk in response:
                 if chunk.choices and chunk.choices[0].delta.content:
                     raw = chunk.choices[0].delta.content
-                    full_response.append(raw)
                     yield f"data: {json.dumps(raw, ensure_ascii=False)}\n\n"
 
         except Exception as e:
