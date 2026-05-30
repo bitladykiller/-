@@ -155,27 +155,22 @@ class MemoryMiddleware:
                 print("[memory] Redis STM 写入失败", file=sys.stderr)
                 self._errors_logged.add("redis_stm_write")
 
-        # 2. 判断并执行压缩
+        # 2. 判断并执行压缩，压缩成功时顺便抽取长期记忆
         try:
-            await self._compress_short_term_memory_if_needed(
+            compressed = await self._compress_short_term_memory_if_needed(
                 tenant_id, user_id, session_id
             )
+            if compressed and self.ltm_config.get("enabled", True):
+                # 压缩刚发生，LLM 已经分析过旧对话 → 用新摘要抽取 LTM
+                new_summary = await self.redis_stm.get_summary(tenant_id, user_id, session_id)
+                await self._extract_and_save_long_term_memory(
+                    tenant_id, user_id, session_id,
+                    user_message, assistant_message, new_summary,
+                )
         except Exception:
             if "compress" not in self._errors_logged:
                 print("[memory] 记忆压缩失败", file=sys.stderr)
                 self._errors_logged.add("compress")
-
-        # 3. 抽取并写入长期记忆
-        try:
-            if self.ltm_config.get("enabled", True):
-                await self._extract_and_save_long_term_memory(
-                    tenant_id, user_id, session_id,
-                    user_message, assistant_message, session_summary,
-                )
-        except Exception:
-            if "ltm_save" not in self._errors_logged:
-                print("[memory] Milvus LTM 写入失败", file=sys.stderr)
-                self._errors_logged.add("ltm_save")
 
         # 4. 更新命中的长期记忆
         try:
@@ -218,7 +213,7 @@ class MemoryMiddleware:
 
     async def _compress_short_term_memory_if_needed(
         self, tenant_id, user_id, session_id
-    ):
+    ) -> bool:
         meta = await self.redis_stm.get_meta(tenant_id, user_id, session_id)
         msg_count = await self.redis_stm.get_message_count(
             tenant_id, user_id, session_id
@@ -227,7 +222,7 @@ class MemoryMiddleware:
         if not self.redis_stm.should_compress(
             meta.total_turns, meta.last_compressed_turn, msg_count
         ):
-            return
+            return False
 
         async def llm_compress_func(old_summary_str, old_messages):
             prompt = self._build_compress_prompt(old_summary_str, old_messages)
@@ -238,6 +233,7 @@ class MemoryMiddleware:
         await self.redis_stm.compress_session_memory(
             tenant_id, user_id, session_id, llm_compress_func
         )
+        return True
 
     # ------------------------------------------------------------------ #
     # 长期记忆操作

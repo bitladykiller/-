@@ -338,18 +338,39 @@ def _safe_records(result: dict) -> list:
     return []
 
 
+async def _enrich_question(state: AgentState, config: RunnableConfig, question: str) -> str:
+    """注入记忆上下文到查询问题。"""
+    middleware = _get_memory_middleware()
+    if middleware is None: return question
+    try:
+        c = config.get("configurable", {})
+        mem = await middleware.before_agent(
+            tenant_id=c.get("tenant_id", "default"),
+            user_id=c.get("user_id", "anonymous"),
+            session_id=c.get("thread_id", "default"),
+            user_input=question,
+        )
+        ctx = build_memory_context(mem.session_summary, mem.recent_messages,
+                                   mem.long_term_memories, mem.user_profile)
+        return f"{ctx}\n\n用户当前问题：{question}" if ctx else question
+    except Exception:
+        return question
+
+
 async def execute_graph_only(state: AgentState, *, config: RunnableConfig) -> dict:
     neo4j_graph = get_neo4j_graph()
     if neo4j_graph is None: return _no_neo4j()
 
-    result = await _get_t2c(neo4j_graph).ainvoke({"task": _question(state)})
-    summary = await _summarize(_question(state), _safe_records(result), "未查询到相关信息，请确认后重新咨询～")
+    q = await _enrich_question(state, config, _question(state))
+    result = await _get_t2c(neo4j_graph).ainvoke({"task": q})
+    summary = await _summarize(q, _safe_records(result), "未查询到相关信息，请确认后重新咨询～")
     return {"messages": [AIMessage(content="正在查询..."), AIMessage(content=summary)]}
 
 
 async def execute_rag_only(state: AgentState, *, config: RunnableConfig) -> dict:
-    result = await _get_rag()({"task": _question(state)})
-    summary = await _summarize(_question(state), _safe_records(result), "未在文档中找到相关信息～")
+    q = await _enrich_question(state, config, _question(state))
+    result = await _get_rag()({"task": q})
+    summary = await _summarize(q, _safe_records(result), "未在文档中找到相关信息～")
     return {"messages": [AIMessage(content="正在检索文档..."), AIMessage(content=summary)]}
 
 
@@ -358,7 +379,7 @@ async def execute_parallel(state: AgentState, *, config: RunnableConfig) -> dict
     if neo4j_graph is None: return _no_neo4j()
 
     import asyncio as _aio
-    q = _question(state)
+    q = await _enrich_question(state, config, _question(state))
     neo4j_task = _aio.create_task(_get_t2c(neo4j_graph).ainvoke(
         {"task": q + "（仅查询结构化数据：价格、库存、订单等）"}))
     rag_task = _aio.create_task(_get_rag()(
@@ -374,7 +395,7 @@ async def execute_then(state: AgentState, *, config: RunnableConfig) -> dict:
     neo4j_graph = get_neo4j_graph()
     if neo4j_graph is None: return _no_neo4j()
 
-    q = _question(state)
+    q = await _enrich_question(state, config, _question(state))
     neo_result = await _get_t2c(neo4j_graph).ainvoke({"task": q})
     neo_records = _safe_records(neo_result)
 

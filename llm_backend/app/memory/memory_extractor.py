@@ -85,41 +85,40 @@ class MemoryExtractor:
         if session_summary:
             summary_text = f"\n当前会话摘要：{session_summary}"
 
-        return f"""你是长期记忆抽取助手。从客服对话中抽取两类信息：
+        return f"""你是长期记忆抽取助手。从客服对话中判断是否有值得写入长期记忆的信息。
+
+**重要：如果本轮对话只是普通寒暄、简单问答、临时咨询，没有任何长期记忆价值，直接返回空 JSON {{}}。**
+
+只有用户明确表达了以下信息时才抽取：
 
 【A. 语义记忆（存入 Milvus，语义检索）】
-类型：
-1. issue_history（历史问题）：用户遇到的具体问题
-2. solution_note（有效方案）：确认有效的解决方案
+- issue_history：用户遇到的具体问题（如"门铃连接不上WiFi"、"订单10248延迟了"）
+- solution_note：确认有效的解决方案（如"重置路由器后门铃恢复正常"）
 
-不要抽取：密码/验证码/身份证等敏感信息、寒暄、临时询问、猜测。
+以下内容不需要抽取：
+- 普通寒暄（"你好"、"谢谢"、"再见"）
+- 临时查询（"今天天气怎么样"）
+- 一次性的简单问答（"智能门铃多少钱"、"有货吗"）
+- 密码、验证码、身份证号等敏感信息
+- 推测、猜测、不确定的信息
 
 【B. 结构化画像（存入 MySQL，精确查询）】
-从对话中提取用户明确表达的：
-- preferred_brand: 偏好品牌（google/apple/xiaomi/huawei 或 null）
-- budget_range: 预算范围（"0-1000"/"1000-3000"/"3000-5000"/"5000+" 或 null）
-- preferred_category: 偏好品类（"智能门铃"/"智能音箱" 等，不要加"智能"前缀不必要的）
-- tags: 标签数组，如 ["price_sensitive","early_adopter","smart_home"]
-- facts: 事实数组，每项 {{"key":"workplace","value":"ali"}}；只输出 user_facts 表的 key-value
-  常见 key: workplace, family_size, pet, expertise, shopping_frequency
+从对话中提取用户**明确表达**的个人信息：
+- preferred_brand: 偏好品牌（google/apple/xiaomi/huawei 或 null），如"我喜欢谷歌的产品"→"google"
+- budget_range: 预算范围（"0-1000"/"1000-3000"/"3000-5000"/"5000+" 或 null），如"预算三千以内"→"0-3000"
+- preferred_category: 偏好品类（"智能门铃"/"智能音箱" 等 或 null）
+- tags: 标签数组，如 ["price_sensitive","early_adopter"]
+- facts: 事实数组，每项 {{"key":"workplace","value":"ali"}}；常见 key: workplace, family_size, pet, expertise
 
 {summary_text}
 
 用户消息：{user_message}
 助手回复：{assistant_message}
 
-输出JSON：
+输出JSON（无长期记忆价值时返回空对象 {{}}）：
 {{
-  "semantic": [
-    {{"memory_type": "issue_history"|"solution_note", "content": "...", "reason": "..."}}
-  ],
-  "profile": {{
-    "preferred_brand": "google"|null,
-    "budget_range": "3000-5000"|null,
-    "preferred_category": "智能门铃"|null,
-    "tags": ["smart_home"],
-    "facts": [{{"key":"workplace","value":"ali"}}]
-  }}
+  "semantic": [],
+  "profile": {{}}
 }}
 只输出JSON，不要其他内容。"""
 
