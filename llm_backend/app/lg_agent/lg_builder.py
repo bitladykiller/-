@@ -5,6 +5,7 @@ v3.7: 顶层 Router 2 分类，KG 子图 RetrievalPlan 5 路路由 + AgentReAct 
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import cast, Literal, List, Dict, Optional
 
 from langchain_core.runnables import RunnableConfig
@@ -25,6 +26,7 @@ from app.lg_agent.lg_prompts import (
     GENERAL_QUERY_SYSTEM_PROMPT,
     GUARDRAILS_SYSTEM_PROMPT,
     RETRIEVAL_PLAN_ROUTER_PROMPT,
+    REACT_SYSTEM_PROMPT,
 )
 from app.lg_agent.kg_sub_graph.kg_neo4j_conn import get_neo4j_graph
 from app.lg_agent.kg_sub_graph.agentic_rag_agents.retrievers.cypher_examples.northwind_retriever import (
@@ -73,6 +75,7 @@ _router_model = _create_agent_model(0.1)
 _retrieval_plan_model = _create_agent_model(0.1)
 _guardrails_model = _create_agent_model(0.1)
 _cypher_model = _create_agent_model(0.2)
+_react_model = _create_agent_model(0.4)
 
 
 # ------------------------------------------------------------------ #
@@ -420,22 +423,24 @@ def _build_react_subgraph() -> CompiledStateGraph:
     @tool
     async def neo4j_query(task: str) -> str:
         r = await t2c_agent.ainvoke({"task": task})
-        return str(r.get("records", []))
+        return json.dumps(_safe_records(r), ensure_ascii=False)
 
     @tool
     async def rag_search(query: str) -> str:
         r = await _get_rag()({"task": query})
-        return str(r.get("records", []))
+        return json.dumps(_safe_records(r), ensure_ascii=False)
 
     tools = [neo4j_query, rag_search]
     tool_node = ToolNode(tools)
-    llm_with_tools = _cypher_model.bind_tools(tools)
+    llm_with_tools = _react_model.bind_tools(tools)
 
     def _should_continue(state: dict) -> Literal["tools", "__end__"]:
         messages = state.get("messages", [])
-        if not messages: return "__end__"
+        if not messages:
+            return "__end__"
         last = messages[-1]
-        if hasattr(last, "tool_calls") and last.tool_calls: return "tools"
+        if hasattr(last, "tool_calls") and last.tool_calls:
+            return "tools"
         return "__end__"
 
     async def _agent(state: dict) -> dict:
@@ -461,17 +466,23 @@ def _get_react_subgraph() -> CompiledStateGraph:
 
 
 async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
-    """AgentReAct 兜底：LangGraph ToolNode 子图，bind_tools 自由探索，最多 3 轮。"""
-    if get_neo4j_graph() is None: return _no_neo4j()
+    """AgentReAct 兜底：ToolNode 子图，_react_model(0.4) 探索，记忆注入。
+
+    使用 state.react_round 控制轮次上限 (5)，避免死循环。"""
+    if get_neo4j_graph() is None:
+        return _no_neo4j()
+
     react_round = getattr(state, "react_round", 0)
-    if react_round >= 3:
+    if react_round >= 5:
         return {"messages": [AIMessage(content="亲～抱歉，这个问题可能需要人工客服协助～")]}
 
-    q = _question(state)
+    q = await _enrich_question(state, config, _question(state))
     sg = _get_react_subgraph()
     result = await sg.ainvoke({
-        "messages": [{"role": "system", "content": "你是电商客服 Agent。使用工具查询后回复用户。最多 3 轮工具调用。"},
-                     {"role": "user", "content": q}]
+        "messages": [
+            {"role": "system", "content": REACT_SYSTEM_PROMPT},
+            {"role": "user", "content": q},
+        ]
     })
     answer = result["messages"][-1].content if result.get("messages") else "未能确定回答～"
 
