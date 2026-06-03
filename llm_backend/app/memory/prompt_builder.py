@@ -99,59 +99,15 @@ def _build_summary_section(
     """
     构建会话摘要部分。
 
-    参数：
-    - session_summary：会话摘要
-
-    返回：
-    - 会话摘要部分
+    直接透传 LLM 生成的自由格式 content 文本，
+    不按字段拆分——避免领域假设污染通用记忆层。
     """
-    if not session_summary:
+    if not session_summary or not session_summary.content:
         return """【短期会话摘要】
 （无）"""
 
-    # 格式化确认事实
-    confirmed_facts = ""
-    if session_summary.confirmed_facts:
-        confirmed_facts = "\n".join(
-            f"  - {fact}" for fact in session_summary.confirmed_facts
-        )
-
-    # 格式化尝试过的方案
-    tried_solutions = ""
-    if session_summary.tried_solutions:
-        tried_solutions = "\n".join(
-            f"  - {solution}" for solution in session_summary.tried_solutions
-        )
-
-    # 格式化拒绝过的方案
-    rejected_solutions = ""
-    if session_summary.rejected_solutions:
-        rejected_solutions = "\n".join(
-            f"  - {solution}" for solution in session_summary.rejected_solutions
-        )
-
-    # 构建摘要部分
-    summary_text = f"""【短期会话摘要】
-用户目标：{session_summary.user_goal}
-当前状态：{session_summary.current_state}
-下一步建议：{session_summary.next_action}"""
-
-    if confirmed_facts:
-        summary_text += f"""
-已确认信息：
-{confirmed_facts}"""
-
-    if tried_solutions:
-        summary_text += f"""
-已尝试方案：
-{tried_solutions}"""
-
-    if rejected_solutions:
-        summary_text += f"""
-用户拒绝方案：
-{rejected_solutions}"""
-
-    return summary_text
+    return f"""【短期会话摘要】
+{session_summary.content}"""
 
 
 def _build_messages_section(
@@ -296,32 +252,10 @@ def build_summary_injection_prompt(
     """
     构建会话摘要注入提示。
 
-    用于将会话摘要注入到现有 Prompt 中。
-
-    参数：
-    - session_summary：会话摘要
-
-    返回：
-    - 会话摘要注入提示
+    直接透传 content，不拆分 field。
     """
-    if not session_summary:
+    if not session_summary or not session_summary.content:
         return ""
 
-    # 格式化确认事实
-    confirmed_facts = ""
-    if session_summary.confirmed_facts:
-        confirmed_facts = "\n".join(
-            f"  - {fact}" for fact in session_summary.confirmed_facts
-        )
-
-    # 构建摘要注入提示
-    summary_text = f"""【会话上下文】
-用户目标：{session_summary.user_goal}
-当前状态：{session_summary.current_state}"""
-
-    if confirmed_facts:
-        summary_text += f"""
-已确认信息：
-{confirmed_facts}"""
-
-    return summary_text
+    return f"""【会话上下文】
+{session_summary.content}"""

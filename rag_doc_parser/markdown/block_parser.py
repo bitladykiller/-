@@ -24,6 +24,8 @@ _CODE_FENCE_END = re.compile(r"^```\s*$")
 _IMAGE_RE = re.compile(r"^!\[.*?\]\(.*?\)")
 # 图片说明标记：**图片...** 或 **描述：**
 _IMAGE_CAPTION_RE = re.compile(r"^\*\*(图片|描述|标题|分类)[：:]")
+_IMAGE_CAPTION_BLOCK_START_RE = re.compile(r"^:::image_caption\s*$")
+_IMAGE_CAPTION_BLOCK_END_RE = re.compile(r"^:::\s*$")
 
 
 class BlockParser:
@@ -96,7 +98,11 @@ class BlockParser:
                 continue
 
             # 检测图片说明（VLM 生成的描述）
-            if _IMAGE_CAPTION_RE.match(stripped) or _IMAGE_RE.match(stripped):
+            if (
+                _IMAGE_CAPTION_RE.match(stripped)
+                or _IMAGE_RE.match(stripped)
+                or _IMAGE_CAPTION_BLOCK_START_RE.match(stripped)
+            ):
                 caption_lines, end_idx = self._extract_image_caption(lines, i)
                 block = self._make_block(
                     block_type="image_caption",
@@ -184,9 +190,24 @@ class BlockParser:
         caption_lines: List[str] = []
         i = start
 
+        inside_caption_block = False
+
         while i < len(lines):
             stripped = lines[i].strip()
-            # 图片说明行：以 ** 开头或空行分隔
+            if _IMAGE_CAPTION_BLOCK_START_RE.match(stripped):
+                inside_caption_block = True
+                caption_lines.append(lines[i])
+                i += 1
+                continue
+
+            if inside_caption_block:
+                caption_lines.append(lines[i])
+                if _IMAGE_CAPTION_BLOCK_END_RE.match(stripped):
+                    inside_caption_block = False
+                i += 1
+                continue
+
+            # 图片说明行：以 ** 开头、Markdown 图片行，或空行分隔
             if (
                 _IMAGE_CAPTION_RE.match(stripped)
                 or _IMAGE_RE.match(stripped)
@@ -195,7 +216,6 @@ class BlockParser:
                 caption_lines.append(lines[i])
                 i += 1
             elif not stripped:
-                # 空行可能是说明之间的分隔
                 caption_lines.append(lines[i])
                 i += 1
             else:
@@ -234,7 +254,11 @@ class BlockParser:
                 break
             if is_markdown_table(stripped):
                 break
-            if _IMAGE_CAPTION_RE.match(stripped) or _IMAGE_RE.match(stripped):
+            if (
+                _IMAGE_CAPTION_RE.match(stripped)
+                or _IMAGE_RE.match(stripped)
+                or _IMAGE_CAPTION_BLOCK_START_RE.match(stripped)
+            ):
                 break
 
             text_lines.append(lines[i])

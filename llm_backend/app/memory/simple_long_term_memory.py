@@ -25,13 +25,12 @@ from pymilvus import (
     DataType,
     Function,
     FunctionType,
-    AnnSearchRequest,
-    RRFRanker,
 )
 
 from app.memory.config import LONG_TERM_MEMORY_CONFIG
 from app.memory.schemas import LongTermMemory, MemorySearchResult
 from app.core.logger import get_logger
+from shared_retrieval import MilvusHybridSearchCore
 
 logger = get_logger(__name__)
 
@@ -68,46 +67,16 @@ class SimpleLongTermMemory:
 
         # 初始化 Collection
         self._create_collection_if_not_exists()
-
-    # ------------------------------------------------------------------ #
-    # BM25 稀疏向量编码（查询端）
-    # ------------------------------------------------------------------ #
-
-    def _encode_query_sparse(self, query: str) -> Dict[int, float]:
-        """将查询文本编码为稀疏向量（TF 加权），用于 Milvus BM25 检索。
-
-        使用与 Milvus 内置 BM25 Function 一致的中文分词器进行分词，
-        然后按词频构造稀疏向量。Milvus 服务端负责 IDF 计算和 BM25
-        评分，因此查询端只需提供词频。
-
-        Args:
-            query: 查询文本。
-
-        Returns:
-            稀疏向量字典 {token_id: frequency}。
-        """
-        try:
-            from pymilvus.model.sparse.bm25.tokenizers import build_default_analyzer
-
-            analyzer = build_default_analyzer(language="zh")
-            tokens = analyzer(query)
-
-            sparse: dict[int, float] = {}
-            for token in tokens:
-                token_id = abs(hash(token)) % (2**24)
-                sparse[token_id] = sparse.get(token_id, 0.0) + 1.0
-
-            return sparse
-
-        except ImportError:
-            logger.warning("pymilvus.model 不可用，BM25 稀疏编码降级为空")
-            return {}
-        except Exception as e:
-            logger.error(
-                f"BM25 稀疏编码异常 | query_preview={query[:100]} | {e}",
-                exc_info=True,
-            )
-            return {}
+        self.retrieval_core = MilvusHybridSearchCore(
+            milvus_client=self.milvus_client,
+            embedding_model=self.embedding_model,
+            collection_name=self.collection_name,
+            dense_field="embedding",
+            sparse_field="sparse_vector",
+            dense_metric_type="COSINE",
+            dense_search_params={"nprobe": 16},
+            hybrid_rrf_k=60,
+        )
 
     # ------------------------------------------------------------------ #
     # Collection 管理
@@ -280,37 +249,28 @@ class SimpleLongTermMemory:
             top_k = top_k or self.config["search"]["top_k"]
             score_threshold = score_threshold or self.config["search"]["score_threshold"]
 
-            query_vector = await self._get_embedding(query)
-            if not query_vector:
-                return []
-
             filter_expr = (
                 f'tenant_id == "{tenant_id}" '
                 f'and user_id == "{user_id}" '
                 f'and is_deleted == false'
             )
 
-            results = self.milvus_client.search(
-                collection_name=self.collection_name,
-                data=[query_vector],
-                filter=filter_expr,
+            hits = await self.retrieval_core.search_dense(
+                query,
                 limit=top_k,
+                filter_expr=filter_expr,
                 output_fields=[
                     "memory_id", "tenant_id", "user_id", "memory_type",
                     "content", "created_at", "updated_at", "last_hit_at",
                     "hit_count", "is_deleted",
                 ],
+                score_threshold=score_threshold,
             )
 
             hit_memories = []
-            for item in results[0]:
-                score = item.get("distance", 0)
-                if score < score_threshold:
-                    continue
-
-                entity = item.get("entity", {})
-                memory = self._entity_to_memory(entity)
-                search_result = MemorySearchResult(memory=memory, score=score)
+            for hit in hits:
+                memory = self._entity_to_memory(hit["entity"])
+                search_result = MemorySearchResult(memory=memory, score=hit["score"])
                 hit_memories.append(search_result)
 
             return hit_memories
@@ -549,118 +509,32 @@ class SimpleLongTermMemory:
         - 检索更准确、延迟更低
         """
         try:
-            top_k = top_k or self.config["search"]["top_k"]
-            score_threshold = score_threshold or self.config["search"]["score_threshold"]
-
             filter_expr = (
                 f'tenant_id == "{tenant_id}" '
                 f'and user_id == "{user_id}" '
                 f'and is_deleted == false'
             )
-
-            search_limit = top_k * 2
-
-            # ---------------------------------------------------------- #
-            # 1. 生成查询向量
-            # ---------------------------------------------------------- #
-            query_vector = await self._get_embedding(query)
-            if not query_vector:
-                logger.warning(
-                    f"hybrid_search: embedding 生成返回空 | "
-                    f"tenant={tenant_id} user={user_id} query={query[:100]}"
-                )
-                return []
-
-            dense_req = AnnSearchRequest(
-                data=[query_vector],
-                anns_field="embedding",
-                param={"metric_type": "COSINE", "params": {"nprobe": 16}},
-                limit=search_limit,
-                expr=filter_expr,
-            )
-
-            # ---------------------------------------------------------- #
-            # 2. 尝试 Milvus 原生 hybrid_search（向量 + BM25 + RRF 融合）
-            # ---------------------------------------------------------- #
-            sparse_query = self._encode_query_sparse(query)
-
-            if sparse_query:
-                try:
-                    sparse_req = AnnSearchRequest(
-                        data=[sparse_query],
-                        anns_field="sparse_vector",
-                        param={"metric_type": "BM25"},
-                        limit=search_limit,
-                        expr=filter_expr,
-                    )
-
-                    hybrid_raw = self.milvus_client.hybrid_search(
-                        collection_name=self.collection_name,
-                        reqs=[dense_req, sparse_req],
-                        ranker=RRFRanker(k=60),
-                        limit=top_k,
-                        output_fields=[
-                            "memory_id", "tenant_id", "user_id", "memory_type",
-                            "content", "created_at", "updated_at", "last_hit_at",
-                            "hit_count", "is_deleted",
-                        ],
-                    )
-
-                    # hybrid_search 已经完成 RRF 融合，直接解析结果
-                    final_results: list[MemorySearchResult] = []
-                    for item in hybrid_raw[0]:
-                        score = item.get("distance", 0)
-                        entity = item.get("entity", {})
-                        memory = self._entity_to_memory(entity)
-                        final_results.append(
-                            MemorySearchResult(memory=memory, score=score)
-                        )
-
-                    logger.debug(
-                        f"hybrid_search 完成 | query={query[:80]} "
-                        f"final={len(final_results)}"
-                    )
-                    return final_results
-
-                except Exception as e:
-                    logger.warning(
-                        f"Milvus hybrid_search 失败，降级到纯向量检索 | "
-                        f"tenant={tenant_id} user={user_id} | {e}",
-                        exc_info=True,
-                    )
-                    # 降级：执行纯向量检索
-
-            else:
-                logger.warning(
-                    f"BM25 稀疏编码返回空，降级到纯向量检索 | "
-                    f"tenant={tenant_id} user={user_id}"
-                )
-
-            # ---------------------------------------------------------- #
-            # 3. 降级：纯向量检索
-            # ---------------------------------------------------------- #
-            vector_raw = self.milvus_client.search(
-                collection_name=self.collection_name,
-                data=[query_vector],
-                filter=filter_expr,
+            top_k = top_k or self.config["search"]["top_k"]
+            score_threshold = score_threshold or self.config["search"]["score_threshold"]
+            hits = await self.retrieval_core.search_hybrid(
+                query,
                 limit=top_k,
+                filter_expr=filter_expr,
                 output_fields=[
                     "memory_id", "tenant_id", "user_id", "memory_type",
                     "content", "created_at", "updated_at", "last_hit_at",
                     "hit_count", "is_deleted",
                 ],
+                score_threshold=score_threshold,
+                search_limit=top_k * 2,
             )
-
-            vector_results: list[MemorySearchResult] = []
-            for item in vector_raw[0]:
-                score = item.get("distance", 0)
-                if score < score_threshold:
-                    continue
-                entity = item.get("entity", {})
-                memory = self._entity_to_memory(entity)
-                vector_results.append(MemorySearchResult(memory=memory, score=score))
-
-            return vector_results
+            return [
+                MemorySearchResult(
+                    memory=self._entity_to_memory(hit["entity"]),
+                    score=hit["score"],
+                )
+                for hit in hits
+            ]
 
         except Exception as e:
             logger.error(

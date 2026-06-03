@@ -224,8 +224,12 @@ class MemoryMiddleware:
         ):
             return False
 
+        compressed_round = meta.total_turns
+
         async def llm_compress_func(old_summary_str, old_messages):
-            prompt = self._build_compress_prompt(old_summary_str, old_messages)
+            prompt = self._build_compress_prompt(
+                old_summary_str, old_messages, compressed_round,
+            )
             response = await self.memory_extractor.llm_client.ainvoke(prompt)
             raw = response.content if hasattr(response, "content") else str(response)
             return raw
@@ -296,26 +300,35 @@ class MemoryMiddleware:
     # 压缩 Prompt
     # ------------------------------------------------------------------ #
 
-    def _build_compress_prompt(self, old_summary_str: str, old_messages: list) -> str:
+    def _build_compress_prompt(
+        self, old_summary_str: str, old_messages: list, compressed_round: int,
+    ) -> str:
+        """构建压缩 Prompt——输出自由格式 content + 元信息 JSON。
+
+        不再预设"用户目标/解决方案"等客服领域字段。
+        让 LLM 自由总结对话要点，避免领域假设污染通用记忆层。
+        """
         messages_text = "\n".join(
             f"[{m.role}]: {m.content}" for m in old_messages
             if hasattr(m, 'role') and hasattr(m, 'content')
         )
 
-        return f"""你是对话摘要助手。请将以下对话历史压缩为JSON格式的会话摘要。
+        return f"""你是对话摘要助手。请将以下对话历史压缩为一段简洁的摘要。
 
 已有的摘要（如有）：{old_summary_str or "无"}
 
 最近的对话：
 {messages_text}
 
-请输出JSON，包含以下字段：
-- user_goal: 用户当前主要诉求
-- confirmed_facts: 已确认的信息列表
-- tried_solutions: 已尝试的方案列表
-- rejected_solutions: 用户拒绝的方案列表
-- current_state: 当前问题状态
-- next_action: 下一步建议动作
+请用一段中文概括这段对话，内容包括：
+- 用户问了什么、关心什么
+- Agent 给出了什么信息、做了什么
+- 尚未解决的问题或待确认的事项
+
+输出严格JSON格式，包含两个字段：
+- "content": 上述摘要文本（自由格式，一段中文）
+- "compressed_at": {compressed_round}  ← 直接用这个值
+- "compressed_round": {compressed_round}  ← 直接用这个值
 
 只输出JSON，不要其他内容。"""
 

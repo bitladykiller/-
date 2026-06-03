@@ -11,8 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from rag_doc_parser.retrieval.config import RetrievalConfig
 from rag_doc_parser.retrieval.milvus_store import MilvusStore
-from rag_doc_parser.retrieval.bm25_index import BM25Index
-from rag_doc_parser.retrieval.rrf import rrf_fusion, Reranker
+from rag_doc_parser.retrieval.rrf import Reranker
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +35,6 @@ class HybridSearcher:
     ):
         self.config = config or RetrievalConfig()
         self.milvus = MilvusStore(self.config, embedding_model)
-        self.bm25 = BM25Index(self.config)
         self.reranker = Reranker(self.config.rerank_model) if self.config.enable_rerank else None
         self._indexed = False
 
@@ -56,9 +54,6 @@ class HybridSearcher:
         # Milvus 向量索引
         count = await self.milvus.insert_chunks(chunks)
 
-        # BM25 关键词索引
-        self.bm25.add_documents(chunks)
-
         self._indexed = True
         logger.info(f"混合索引完成: {count} 条记录")
         return count
@@ -76,10 +71,8 @@ class HybridSearcher:
         """混合检索。
 
         流程:
-        1. Milvus 向量检索 → vector_results
-        2. BM25 关键词检索 → bm25_results
-        3. RRF 融合 → merged results
-        4. Reranker 重排序（可选）→ final results
+        1. Milvus 原生 hybrid_search（向量 + BM25 + RRF）
+        2. Reranker 重排序（可选）→ final results
 
         Args:
             query: 查询文本。
@@ -91,23 +84,13 @@ class HybridSearcher:
         """
         final_top_k = top_k or self.config.rrf_final_top_k
 
-        # 1. 向量检索
-        vector_results = await self.milvus.search(
-            query, top_k=self.config.vector_top_k, filter_expr=filter_expr
+        fused = await self.milvus.hybrid_search(
+            query,
+            top_k=max(final_top_k, self.config.rerank_top_k if self.reranker else final_top_k),
+            filter_expr=filter_expr,
         )
 
-        # 2. BM25 检索
-        bm25_results = self.bm25.search(query, top_k=self.config.bm25_top_k)
-
-        # 3. RRF 融合
-        fused = rrf_fusion(
-            vector_results,
-            bm25_results,
-            k=self.config.rrf_k,
-            top_k=final_top_k,
-        )
-
-        # 4. Reranker 重排序
+        # Reranker 重排序
         if self.reranker and self.reranker.available:
             fused = self.reranker.rerank(
                 query, fused,
@@ -115,9 +98,8 @@ class HybridSearcher:
                 text_field=self.config.display_field,
             )
 
-        return fused
+        return fused[:final_top_k]
 
     def clear(self):
-        """清空 BM25 索引（Milvus 数据保留）。"""
-        self.bm25.clear()
+        """重置运行态标记（Milvus 数据保留）。"""
         self._indexed = False
