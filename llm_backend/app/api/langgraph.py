@@ -18,6 +18,9 @@ from pydantic import BaseModel
 from app.lg_agent.lg_states import InputState
 from app.lg_agent.utils import new_uuid
 from app.lg_agent.lg_builder import graph
+from app.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(tags=["langgraph"])
 
@@ -26,8 +29,13 @@ def _sanitize_path_component(name: str) -> str:
     return re.sub(r'[^a-zA-Z0-9_-]', '_', name or "unknown")
 
 
-def _parse_image_to_context(image_path: str) -> str:
-    """将图片解析为文本上下文（调用 Vision API）。"""
+async def _parse_image_to_context(image_path: str) -> str:
+    """将图片解析为文本上下文（调用 Vision API）。
+
+    v3.15 修复：原实现使用 asyncio.run() 在已有事件循环中调用，
+    会抛出 RuntimeError: This event loop is already running。
+    改为直接 await 协程。
+    """
     from app.core.config import settings
     api_key = settings.VISION_API_KEY
     base_url = settings.VISION_BASE_URL
@@ -39,7 +47,8 @@ def _parse_image_to_context(image_path: str) -> str:
     from PIL import Image as PILImage
     import aiohttp
 
-    async def _describe():
+    try:
+        # 图片处理（CPU 密集，但单张图片通常 < 100ms）
         with PILImage.open(image_path) as img:
             max_size = 1024
             width, height = img.size
@@ -72,11 +81,8 @@ def _parse_image_to_context(image_path: str) -> str:
                     result = await resp.json()
                     return result["choices"][0]["message"]["content"]
         return ""
-
-    import asyncio
-    try:
-        return asyncio.run(_describe())
     except Exception:
+        logger.error("图片解析失败 | path=%s", image_path, exc_info=True)
         return ""
 
 
@@ -113,7 +119,7 @@ async def langgraph_query(
             with open(image_path, "wb") as f:
                 f.write(content)
 
-            image_context = _parse_image_to_context(str(image_path))
+            image_context = await _parse_image_to_context(str(image_path))
 
         # 拼接图片上下文到用户 query
         if image_context:

@@ -1,34 +1,37 @@
+# --- Web 框架 --- #
 fastapi>=0.68.0
 uvicorn>=0.15.0
 pydantic>=1.8.0
 pydantic-settings>=2.0.0
+python-multipart>=0.0.5
+
+# --- LLM 客户端 --- #
 openai>=1.0.0
 httpx>=0.24.0
-python-dotenv>=0.19.0
-tenacity>=8.0.0
-requests>=2.28.0
 aiohttp>=3.8.0
-sentence_transformers
-faiss-cpu
-PyPDF2
-python-docx
-python-multipart>=0.0.5
-sqlalchemy[asyncio]>=2.0.0
-aiomysql>=0.1.1
-cryptography
-psutil>=7.0.0
-GPUtil>=1.4.0
-redis>=5.0.0
-msgpack>=1.0.0
-zstandard>=0.22.0
-langgraph==0.3.25
 langchain-deepseek==0.1.3
 langchain-ollama==0.3.0
 langchain_neo4j==0.4.0
-matplotlib==3.10.1
-seaborn==0.13.2
 langchain_community==0.3.21
-graphrag==2.1.0
-langgraph-checkpoint-sqlite==2.0.6
+langgraph==0.3.25
+
+# --- 向量数据库 --- #
 pymilvus>=2.4.0
-ipython>=8.0.0
+
+# --- 数据库 --- #
+sqlalchemy[asyncio]>=2.0.0
+aiomysql>=0.1.1
+cryptography
+
+# --- 缓存 & 序列化 --- #
+redis>=5.0.0
+msgpack>=1.0.0
+zstandard>=0.22.0
+
+# --- 文档解析 --- #
+python-docx
+
+# --- 工具 --- #
+python-dotenv>=0.19.0
+tenacity>=8.0.0
+numpy
