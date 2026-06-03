@@ -1,9 +1,7 @@
 import os
 import uuid
-import re
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 
@@ -155,57 +153,3 @@ async def get_upload_status(task_id: str):
         raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
 
     return status
-
-
-def _sanitize_path_component(name: str) -> str:
-    return re.sub(r'[^a-zA-Z0-9_-]', '_', name or "unknown")
-
-
-@router.post("/upload/image")
-async def upload_image(
-    image: UploadFile = File(...),
-    user_id: int = Form(...),
-    conversation_id: Optional[str] = Form(None)
-):
-    try:
-        _validate_upload(image)
-        image_dir = Path("uploads/images")
-        if conversation_id:
-            conversation_id = _sanitize_path_component(conversation_id)
-            image_dir = image_dir / conversation_id
-        image_dir.mkdir(parents=True, exist_ok=True)
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        original_name, ext = os.path.splitext(image.filename)
-        new_filename = f"{original_name}_{timestamp}{ext}"
-        image_path = image_dir / new_filename
-
-        content = await image.read()
-        if len(content) > MAX_UPLOAD_SIZE:
-            raise HTTPException(status_code=400, detail="文件大小超过限制 (50MB)")
-
-        with open(image_path, "wb") as f:
-            f.write(content)
-
-        image_info = {
-            "filename": new_filename,
-            "original_name": image.filename,
-            "size": len(content),
-            "type": image.content_type,
-            "path": str(image_path).replace('\\', '/'),
-            "user_id": user_id,
-            "conversation_id": conversation_id,
-            "upload_time": timestamp
-        }
-
-        return image_info
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(
-            f"upload_image 异常 | user_id={user_id} "
-            f"filename={image.filename} | {e}",
-            exc_info=True,
-        )
-        raise HTTPException(status_code=500, detail="Internal server error")

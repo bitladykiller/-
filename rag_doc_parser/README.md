@@ -24,9 +24,14 @@
 
 ## 安装
 
+在仓库根目录执行：
+
 ```bash
-pip install -r requirements.txt
+pip install -e ./shared_retrieval
+pip install -e ./rag_doc_parser
 ```
+
+如果你已经在仓库根目录执行过 `pip install -r requirements.txt`，这两个本地模块已经会一起安装，不需要重复执行。
 
 ## 环境变量
 

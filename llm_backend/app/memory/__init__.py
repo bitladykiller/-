@@ -29,14 +29,12 @@ from app.memory.redis_short_term_memory import RedisShortTermMemory
 from app.memory.simple_long_term_memory import SimpleLongTermMemory
 from app.memory.memory_extractor import MemoryExtractor
 from app.memory.memory_middleware import MemoryMiddleware
-from app.memory.prompt_builder import build_agent_prompt
-
 __all__ = [
     # 配置
     "SHORT_TERM_MEMORY_CONFIG",
     "LONG_TERM_MEMORY_CONFIG",
     "LONG_TERM_MEMORY_TYPES",
-    
+
     # 数据模型
     "MessageRecord",
     "SessionMeta",
@@ -45,13 +43,13 @@ __all__ = [
     "MemorySearchResult",
     "MemoryExtractorResult",
     "AgentMemoryState",
-    
+
     # 核心类
     "RedisShortTermMemory",
     "SimpleLongTermMemory",
     "MemoryExtractor",
     "MemoryMiddleware",
-    
-    # 工具函数
-    "build_agent_prompt",
+
+    # v3.17 移除 "build_agent_prompt" — 未被任何生产代码调用，
+    # Agent Prompt 构建已由 lg_context.py 的 build_memory_context 替代。
 ]

@@ -3,50 +3,41 @@ LangGraph Agent 节点函数。
 
 v3.15: 从 lg_builder.py 拆分。
 v3.16: 引入 Retriever 抽象接口，Agent 节点不再直接依赖 rag_doc_parser 或 Neo4j。
+v3.17: 检索器管理 → lg_retrievers.py，模型类 → lg_models.py，ReAct → lg_react.py。
+       本文件只保留：Router / Guardrails / RetrievalPlan / 4 个简单执行器 / after_response。
 
 架构说明：
 - 所有检索操作通过 Retriever 接口进行（依赖倒置原则）
-- RetrieverRegistry 集中管理所有检索器实例（注册表模式）
-- 执行节点通过 registry["kg"] / registry["rag"] 获取检索器
-- ReAct 子图内部通过闭包捕获 t2c_agent/rag_node（性能优化，避免每次工具调用都查注册表）
+- 检索器单例在 lg_retrievers.py 中管理（Registry 模式）
+- ReAct 子图在 lg_react.py 中独立管理
 """
 from __future__ import annotations
 
 import asyncio
-import json
-from typing import cast, Literal, List, Dict
+from typing import Literal, List, Dict
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.messages import BaseMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate
-from langgraph.graph import END
-from langgraph.prebuilt import create_react_agent
-from langgraph.graph.state import CompiledStateGraph
-from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from app.lg_agent.lg_states import AgentState, InputState, Router, RetrievalPlan
+from app.lg_agent.lg_states import AgentState, Router, RetrievalPlan
 from app.lg_agent.lg_retrievers import (
-    RetrieverRegistry,
-    MilvusDocRetriever,
-    KnowledgeGraphRetriever,
+    _reg,
+    _summarize,
 )
 from app.lg_agent.lg_prompts import (
     ROUTER_SYSTEM_PROMPT,
     GENERAL_QUERY_SYSTEM_PROMPT,
     GUARDRAILS_SYSTEM_PROMPT,
     RETRIEVAL_PLAN_ROUTER_PROMPT,
-    REACT_SYSTEM_PROMPT,
-    REACT_ANSWER_CHECK_PROMPT,
 )
 from app.lg_agent.lg_models import (
     agent_model,
     router_model,
     retrieval_plan_model,
     guardrails_model,
-    cypher_model,
-    react_model,
-    react_judge_model,
+    RetrievalPlanOutput,
 )
 from app.lg_agent.lg_context import (
     _get_memory_middleware,
@@ -54,21 +45,6 @@ from app.lg_agent.lg_context import (
     enrich_question,
 )
 from app.lg_agent.kg_sub_graph.kg_neo4j_conn import get_neo4j_graph
-from app.lg_agent.kg_sub_graph.agentic_rag_agents.retrievers.cypher_examples.northwind_retriever import (
-    NorthwindCypherRetriever,
-)
-from app.lg_agent.kg_sub_graph.agentic_rag_agents.workflows.single_agent import (
-    create_text2cypher_agent,
-)
-from app.lg_agent.kg_sub_graph.agentic_rag_agents.components.summarize import (
-    create_summarization_node,
-)
-from app.lg_agent.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.cypher_dict import (
-    predefined_cypher_dict,
-)
-from app.lg_agent.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.descriptions import (
-    QUERY_DESCRIPTIONS,
-)
 from app.security import wrap_user_message
 
 
@@ -121,82 +97,13 @@ def _safe_records(result: dict) -> list:
 
 
 # ================================================================== #
-# 检索器注册表 — 依赖倒置，Agent 不直接依赖具体检索实现
-# ================================================================== #
-#
-# v3.16: 引入 Retriever 抽象，取代原来的 _get_t2c / _get_rag 直接调用。
-# Agent 只通过 registry["kg"] / registry["rag"] 使用检索器，
-# 不知道底层是 Neo4j、Milvus、Elasticsearch 还是别的什么。
-#
-# 保留的内部单例（供 ReAct 子图内部使用，性能优化）：
-#   _t2c_agent — Text2Cypher compiled graph
-#   _summarize_node — 摘要生成节点
-# ================================================================== #
-
-_registry: RetrieverRegistry = RetrieverRegistry()
-_registry_lock: asyncio.Lock = asyncio.Lock()
-_retriever = None
-_t2c_agent = None  # 供 ReAct 子图内部直接使用（性能优化）
-_summarize_node = None
-
-
-async def _ensure_registry():
-    """懒初始化检索器注册表。首次调用时创建所有 Retriever 实例。"""
-    if "kg" in _registry and "rag" in _registry:
-        return
-
-    async with _registry_lock:
-        if "kg" in _registry and "rag" in _registry:
-            return
-
-        neo4j_graph = get_neo4j_graph()
-        if neo4j_graph is not None:
-            # 初始化 Text2Cypher Agent
-            global _t2c_agent
-            if _t2c_agent is None:
-                global _retriever
-                if _retriever is None:
-                    _retriever = NorthwindCypherRetriever()
-                _t2c_agent = create_text2cypher_agent(
-                    llm=cypher_model,
-                    graph=neo4j_graph,
-                    cypher_example_retriever=_retriever,
-                    predefined_cypher_dict=predefined_cypher_dict,
-                    query_descriptions=QUERY_DESCRIPTIONS,
-                )
-            _registry.register("kg", KnowledgeGraphRetriever(_t2c_agent))
-
-        _registry.register("rag", MilvusDocRetriever())
-
-
-async def _reg(name: str) -> "KnowledgeGraphRetriever | MilvusDocRetriever | None":
-    """获取检索器。确保 registry 已初始化。"""
-    await _ensure_registry()
-    return _registry.get(name)
-
-
-async def _summarize(question: str, records: list, fallback: str = "未查询到相关信息～") -> str:
-    """对查询结果生成摘要。records 为空时返回 fallback。"""
-    if not records:
-        return fallback
-    global _summarize_node
-    if _summarize_node is None:
-        _summarize_node = create_summarization_node(llm=cypher_model)
-    result = await _summarize_node.ainvoke({
-        "question": question,
-        "cyphers": [{"records": records}],
-    })
-    return result.get("summary", "") or fallback
-
-
-# ================================================================== #
 # 顶层 Router（2 分类：general / rag_doc-query）
 # ================================================================== #
 
 async def analyze_and_route_query(state: AgentState, *, config: RunnableConfig) -> dict:
     """分析用户输入，路由到通用回复或知识库检索。"""
     messages = _build_safe_messages(ROUTER_SYSTEM_PROMPT, state.messages)
-    response = cast(Router, await router_model.with_structured_output(Router).ainvoke(messages))
+    response: Router = await router_model.with_structured_output(Router).ainvoke(messages)
     return {"router": response}
 
 
@@ -209,37 +116,41 @@ def route_query(state: AgentState) -> Literal["respond_to_general_query", "retri
 
 
 # ================================================================== #
-# General 回复（闲聊 + 追问 + 图片上下文回复）
+# General 回复（闲聊 + 追问）
 # ================================================================== #
 
 async def respond_to_general_query(
     state: AgentState, *, config: RunnableConfig,
 ) -> Dict[str, List[BaseMessage]]:
-    """处理通用查询：闲聊、追问、图片上下文等。注入记忆上下文增强回复。"""
+    """处理通用查询：闲聊、追问等。注入记忆上下文增强回复。"""
     system_prompt = GENERAL_QUERY_SYSTEM_PROMPT.format(logic=state.router["logic"])
 
-    # 注入记忆上下文
-    middleware = await _get_memory_middleware()
-    if middleware is not None:
-        try:
-            configurable = config.get("configurable", {})
-            user_message = state.messages[-1].content if state.messages else ""
-            memory_state = await middleware.before_agent(
-                tenant_id=configurable.get("tenant_id", "default"),
-                user_id=configurable.get("user_id", "anonymous"),
-                session_id=configurable.get("thread_id", "default"),
-                user_input=user_message,
-            )
-            memory_context = build_memory_context(
-                memory_state.session_summary,
-                memory_state.recent_messages,
-                memory_state.long_term_memories,
-                memory_state.user_profile,
-            )
-            if memory_context:
-                system_prompt += memory_context
-        except Exception:
-            pass  # 记忆注入失败不影响回复
+    # 注入记忆上下文（缓存到 state.memory_state 供后续节点复用）
+    if state.memory_state is None:
+        middleware = await _get_memory_middleware()
+        if middleware is not None:
+            try:
+                configurable = config.get("configurable", {})
+                user_message = state.messages[-1].content if state.messages else ""
+                memory_state = await middleware.before_agent(
+                    tenant_id=configurable.get("tenant_id", "default"),
+                    user_id=configurable.get("user_id", "anonymous"),
+                    session_id=configurable.get("thread_id", "default"),
+                    user_input=user_message,
+                )
+                state.memory_state = memory_state  # 缓存
+            except Exception:
+                pass  # 记忆注入失败不影响回复
+
+    if state.memory_state is not None:
+        memory_context = build_memory_context(
+            state.memory_state.session_summary,
+            state.memory_state.recent_messages,
+            state.memory_state.long_term_memories,
+            state.memory_state.user_profile,
+        )
+        if memory_context:
+            system_prompt += memory_context
 
     messages = _build_safe_messages(system_prompt, state.messages)
     response = await agent_model.ainvoke(messages)
@@ -254,12 +165,6 @@ async def guardrails_node(
     state: AgentState, *, config: RunnableConfig,
 ) -> Dict[str, List[BaseMessage] | str]:
     """守卫节点：检查问题是否在业务范围内，拦截恶意输入。"""
-    neo4j_graph = None
-    try:
-        neo4j_graph = get_neo4j_graph()
-    except Exception:
-        pass
-
     scope_context = f"参考此范围描述来决策:\n{SCOPE_DESCRIPTION}"
     message = scope_context + "\nQuestion: {question}"
     full_system_prompt = ChatPromptTemplate.from_messages([
@@ -296,14 +201,6 @@ def guardrails_edge(state: AgentState) -> Literal["retrieval_plan_route", "after
 # RetrievalPlan Router（5 路检索计划）
 # ================================================================== #
 
-class RetrievalPlanOutput(BaseModel):
-    """检索计划输出结构。"""
-    logic: str = Field(description="选择该计划的理由")
-    plan: Literal["GRAPH_ONLY", "RAG_ONLY", "PARALLEL", "GRAPH_THEN_RAG", "AGENT_REACT"] = Field(
-        description="最合适的检索策略"
-    )
-
-
 async def retrieval_plan_route(state: AgentState, *, config: RunnableConfig) -> dict:
     """根据问题特征选择最优检索策略。"""
     raw_question = _question(state)
@@ -335,16 +232,8 @@ def retrieval_plan_edge(state: AgentState) -> Literal[
     return mapping.get(plan, "execute_react")  # type: ignore[return-value]
 
 
-class ReactAnswerCheckOutput(BaseModel):
-    """ReAct 答案校验输出结构。"""
-    decision: Literal["sufficient", "retry", "handoff"] = Field(
-        description="当前答案是否足够，或需要继续检索/转人工"
-    )
-    reason: str = Field(description="做出该判断的原因，供下一轮 ReAct 参考")
-
-
 # ================================================================== #
-# 执行节点 — 5 个独立的检索执行器
+# 执行节点 — 4 个简单检索执行器（ReAct 在 lg_react.py）
 # ================================================================== #
 
 async def execute_graph_only(state: AgentState, *, config: RunnableConfig) -> dict:
@@ -409,136 +298,43 @@ async def execute_then(state: AgentState, *, config: RunnableConfig) -> dict:
 
 
 # ================================================================== #
-# ReAct Agent — 兜底策略，最多 5 轮完整尝试
-# ================================================================== #
-
-async def _build_react_subgraph() -> CompiledStateGraph:
-    """构建 ReAct 子图：两个工具（neo4j_query + rag_search）。
-
-    通过 Retriever 接口而非直接调用底层实现（依赖倒置）。
-    """
-    # 确保 registry 已初始化
-    await _ensure_registry()
-    kg = _registry.get("kg")
-
-    # ReAct 子图内部使用闭包捕获检索器（性能优化，避免每次 tool call 都查注册表）
-    @tool
-    async def neo4j_query(task: str) -> str:
-        """查询 Neo4j 知识图谱，获取商品、订单、客户等结构化数据。"""
-        if kg is None:
-            return json.dumps({"error": "知识图谱服务不可用"}, ensure_ascii=False)
-        r = await kg.search(task)
-        return json.dumps(_safe_records(r), ensure_ascii=False)
-
-    @tool
-    async def rag_search(query: str) -> str:
-        """检索文档知识库，获取售后政策、保修条款等非结构化信息。"""
-        rag = _registry.get("rag")
-        if rag is None:
-            return json.dumps({"error": "文档检索服务不可用"}, ensure_ascii=False)
-        r = await rag.search(query)
-        return json.dumps(_safe_records(r), ensure_ascii=False)
-
-    tools = [neo4j_query, rag_search]
-    return create_react_agent(
-        model=react_model,
-        tools=tools,
-        prompt=REACT_SYSTEM_PROMPT,
-        version="v2",
-        name="customer_service_react_agent",
-    )
-
-
-async def _get_react_subgraph() -> CompiledStateGraph:
-    """获取 ReAct 子图单例（加锁防并发创建）。"""
-    global _react_subgraph
-    if _react_subgraph is None:
-        async with _react_lock:
-            if _react_subgraph is None:
-                _react_subgraph = await _build_react_subgraph()
-    return _react_subgraph
-
-
-async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
-    """ReAct 兜底执行 + 答案充分性检查，最多 5 轮。"""
-    if get_neo4j_graph() is None:
-        return _no_neo4j()
-
-    q = await enrich_question(state, config, _question(state))
-    sg = await _get_react_subgraph()
-    subgraph_config = dict(config) if config else {}
-    # 单次 ReAct 子图的最大 agent/tools 步数
-    subgraph_config["recursion_limit"] = 11
-    react_messages: list[dict[str, str]] = [{"role": "user", "content": q}]
-    insufficiency_reason = "初始状态：尚未完成充分回答。"
-
-    for attempt in range(1, 6):
-        if attempt > 1:
-            react_messages.append({
-                "role": "user",
-                "content": (
-                    "上一次候选答案仍然不充分，请继续按标准 ReAct 检索并补足关键事实。"
-                    f"不足原因：{insufficiency_reason}"
-                ),
-            })
-
-        result = await sg.ainvoke({"messages": react_messages}, config=subgraph_config)
-        result_messages = result.get("messages", [])
-        last_answer = result_messages[-1].content if result_messages else "未能确定回答～"
-
-        if isinstance(last_answer, str) and "need more steps" in last_answer.lower():
-            insufficiency_reason = "单次 ReAct 内部步数耗尽，仍未得到足够答案。"
-        else:
-            # 构建 ReAct 过程记录供裁判评估
-            transcript_lines: list[str] = []
-            for msg in result_messages:
-                role = getattr(msg, "type", None) or getattr(msg, "role", "assistant")
-                content = getattr(msg, "content", "")
-                if content:
-                    transcript_lines.append(f"[{role}] {content}")
-            transcript = "\n".join(transcript_lines[-20:])
-
-            check_messages = [
-                {"role": "system", "content": REACT_ANSWER_CHECK_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        f"用户问题：{q}\n\n"
-                        f"ReAct 过程记录：\n{transcript}\n\n"
-                        f"当前候选答案：{last_answer}"
-                    ),
-                },
-            ]
-            check = cast(
-                ReactAnswerCheckOutput,
-                await react_judge_model.with_structured_output(ReactAnswerCheckOutput).ainvoke(check_messages),
-            )
-
-            if check.decision == "sufficient":
-                return {
-                    "messages": [AIMessage(content="正在综合分析..."), AIMessage(content=str(last_answer))],
-                }
-
-            insufficiency_reason = check.reason or "答案信息不足。"
-
-        # 准备下一轮：保留原始问题 + 上一轮候选答案
-        react_messages = [
-            {"role": "user", "content": q},
-            {"role": "assistant", "content": str(last_answer)},
-        ]
-
-    # 5 轮用尽仍未充分
-    return {
-        "messages": [
-            AIMessage(content="正在综合分析..."),
-            AIMessage(content="亲～这个问题回答不了哦～"),
-        ],
-    }
-
-
-# ================================================================== #
 # after_response — 响应后记忆写入
 # ================================================================== #
+
+def _find_last_user_message(messages: list) -> str:
+    """从消息列表中反向查找最后一条用户消息。
+
+    v3.17 修复：原实现硬编码 messages[-2] 为用户、messages[-1] 为助手，
+    但当执行节点返回多条 AIMessage 时（如 execute_graph_only 返回"正在查询..."+
+    摘要），messages[-2] 可能是 AIMessage 而非用户消息，导致记忆写入错乱。
+    改为遍历查找真正的 role="user" 消息。
+    """
+    for msg in reversed(messages):
+        role = getattr(msg, "type", None) or getattr(msg, "role", None) or ""
+        if role == "human" or role == "user":
+            return getattr(msg, "content", "") or ""
+    return ""
+
+
+def _find_last_assistant_message(messages: list) -> str:
+    """从消息列表中反向查找最后一条包含有意义内容的助手消息。
+
+    跳过"正在查询..."等进度提示消息。
+    """
+    for msg in reversed(messages):
+        role = getattr(msg, "type", None) or getattr(msg, "role", None) or ""
+        if role == "ai" or role == "assistant":
+            content = getattr(msg, "content", "") or ""
+            # 跳过进度提示占位符
+            if content and "正在" not in content:
+                return content
+    # 如果所有助手消息都是进度提示，返回最后一条助手消息
+    for msg in reversed(messages):
+        role = getattr(msg, "type", None) or getattr(msg, "role", None) or ""
+        if role == "ai" or role == "assistant":
+            return getattr(msg, "content", "") or ""
+    return ""
+
 
 async def after_response(state: AgentState, *, config: RunnableConfig) -> dict:
     """将本轮对话写入 Redis STM，并触发 LTM 抽取。"""
@@ -547,8 +343,8 @@ async def after_response(state: AgentState, *, config: RunnableConfig) -> dict:
         return {}
     try:
         c = config.get("configurable", {})
-        u_msg = state.messages[-2].content if len(state.messages) >= 2 else ""
-        a_msg = state.messages[-1].content if state.messages else ""
+        u_msg = _find_last_user_message(state.messages)
+        a_msg = _find_last_assistant_message(state.messages)
         if u_msg and a_msg:
             await middleware.after_agent(
                 tenant_id=c.get("tenant_id", "default"),
