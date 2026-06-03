@@ -37,7 +37,7 @@ async def log_requests(request: Request, call_next):
 async def startup():
     """预热连接 — 避免首请求承担初始化延迟。"""
     logger.info("预热 MemoryMiddleware...")
-    from app.lg_agent.lg_builder import _get_memory_middleware
+    from app.lg_agent.lg_context import _get_memory_middleware
     _get_memory_middleware()
     logger.info("启动完成")
 
@@ -46,7 +46,7 @@ async def startup():
 async def shutdown():
     """释放连接。"""
     logger.info("关闭连接...")
-    from app.lg_agent.lg_builder import _memory_middleware_instance
+    from app.lg_agent.lg_context import _memory_middleware_instance
     if _memory_middleware_instance:
         try:
             await _memory_middleware_instance.redis_stm.redis.close()

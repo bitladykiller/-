@@ -62,6 +62,16 @@ async def upload_file(
     file: UploadFile = File(...),
     user_id: int = Form(...)
 ):
+    """上传文档并异步解析索引。
+
+    流程：
+    1. 同步：验证文件 → 保存到磁盘（快速，毫秒级）
+    2. 异步：提交后台任务解析文档并写入 Milvus（慢，秒级）
+
+    Returns:
+        包含 file_info 和 task_id 的字典。
+        前端通过 task_id 轮询 /upload/status/{task_id} 获取解析进度。
+    """
     try:
         _validate_upload(file)
 
@@ -96,15 +106,25 @@ async def upload_file(
             "user_id": user_id,
             "user_uuid": user_uuid,
             "upload_time": timestamp,
-            "directory": str(second_level_dir)
+            "directory": str(second_level_dir),
         }
 
-        indexing_service = IndexingService()
-        index_result = await indexing_service.process_file(file_info)
+        # --- 异步提交文档解析任务 --- #
+        from app.services.task_queue import get_task_manager
+        task_manager = await get_task_manager()
 
-        result = {**file_info, "index_result": index_result}
+        async def _index_document(info: dict) -> dict:
+            """后台执行：解析文档 + 写入 Milvus。"""
+            indexing_service = IndexingService()
+            return await indexing_service.process_file(info)
 
-        return result
+        task_id = await task_manager.submit(_index_document, file_info)
+
+        return {
+            **file_info,
+            "task_id": task_id,
+            "message": "文件已上传，后台正在解析索引。请通过 task_id 查询进度。",
+        }
 
     except HTTPException:
         raise
@@ -115,6 +135,26 @@ async def upload_file(
             exc_info=True,
         )
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/upload/status/{task_id}")
+async def get_upload_status(task_id: str):
+    """查询文档解析任务状态。
+
+    状态值：
+    - pending: 已提交，等待执行
+    - running: 正在解析
+    - completed: 完成，result 包含索引结果
+    - failed: 失败，error 包含错误信息
+    """
+    from app.services.task_queue import get_task_manager
+    task_manager = await get_task_manager()
+    status = await task_manager.get_status(task_id)
+
+    if status is None:
+        raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
+
+    return status
 
 
 def _sanitize_path_component(name: str) -> str:

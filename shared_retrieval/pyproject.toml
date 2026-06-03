@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "shared-retrieval"
+version = "0.1.0"
+description = "域无关的 Milvus 混合检索核心，供 RAG 文档检索和 LTM 长期记忆共用"
+requires-python = ">=3.10"
+dependencies = [
+    "pymilvus>=2.4.0",
+]
+
+[project.optional-dependencies]
+# embedding 可选依赖：按实际使用的 embedding 引擎安装
+ollama = ["langchain-ollama>=0.3.0"]
+huggingface = ["langchain-community>=0.3.0", "sentence-transformers"]
+
+[tool.setuptools.packages.find]
+include = ["shared_retrieval*"]
