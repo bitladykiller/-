@@ -26,9 +26,9 @@ from app.lg_agent.lg_nodes import (
     execute_rag_only,
     execute_parallel,
     execute_then,
-    execute_react,
     after_response,
 )
+from app.lg_agent.lg_react import execute_react
 
 # ================================================================== #
 # 图构建 — 10 个节点 + 条件边

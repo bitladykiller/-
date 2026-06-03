@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "shared-retrieval"
@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "域无关的 Milvus 混合检索核心，供 RAG 文档检索和 LTM 长期记忆共用"
 requires-python = ">=3.10"
 dependencies = [
-    "pymilvus>=2.4.0",
+    "pymilvus>=2.5.0",
 ]
 
 [project.optional-dependencies]

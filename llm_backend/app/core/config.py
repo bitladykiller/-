@@ -80,11 +80,6 @@ class BusinessSettings(BaseSettings):
     DEEPSEEK_BASE_URL: str
     DEEPSEEK_MODEL: str
 
-    # --- Vision Model（独立于 Chat 模型）--- #
-    VISION_API_KEY: str
-    VISION_BASE_URL: str
-    VISION_MODEL: str
-
     # --- Ollama 本地模型 --- #
     OLLAMA_BASE_URL: str
     OLLAMA_CHAT_MODEL: str
@@ -124,94 +119,34 @@ class BusinessSettings(BaseSettings):
 # 统一 Settings — 组合基础设施和业务配置
 # ================================================================== #
 
-class Settings(BaseSettings):
+class Settings:
     """组合配置类 — 向后兼容。
 
-    直接访问 settings.DEEPSEEK_API_KEY 等字段，透明委托给子配置。
+    v3.17: 使用 __getattr__ 统一代理到子配置，替代 50+ 行手动 property。
+    属性查找顺序：InfrastructureSettings → BusinessSettings → 计算属性。
     """
 
     def __init__(self):
-        super().__init__()
         self._infra = InfrastructureSettings()
         self._business = BusinessSettings()
+        # 缓存子配置的字段名集合，用于快速排除以判断是否为计算属性
+        self._all_fields: set[str] = set()
+        for src in [self._infra, self._business]:
+            for field_name in src.model_fields:
+                self._all_fields.add(field_name)
 
-    # --- 基础设施属性（委托） --- #
-    @property
-    def DB_HOST(self): return self._infra.DB_HOST
-    @property
-    def DB_PORT(self): return self._infra.DB_PORT
-    @property
-    def DB_USER(self): return self._infra.DB_USER
-    @property
-    def DB_PASSWORD(self): return self._infra.DB_PASSWORD
-    @property
-    def DB_NAME(self): return self._infra.DB_NAME
-    @property
-    def NEO4J_URL(self): return self._infra.NEO4J_URL
-    @property
-    def NEO4J_USERNAME(self): return self._infra.NEO4J_USERNAME
-    @property
-    def NEO4J_PASSWORD(self): return self._infra.NEO4J_PASSWORD
-    @property
-    def NEO4J_DATABASE(self): return self._infra.NEO4J_DATABASE
-    @property
-    def REDIS_HOST(self): return self._infra.REDIS_HOST
-    @property
-    def REDIS_PORT(self): return self._infra.REDIS_PORT
-    @property
-    def REDIS_DB(self): return self._infra.REDIS_DB
-    @property
-    def REDIS_PASSWORD(self): return self._infra.REDIS_PASSWORD
-    @property
-    def MILVUS_HOST(self): return self._infra.MILVUS_HOST
-    @property
-    def MILVUS_PORT(self): return self._infra.MILVUS_PORT
+    def __getattr__(self, name: str):
+        """代理到子配置，优先 Infrastructure → Business。"""
+        # 尝试从子配置获取
+        for src in [self._infra, self._business]:
+            if name in src.model_fields:
+                return getattr(src, name)
+        raise AttributeError(f"'Settings' object has no attribute '{name}'")
 
-    # --- 业务配置属性（委托） --- #
-    @property
-    def DEEPSEEK_API_KEY(self): return self._business.DEEPSEEK_API_KEY
-    @property
-    def DEEPSEEK_BASE_URL(self): return self._business.DEEPSEEK_BASE_URL
-    @property
-    def DEEPSEEK_MODEL(self): return self._business.DEEPSEEK_MODEL
-    @property
-    def VISION_API_KEY(self): return self._business.VISION_API_KEY
-    @property
-    def VISION_BASE_URL(self): return self._business.VISION_BASE_URL
-    @property
-    def VISION_MODEL(self): return self._business.VISION_MODEL
-    @property
-    def OLLAMA_BASE_URL(self): return self._business.OLLAMA_BASE_URL
-    @property
-    def OLLAMA_CHAT_MODEL(self): return self._business.OLLAMA_CHAT_MODEL
-    @property
-    def OLLAMA_REASON_MODEL(self): return self._business.OLLAMA_REASON_MODEL
-    @property
-    def OLLAMA_EMBEDDING_MODEL(self): return self._business.OLLAMA_EMBEDDING_MODEL
-    @property
-    def OLLAMA_AGENT_MODEL(self): return self._business.OLLAMA_AGENT_MODEL
-    @property
-    def EMBEDDING_TYPE(self): return self._business.EMBEDDING_TYPE
-    @property
-    def EMBEDDING_MODEL(self): return self._business.EMBEDDING_MODEL
-    @property
-    def CHAT_SERVICE(self): return self._business.CHAT_SERVICE
-    @property
-    def REASON_SERVICE(self): return self._business.REASON_SERVICE
-    @property
-    def AGENT_SERVICE(self): return self._business.AGENT_SERVICE
-    @property
-    def SERPAPI_KEY(self): return self._business.SERPAPI_KEY
-    @property
-    def SEARCH_RESULT_COUNT(self): return self._business.SEARCH_RESULT_COUNT
-    @property
-    def REDIS_CACHE_EXPIRE(self): return self._business.REDIS_CACHE_EXPIRE
-    @property
-    def REDIS_CACHE_THRESHOLD(self): return self._business.REDIS_CACHE_THRESHOLD
-    @property
-    def MILVUS_COLLECTION_NAME(self): return self._business.MILVUS_COLLECTION_NAME
+    # ---------------------------------------------------------------- #
+    # 计算属性 — 组合多个子配置字段的值
+    # ---------------------------------------------------------------- #
 
-    # --- 计算属性（组合多个子配置）--- #
     @property
     def DATABASE_URL(self) -> str:
         """构建 MySQL 异步连接 URL。"""

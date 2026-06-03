@@ -1,9 +1,15 @@
+import sys
 import time
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pathlib import Path
+
+# 确保从仓库根目录或 `llm_backend/` 目录启动时，都能导入同仓库的兄弟包。
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from app.core.logger import setup_logging, get_logger
 from app.api import api_router

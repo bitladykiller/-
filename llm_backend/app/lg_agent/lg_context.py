@@ -219,31 +219,41 @@ async def enrich_question(
     用于执行节点（execute_*）在检索前增强问题，
     使检索结果更符合用户的历史上下文和偏好。
 
+    v3.17 优化：首次获取记忆后缓存到 state.memory_state，
+    避免同一条请求中多次调用 middleware.before_agent() 导致的
+    重复 Redis STM + MySQL Profile + Milvus LTM 开销。
+
     Args:
-        state: 当前 Agent 状态。
+        state: 当前 Agent 状态（会修改其 memory_state 字段做缓存）。
         config: LangGraph RunnableConfig（含 user_id/session_id）。
         question: 原始用户问题。
 
     Returns:
         注入记忆上下文后的问题。注入失败时返回原问题。
     """
-    middleware = await _get_memory_middleware()
-    if middleware is None:
-        return question
-    try:
-        c = config.get("configurable", {})
-        mem = await middleware.before_agent(
-            tenant_id=c.get("tenant_id", "default"),
-            user_id=c.get("user_id", "anonymous"),
-            session_id=c.get("thread_id", "default"),
-            user_input=question,
-        )
-        ctx = build_memory_context(
-            mem.session_summary,
-            mem.recent_messages,
-            mem.long_term_memories,
-            mem.user_profile,
-        )
-        return f"{ctx}\n\n用户当前问题：{question}" if ctx else question
-    except Exception:
-        return question
+    # 复用已缓存的记忆状态，避免重复查询 Redis/MySQL/Milvus
+    if state.memory_state is not None:
+        mem = state.memory_state
+    else:
+        middleware = await _get_memory_middleware()
+        if middleware is None:
+            return question
+        try:
+            c = config.get("configurable", {})
+            mem = await middleware.before_agent(
+                tenant_id=c.get("tenant_id", "default"),
+                user_id=c.get("user_id", "anonymous"),
+                session_id=c.get("thread_id", "default"),
+                user_input=question,
+            )
+            state.memory_state = mem  # 缓存供后续节点复用
+        except Exception:
+            return question
+
+    ctx = build_memory_context(
+        mem.session_summary,
+        mem.recent_messages,
+        mem.long_term_memories,
+        mem.user_profile,
+    )
+    return f"{ctx}\n\n用户当前问题：{question}" if ctx else question

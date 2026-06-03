@@ -92,14 +92,35 @@ def _react_judge():
 # ================================================================== #
 
 class _LazyModel:
-    """延迟代理：访问 .xxx() 时才真正创建模型。"""
+    """延迟代理：访问属性/方法时才真正创建模型。
+
+    v3.17 修复：补充 __bool__ / __await__ / __str__ / __repr__，
+    防止 `if model:` 恒为 True 误导、`await model` 触发 AttributeError。
+    """
     def __init__(self, name: str, temperature: float):
         self._name = name
         self._temperature = temperature
 
+    def _get(self):
+        """返回底层模型实例。"""
+        return _get_model(self._name, self._temperature)
+
     def __getattr__(self, item):
-        model = _get_model(self._name, self._temperature)
-        return getattr(model, item)
+        return getattr(self._get(), item)
+
+    def __bool__(self) -> bool:
+        """总是返回 True — 懒加载代理总是"可用"。"""
+        return True
+
+    def __await__(self):
+        """支持 `await lazy_model` — 代理到底层模型的 __await__。"""
+        return self._get().__await__()
+
+    def __str__(self) -> str:
+        return f"_LazyModel(name={self._name}, t={self._temperature})"
+
+    def __repr__(self) -> str:
+        return self.__str__()
 
 
 agent_model = _LazyModel("agent", 0.7)
@@ -109,3 +130,31 @@ guardrails_model = _LazyModel("guardrails", 0.1)
 cypher_model = _LazyModel("cypher", 0.2)
 react_model = _LazyModel("react", 0.4)
 react_judge_model = _LazyModel("react_judge", 0.1)
+
+
+# ================================================================== #
+# 节点输出模型 — 结构化输出定义
+# ================================================================== #
+#
+# v3.17: 从 lg_nodes.py 迁移至此。节点函数和模型类职责不同，
+# 模型类放在 lg_models.py 更符合模块边界。
+# ================================================================== #
+
+from pydantic import BaseModel, Field
+from typing import Literal
+
+
+class RetrievalPlanOutput(BaseModel):
+    """检索计划路由器的输出结构。"""
+    logic: str = Field(description="选择该计划的理由")
+    plan: Literal["GRAPH_ONLY", "RAG_ONLY", "PARALLEL", "GRAPH_THEN_RAG", "AGENT_REACT"] = Field(
+        description="最合适的检索策略"
+    )
+
+
+class ReactAnswerCheckOutput(BaseModel):
+    """ReAct 答案校验器的输出结构。"""
+    decision: Literal["sufficient", "retry", "handoff"] = Field(
+        description="当前答案是否足够，或需要继续检索/转人工"
+    )
+    reason: str = Field(description="做出该判断的原因，供下一轮 ReAct 参考")

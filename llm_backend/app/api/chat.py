@@ -54,15 +54,3 @@ async def chat_endpoint(request: ChatMessage):
     except Exception as e:
         logger.error(f"chat endpoint 异常 | user_id={request.user_id} | {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@router.post("/reason")
-async def reason_endpoint(request: ChatMessage):
-    """深度推理 — 同样走 LangGraph，但使用 REASON_SERVICE。"""
-    return await chat_endpoint(request)
-
-
-@router.post("/search")
-async def search_endpoint(request: ChatMessage):
-    """联网搜索 — 走 LangGraph 图。"""
-    return await chat_endpoint(request)
