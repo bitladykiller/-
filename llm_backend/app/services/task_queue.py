@@ -57,6 +57,8 @@ class TaskManager:
 
     def __init__(self, redis_client: aioredis.Redis) -> None:
         self._redis = redis_client
+        # 保存 task 引用，防止 "Task exception was never retrieved" 警告
+        self._pending_tasks: set[asyncio.Task] = set()
 
     def _task_key(self, task_id: str) -> str:
         """生成 Redis key。"""
@@ -104,8 +106,10 @@ class TaskManager:
         # 初始状态：pending
         await self._set_status(task_id, TaskStatus.PENDING)
 
-        # 启动后台任务
-        asyncio.create_task(self._run_task(task_id, coro_func, *args, **kwargs))
+        # 启动后台任务，保存引用防止异常丢失
+        task = asyncio.create_task(self._run_task(task_id, coro_func, *args, **kwargs))
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
 
         logger.info("任务已提交 | task_id=%s | func=%s", task_id, coro_func.__name__)
         return task_id
@@ -145,10 +149,11 @@ class TaskManager:
 
 
 # ================================================================== #
-# 模块级单例
+# 模块级单例 — 加 asyncio.Lock 防并发创建
 # ================================================================== #
 
 _task_manager_instance: Optional[TaskManager] = None
+_task_manager_lock: asyncio.Lock = asyncio.Lock()
 
 
 async def get_task_manager() -> TaskManager:
@@ -156,8 +161,21 @@ async def get_task_manager() -> TaskManager:
     global _task_manager_instance
     if _task_manager_instance is not None:
         return _task_manager_instance
+    async with _task_manager_lock:
+        if _task_manager_instance is not None:
+            return _task_manager_instance
+        from app.core.config import settings
+        redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        _task_manager_instance = TaskManager(redis_client)
+        return _task_manager_instance
 
-    from app.core.config import settings
-    redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
-    _task_manager_instance = TaskManager(redis_client)
-    return _task_manager_instance
+
+async def close_task_manager() -> None:
+    """关闭 TaskManager 的 Redis 连接。在应用 shutdown 时调用。"""
+    global _task_manager_instance
+    if _task_manager_instance is not None:
+        try:
+            await _task_manager_instance._redis.close()
+        except Exception:
+            pass
+        _task_manager_instance = None

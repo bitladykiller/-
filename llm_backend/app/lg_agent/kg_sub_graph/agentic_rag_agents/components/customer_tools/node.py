@@ -2,10 +2,24 @@
 RAG 文档检索节点（替代原 Microsoft GraphRAG customer_tools）。
 
 使用 rag_doc_parser + Milvus 向量检索 + BM25 + RRF + Reranker。
+v3.15-hotfix: HybridSearcher 改为单例缓存，避免每次调用创建新 MilvusClient。
 """
 
 from typing import Any, Dict
 
+# 模块级缓存：HybridSearcher 单例，避免每次 RAG 搜索新建 MilvusClient 连接
+_cached_searcher = None
+
+
+def _get_searcher():
+    """懒初始化 HybridSearcher 单例。"""
+    global _cached_searcher
+    if _cached_searcher is None:
+        from rag_doc_parser.retrieval.hybrid_search import HybridSearcher
+        from rag_doc_parser.retrieval.config import RetrievalConfig
+        config = RetrievalConfig()
+        _cached_searcher = HybridSearcher(config)
+    return _cached_searcher
 
 
 def create_rag_search_node():
@@ -23,11 +37,7 @@ def create_rag_search_node():
         errors = []
 
         try:
-            from rag_doc_parser.retrieval.hybrid_search import HybridSearcher
-            from rag_doc_parser.retrieval.config import RetrievalConfig
-
-            config = RetrievalConfig()
-            searcher = HybridSearcher(config)
+            searcher = _get_searcher()
             results = await searcher.search(query)
 
             if results:

@@ -121,12 +121,17 @@ def _safe_records(result: dict) -> list:
 
 # ================================================================== #
 # 模块级单例 — 避免每个执行节点重复创建
+# v3.15-hotfix: 加 asyncio.Lock 防止并发创建导致连接泄漏
 # ================================================================== #
 
 _retriever = None
 _t2c_cache: dict = {}  # keyed by graph id, since graph connects once
+_t2c_lock: asyncio.Lock = asyncio.Lock()
 _summarize_node = None
 _rag_node = None
+_rag_lock: asyncio.Lock = asyncio.Lock()
+_react_subgraph = None
+_react_lock: asyncio.Lock = asyncio.Lock()
 
 
 def _get_retriever():
@@ -137,17 +142,19 @@ def _get_retriever():
     return _retriever
 
 
-def _get_t2c(neo4j_graph):
-    """获取或创建 Text2Cypher Agent（按 Neo4j 连接实例缓存）。"""
+async def _get_t2c(neo4j_graph):
+    """获取或创建 Text2Cypher Agent（按 Neo4j 连接实例缓存，加锁防并发）。"""
     gid = id(neo4j_graph)
     if gid not in _t2c_cache:
-        _t2c_cache[gid] = create_text2cypher_agent(
-            llm=cypher_model,
-            graph=neo4j_graph,
-            cypher_example_retriever=_get_retriever(),
-            predefined_cypher_dict=predefined_cypher_dict,
-            query_descriptions=QUERY_DESCRIPTIONS,
-        )
+        async with _t2c_lock:
+            if gid not in _t2c_cache:
+                _t2c_cache[gid] = create_text2cypher_agent(
+                    llm=cypher_model,
+                    graph=neo4j_graph,
+                    cypher_example_retriever=_get_retriever(),
+                    predefined_cypher_dict=predefined_cypher_dict,
+                    query_descriptions=QUERY_DESCRIPTIONS,
+                )
     return _t2c_cache[gid]
 
 
@@ -208,7 +215,7 @@ async def respond_to_general_query(
     system_prompt = GENERAL_QUERY_SYSTEM_PROMPT.format(logic=state.router["logic"])
 
     # 注入记忆上下文
-    middleware = _get_memory_middleware()
+    middleware = await _get_memory_middleware()
     if middleware is not None:
         try:
             configurable = config.get("configurable", {})
@@ -343,7 +350,7 @@ async def execute_graph_only(state: AgentState, *, config: RunnableConfig) -> di
         return _no_neo4j()
 
     q = await enrich_question(state, config, _question(state))
-    result = await _get_t2c(neo4j_graph).ainvoke({"task": q})
+    result = await (await _get_t2c(neo4j_graph)).ainvoke({"task": q})
     summary = await _summarize(q, _safe_records(result), "未查询到相关信息，请确认后重新咨询～")
     return {"messages": [AIMessage(content="正在查询..."), AIMessage(content=summary)]}
 
@@ -384,7 +391,7 @@ async def execute_then(state: AgentState, *, config: RunnableConfig) -> dict:
         return _no_neo4j()
 
     q = await enrich_question(state, config, _question(state))
-    neo_result = await _get_t2c(neo4j_graph).ainvoke({"task": q})
+    neo_result = await (await _get_t2c(neo4j_graph)).ainvoke({"task": q})
     neo_records = _safe_records(neo_result)
 
     # 用图查询结果增强 RAG 检索
@@ -398,10 +405,10 @@ async def execute_then(state: AgentState, *, config: RunnableConfig) -> dict:
 # ReAct Agent — 兜底策略，最多 5 轮完整尝试
 # ================================================================== #
 
-def _build_react_subgraph() -> CompiledStateGraph:
+async def _build_react_subgraph() -> CompiledStateGraph:
     """构建 ReAct 子图：两个工具（neo4j_query + rag_search）。"""
     neo4j_graph = get_neo4j_graph()
-    t2c_agent = _get_t2c(neo4j_graph)
+    t2c_agent = await _get_t2c(neo4j_graph)
 
     @tool
     async def neo4j_query(task: str) -> str:
@@ -425,14 +432,13 @@ def _build_react_subgraph() -> CompiledStateGraph:
     )
 
 
-_react_subgraph = None
-
-
-def _get_react_subgraph() -> CompiledStateGraph:
-    """获取 ReAct 子图单例。"""
+async def _get_react_subgraph() -> CompiledStateGraph:
+    """获取 ReAct 子图单例（加锁防并发创建）。"""
     global _react_subgraph
     if _react_subgraph is None:
-        _react_subgraph = _build_react_subgraph()
+        async with _react_lock:
+            if _react_subgraph is None:
+                _react_subgraph = await _build_react_subgraph()
     return _react_subgraph
 
 
@@ -442,7 +448,7 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
         return _no_neo4j()
 
     q = await enrich_question(state, config, _question(state))
-    sg = _get_react_subgraph()
+    sg = await _get_react_subgraph()
     subgraph_config = dict(config) if config else {}
     # 单次 ReAct 子图的最大 agent/tools 步数
     subgraph_config["recursion_limit"] = 11
@@ -519,7 +525,7 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
 
 async def after_response(state: AgentState, *, config: RunnableConfig) -> dict:
     """将本轮对话写入 Redis STM，并触发 LTM 抽取。"""
-    middleware = _get_memory_middleware()
+    middleware = await _get_memory_middleware()
     if middleware is None:
         return {}
     try:

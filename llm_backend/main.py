@@ -38,20 +38,18 @@ async def startup():
     """预热连接 — 避免首请求承担初始化延迟。"""
     logger.info("预热 MemoryMiddleware...")
     from app.lg_agent.lg_context import _get_memory_middleware
-    _get_memory_middleware()
+    await _get_memory_middleware()
     logger.info("启动完成")
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    """释放连接。"""
+    """释放所有连接：MemoryMiddleware + TaskManager。"""
     logger.info("关闭连接...")
-    from app.lg_agent.lg_context import _memory_middleware_instance
-    if _memory_middleware_instance:
-        try:
-            await _memory_middleware_instance.redis_stm.redis.close()
-        except Exception:
-            pass
+    from app.lg_agent.lg_context import close_memory_middleware
+    from app.services.task_queue import close_task_manager
+    await close_memory_middleware()
+    await close_task_manager()
     logger.info("关闭完成")
 
 

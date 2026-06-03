@@ -26,21 +26,27 @@ logger = logging.getLogger(__name__)
 
 
 # ================================================================== #
-# MemoryMiddleware 单例 — 懒初始化 + 健康检查
+# MemoryMiddleware 单例 — 懒初始化 + asyncio.Lock 防并发
 # ================================================================== #
 
 _memory_middleware_instance: Optional[MemoryMiddleware] = None
+_memory_middleware_lock: asyncio.Lock = asyncio.Lock()
 
 
-def _get_memory_middleware() -> Optional[MemoryMiddleware]:
+async def _get_memory_middleware() -> Optional[MemoryMiddleware]:
     """获取 MemoryMiddleware 单例。
 
     首次调用时创建：Redis STM + Milvus LTM + MemoryExtractor。
     创建失败时返回 None（降级为无记忆模式）。
+    使用 asyncio.Lock 防止并发请求重复创建实例。
     """
     global _memory_middleware_instance
     if _memory_middleware_instance is not None:
         return _memory_middleware_instance
+    async with _memory_middleware_lock:
+        # double-check：锁内再检查一次，避免重复创建
+        if _memory_middleware_instance is not None:
+            return _memory_middleware_instance
     try:
         import redis.asyncio as redis
         from pymilvus import MilvusClient
@@ -88,12 +94,33 @@ def _get_memory_middleware() -> Optional[MemoryMiddleware]:
             milvus_ltm=milvus_ltm,
             memory_extractor=memory_extractor,
         )
-        # 异步健康检查，不阻塞首次调用
-        asyncio.ensure_future(_memory_middleware_instance.health_check())
+        # 异步健康检查，不阻塞首次调用，保存引用防止异常丢失
+        _health_check_task = asyncio.create_task(_memory_middleware_instance.health_check())
+        _health_check_task.add_done_callback(
+            lambda t: t.exception() if not t.cancelled() else None
+        )
         return _memory_middleware_instance
     except Exception:
         logger.error("MemoryMiddleware 初始化失败，将以无记忆模式运行", exc_info=True)
         return None
+
+
+async def close_memory_middleware() -> None:
+    """关闭 MemoryMiddleware 及其底层连接。在应用 shutdown 时调用。"""
+    global _memory_middleware_instance
+    if _memory_middleware_instance is None:
+        return
+    try:
+        await _memory_middleware_instance.redis_stm.redis.close()
+    except Exception:
+        pass
+    try:
+        milvus_client = getattr(_memory_middleware_instance.milvus_ltm, 'milvus_client', None)
+        if milvus_client:
+            milvus_client.close()
+    except Exception:
+        pass
+    _memory_middleware_instance = None
 
 
 # ================================================================== #
@@ -182,7 +209,7 @@ async def enrich_question(
     Returns:
         注入记忆上下文后的问题。注入失败时返回原问题。
     """
-    middleware = _get_memory_middleware()
+    middleware = await _get_memory_middleware()
     if middleware is None:
         return question
     try:
