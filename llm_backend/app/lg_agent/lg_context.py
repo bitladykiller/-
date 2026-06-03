@@ -124,8 +124,23 @@ async def close_memory_middleware() -> None:
 
 
 # ================================================================== #
-# 记忆上下文构建
+# 记忆优先级模型
 # ================================================================== #
+#
+# 设计原则（WHY）：
+# 三层记忆可能包含相互矛盾的信息。例如用户画像说「偏好小米」，
+# 但最近消息里用户说「这次想试试华为」——此时应以最近消息为准。
+#
+# 优先级从高到低：
+#   P0 — 最近消息（最新意图，权威性最高）
+#   P1 — 用户画像（结构化持久偏好，比语义记忆更可靠）
+#   P2 — 会话摘要（压缩了最近 10+ 轮对话，补充上下文）
+#   P3 — 长期记忆（历史跨会话语义记忆，时效性最弱）
+#
+# 处理冲突的规则交给 LLM，通过分级标记「优先级: P0」让 LLM 知道
+# 当信息矛盾时应该更信任优先级高的来源。
+# ================================================================== #
+
 
 def build_memory_context(
     session_summary: str,
@@ -133,13 +148,13 @@ def build_memory_context(
     long_term_memories: list,
     user_profile: Optional[dict] = None,
 ) -> str:
-    """组装完整的记忆上下文字符串，用于注入 system prompt。
+    """组装带优先级的记忆上下文字符串，用于注入 system prompt。
 
-    按优先级拼接：
-    1. 用户画像（品牌偏好/预算/品类/标签/事实）
-    2. 最近对话记录
-    3. 会话摘要（LLM 生成的压缩摘要）
-    4. 长期记忆（Milvus LTM 检索的相关记忆）
+    记忆分层（按优先级降序）：
+    P0: 最近对话记录 — 最新意图，权威性最高。和用户当前问题最相关，当与其他记忆冲突时以此为准。
+    P1: 用户画像 — MySQL 中的结构化持久偏好。已从多次对话中提炼，比单条语义记忆可靠。
+    P2: 会话摘要 — LLM 压缩的旧对话摘要。覆盖时间范围比最近消息广，但信息密度低。
+    P3: 长期记忆 — Milvus 检出的历史语义记忆。时间跨度最大，最可能过时，冲突时优先级最低。
 
     Args:
         session_summary: Redis STM 中的会话摘要。
@@ -148,11 +163,21 @@ def build_memory_context(
         user_profile: MySQL 用户画像（可选）。
 
     Returns:
-        拼接后的上下文字符串。无内容时返回空字符串。
+        拼接后的上下文字符串。格式带有明确的优先级标记，
+        供 LLM 在信息冲突时选择更权威的来源。无内容时返回空字符串。
     """
     parts = []
+    instructions = "【记忆说明】当以下信息来源存在矛盾时，优先信任 P0 > P1 > P2 > P3。\n"
 
-    # --- 用户画像 --- #
+    # --- P0: 最近对话 — 最高优先级 --- #
+    if recent_messages:
+        messages_text = ""
+        for msg in recent_messages:
+            role = "用户" if msg.role == "user" else "助手"
+            messages_text += f"[{role}]: {msg.content}\n"
+        parts.append("[P0 — 最近对话（权威性最高，冲突时以此为准）]\n" + messages_text)
+
+    # --- P1: 用户画像 — 结构化持久偏好 --- #
     if user_profile and isinstance(user_profile, dict):
         profile_lines = []
         if user_profile.get("preferred_brand"):
@@ -166,29 +191,21 @@ def build_memory_context(
         for fact in (user_profile.get("facts") or []):
             profile_lines.append(f"{fact.get('key', '')}: {fact.get('value', '')}")
         if profile_lines:
-            parts.append("【用户画像】\n" + "\n".join(profile_lines))
+            parts.append("[P1 — 用户画像（多次对话提炼，冲突时次于 P0）]\n" + "\n".join(profile_lines))
 
-    # --- 最近对话记录 --- #
-    if recent_messages:
-        messages_text = ""
-        for msg in recent_messages:
-            role = "用户" if msg.role == "user" else "助手"
-            messages_text += f"[{role}]: {msg.content}\n"
-        parts.append(f"【最近对话记录】\n{messages_text}")
-
-    # --- 会话摘要 --- #
+    # --- P2: 会话摘要 — 压缩旧对话 --- #
     summary_text = build_summary_injection_prompt(session_summary)
     if summary_text:
-        parts.append(summary_text)
+        parts.append("[P2 — 会话摘要（压缩的旧对话，冲突时次于 P1）]\n" + summary_text)
 
-    # --- 长期记忆 --- #
+    # --- P3: 长期记忆 — 历史跨会话语义记忆 --- #
     ltm_text = build_memory_injection_prompt(long_term_memories)
     if ltm_text:
-        parts.append(ltm_text)
+        parts.append("[P3 — 长期记忆（历史跨会话，冲突时优先级最低）]\n" + ltm_text)
 
     if not parts:
         return ""
-    return "\n\n" + "\n\n".join(parts)
+    return instructions + "\n\n" + "\n\n".join(parts)
 
 
 async def enrich_question(

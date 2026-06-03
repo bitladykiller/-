@@ -1,15 +1,14 @@
 """
 LangGraph Agent 节点函数。
 
-v3.15: 从 lg_builder.py 拆分。包含所有图节点的实现：
-- analyze_and_route_query: 顶层路由（general / rag_doc-query）
-- respond_to_general_query: 通用回复（闲聊/追问/图片上下文）
-- guardrails_node: 业务范围 + 安全检查守卫
-- retrieval_plan_route: 5 路检索计划路由
-- execute_graph_only / execute_rag_only / execute_parallel / execute_then / execute_react: 5 个执行节点
-- after_response: 响应后记忆写入
+v3.15: 从 lg_builder.py 拆分。
+v3.16: 引入 Retriever 抽象接口，Agent 节点不再直接依赖 rag_doc_parser 或 Neo4j。
 
-图组装（StateGraph compile）在 lg_builder.py 中完成。
+架构说明：
+- 所有检索操作通过 Retriever 接口进行（依赖倒置原则）
+- RetrieverRegistry 集中管理所有检索器实例（注册表模式）
+- 执行节点通过 registry["kg"] / registry["rag"] 获取检索器
+- ReAct 子图内部通过闭包捕获 t2c_agent/rag_node（性能优化，避免每次工具调用都查注册表）
 """
 from __future__ import annotations
 
@@ -27,6 +26,11 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from app.lg_agent.lg_states import AgentState, InputState, Router, RetrievalPlan
+from app.lg_agent.lg_retrievers import (
+    RetrieverRegistry,
+    MilvusDocRetriever,
+    KnowledgeGraphRetriever,
+)
 from app.lg_agent.lg_prompts import (
     ROUTER_SYSTEM_PROMPT,
     GENERAL_QUERY_SYSTEM_PROMPT,
@@ -55,9 +59,6 @@ from app.lg_agent.kg_sub_graph.agentic_rag_agents.retrievers.cypher_examples.nor
 )
 from app.lg_agent.kg_sub_graph.agentic_rag_agents.workflows.single_agent import (
     create_text2cypher_agent,
-)
-from app.lg_agent.kg_sub_graph.agentic_rag_agents.components.customer_tools import (
-    create_rag_search_node,
 )
 from app.lg_agent.kg_sub_graph.agentic_rag_agents.components.summarize import (
     create_summarization_node,
@@ -120,65 +121,68 @@ def _safe_records(result: dict) -> list:
 
 
 # ================================================================== #
-# 模块级单例 — 避免每个执行节点重复创建
-# v3.15-hotfix: 加 asyncio.Lock 防止并发创建导致连接泄漏
+# 检索器注册表 — 依赖倒置，Agent 不直接依赖具体检索实现
+# ================================================================== #
+#
+# v3.16: 引入 Retriever 抽象，取代原来的 _get_t2c / _get_rag 直接调用。
+# Agent 只通过 registry["kg"] / registry["rag"] 使用检索器，
+# 不知道底层是 Neo4j、Milvus、Elasticsearch 还是别的什么。
+#
+# 保留的内部单例（供 ReAct 子图内部使用，性能优化）：
+#   _t2c_agent — Text2Cypher compiled graph
+#   _summarize_node — 摘要生成节点
 # ================================================================== #
 
+_registry: RetrieverRegistry = RetrieverRegistry()
+_registry_lock: asyncio.Lock = asyncio.Lock()
 _retriever = None
-_t2c_cache: dict = {}  # keyed by graph id, since graph connects once
-_t2c_lock: asyncio.Lock = asyncio.Lock()
+_t2c_agent = None  # 供 ReAct 子图内部直接使用（性能优化）
 _summarize_node = None
-_rag_node = None
-_rag_lock: asyncio.Lock = asyncio.Lock()
-_react_subgraph = None
-_react_lock: asyncio.Lock = asyncio.Lock()
 
 
-def _get_retriever():
-    """获取 Cypher 示例检索器单例。"""
-    global _retriever
-    if _retriever is None:
-        _retriever = NorthwindCypherRetriever()
-    return _retriever
+async def _ensure_registry():
+    """懒初始化检索器注册表。首次调用时创建所有 Retriever 实例。"""
+    if "kg" in _registry and "rag" in _registry:
+        return
 
+    async with _registry_lock:
+        if "kg" in _registry and "rag" in _registry:
+            return
 
-async def _get_t2c(neo4j_graph):
-    """获取或创建 Text2Cypher Agent（按 Neo4j 连接实例缓存，加锁防并发）。"""
-    gid = id(neo4j_graph)
-    if gid not in _t2c_cache:
-        async with _t2c_lock:
-            if gid not in _t2c_cache:
-                _t2c_cache[gid] = create_text2cypher_agent(
+        neo4j_graph = get_neo4j_graph()
+        if neo4j_graph is not None:
+            # 初始化 Text2Cypher Agent
+            global _t2c_agent
+            if _t2c_agent is None:
+                global _retriever
+                if _retriever is None:
+                    _retriever = NorthwindCypherRetriever()
+                _t2c_agent = create_text2cypher_agent(
                     llm=cypher_model,
                     graph=neo4j_graph,
-                    cypher_example_retriever=_get_retriever(),
+                    cypher_example_retriever=_retriever,
                     predefined_cypher_dict=predefined_cypher_dict,
                     query_descriptions=QUERY_DESCRIPTIONS,
                 )
-    return _t2c_cache[gid]
+            _registry.register("kg", KnowledgeGraphRetriever(_t2c_agent))
+
+        _registry.register("rag", MilvusDocRetriever())
 
 
-def _get_summarize():
-    """获取摘要节点单例。"""
-    global _summarize_node
-    if _summarize_node is None:
-        _summarize_node = create_summarization_node(llm=cypher_model)
-    return _summarize_node
-
-
-def _get_rag():
-    """获取 RAG 检索节点单例。"""
-    global _rag_node
-    if _rag_node is None:
-        _rag_node = create_rag_search_node()
-    return _rag_node
+async def _reg(name: str) -> "KnowledgeGraphRetriever | MilvusDocRetriever | None":
+    """获取检索器。确保 registry 已初始化。"""
+    await _ensure_registry()
+    return _registry.get(name)
 
 
 async def _summarize(question: str, records: list, fallback: str = "未查询到相关信息～") -> str:
     """对查询结果生成摘要。records 为空时返回 fallback。"""
     if not records:
         return fallback
-    result = await _get_summarize().ainvoke({
+    global _summarize_node
+    if _summarize_node is None:
+        _summarize_node = create_summarization_node(llm=cypher_model)
+    result = await _summarize_node.ainvoke({
         "question": question,
         "cyphers": [{"records": records}],
     })
@@ -282,8 +286,8 @@ async def guardrails_node(
 
 
 def guardrails_edge(state: AgentState) -> Literal["retrieval_plan_route", "after_response"]:
-    """守卫后的路由：continue -> 检索计划，end -> 直接回复。"""
-    if hasattr(state, "next_action") and state.get("next_action") == "end":  # type: ignore[arg-type]
+    """守卫后的路由：continue → 检索计划，end → 直接回复。"""
+    if state.next_action == "end":
         return "after_response"
     return "retrieval_plan_route"
 
@@ -344,40 +348,42 @@ class ReactAnswerCheckOutput(BaseModel):
 # ================================================================== #
 
 async def execute_graph_only(state: AgentState, *, config: RunnableConfig) -> dict:
-    """仅查 Neo4j 图数据库。"""
-    neo4j_graph = get_neo4j_graph()
-    if neo4j_graph is None:
+    """仅查 Neo4j 图数据库（通过 Retriever 接口）。"""
+    kg = await _reg("kg")
+    if kg is None:
         return _no_neo4j()
 
     q = await enrich_question(state, config, _question(state))
-    result = await (await _get_t2c(neo4j_graph)).ainvoke({"task": q})
+    result = await kg.search(q)
     summary = await _summarize(q, _safe_records(result), "未查询到相关信息，请确认后重新咨询～")
     return {"messages": [AIMessage(content="正在查询..."), AIMessage(content=summary)]}
 
 
 async def execute_rag_only(state: AgentState, *, config: RunnableConfig) -> dict:
-    """仅查 RAG 文档知识库。"""
+    """仅查 RAG 文档知识库（通过 Retriever 接口）。"""
+    rag = await _reg("rag")
+    if rag is None:
+        return {"messages": [AIMessage(content="文档检索服务暂不可用。")]}
+
     q = await enrich_question(state, config, _question(state))
-    result = await _get_rag()({"task": q})
+    result = await rag.search(q)
     summary = await _summarize(q, _safe_records(result), "未在文档中找到相关信息～")
     return {"messages": [AIMessage(content="正在检索文档..."), AIMessage(content=summary)]}
 
 
 async def execute_parallel(state: AgentState, *, config: RunnableConfig) -> dict:
-    """并行查 Neo4j + RAG，合并结果后生成摘要。"""
-    neo4j_graph = get_neo4j_graph()
-    if neo4j_graph is None:
+    """并行查 Neo4j + RAG（通过 Retriever 接口），合并结果后生成摘要。"""
+    kg = await _reg("kg")
+    if kg is None:
         return _no_neo4j()
+    rag = await _reg("rag")
 
     q = await enrich_question(state, config, _question(state))
-    # 真正的并行执行
-    neo4j_task = asyncio.create_task(
-        _get_t2c(neo4j_graph).ainvoke({"task": q + "（仅查询结构化数据：价格、库存、订单等）"})
-    )
-    rag_task = asyncio.create_task(
-        _get_rag()({"task": q + "（仅查询文档知识：售后政策、保修条款等）"})
-    )
-    neo_result, rag_result = await asyncio.gather(neo4j_task, rag_task)
+    neo4j_task = asyncio.create_task(kg.search(q + "（仅查询结构化数据：价格、库存、订单等）"))
+    rag_task = asyncio.create_task(rag.search(q + "（仅查询文档知识：售后政策、保修条款等）")) if rag else None
+
+    neo_result = await neo4j_task
+    rag_result = await rag_task if rag_task else {"cyphers": [{"records": {}}]}
 
     all_records = _safe_records(neo_result) + _safe_records(rag_result)
     summary = await _summarize(q, all_records)
@@ -385,17 +391,18 @@ async def execute_parallel(state: AgentState, *, config: RunnableConfig) -> dict
 
 
 async def execute_then(state: AgentState, *, config: RunnableConfig) -> dict:
-    """先查 Neo4j 确定实体，再用结果查 RAG。"""
-    neo4j_graph = get_neo4j_graph()
-    if neo4j_graph is None:
+    """先查 Neo4j 确定实体，再用结果查 RAG（通过 Retriever 接口）。"""
+    kg = await _reg("kg")
+    if kg is None:
         return _no_neo4j()
+    rag = await _reg("rag")
 
     q = await enrich_question(state, config, _question(state))
-    neo_result = await (await _get_t2c(neo4j_graph)).ainvoke({"task": q})
+    neo_result = await kg.search(q)
     neo_records = _safe_records(neo_result)
 
     # 用图查询结果增强 RAG 检索
-    rag_result = await _get_rag()({"task": f"已知信息：{neo_records}\n\n查询：{q}"})
+    rag_result = await rag.search(f"已知信息：{neo_records}\n\n查询：{q}") if rag else {"cyphers": [{"records": {}}]}
     all_records = list(neo_records) + _safe_records(rag_result)
     summary = await _summarize(q, all_records)
     return {"messages": [AIMessage(content="正在先查数据库，再查文档..."), AIMessage(content=summary)]}
@@ -406,20 +413,30 @@ async def execute_then(state: AgentState, *, config: RunnableConfig) -> dict:
 # ================================================================== #
 
 async def _build_react_subgraph() -> CompiledStateGraph:
-    """构建 ReAct 子图：两个工具（neo4j_query + rag_search）。"""
-    neo4j_graph = get_neo4j_graph()
-    t2c_agent = await _get_t2c(neo4j_graph)
+    """构建 ReAct 子图：两个工具（neo4j_query + rag_search）。
 
+    通过 Retriever 接口而非直接调用底层实现（依赖倒置）。
+    """
+    # 确保 registry 已初始化
+    await _ensure_registry()
+    kg = _registry.get("kg")
+
+    # ReAct 子图内部使用闭包捕获检索器（性能优化，避免每次 tool call 都查注册表）
     @tool
     async def neo4j_query(task: str) -> str:
         """查询 Neo4j 知识图谱，获取商品、订单、客户等结构化数据。"""
-        r = await t2c_agent.ainvoke({"task": task})
+        if kg is None:
+            return json.dumps({"error": "知识图谱服务不可用"}, ensure_ascii=False)
+        r = await kg.search(task)
         return json.dumps(_safe_records(r), ensure_ascii=False)
 
     @tool
     async def rag_search(query: str) -> str:
         """检索文档知识库，获取售后政策、保修条款等非结构化信息。"""
-        r = await _get_rag()({"task": query})
+        rag = _registry.get("rag")
+        if rag is None:
+            return json.dumps({"error": "文档检索服务不可用"}, ensure_ascii=False)
+        r = await rag.search(query)
         return json.dumps(_safe_records(r), ensure_ascii=False)
 
     tools = [neo4j_query, rag_search]
