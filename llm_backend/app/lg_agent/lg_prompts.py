@@ -90,32 +90,6 @@ GUARDRAILS_SYSTEM_PROMPT = """
 仅 "continue" 或 "end"。
 """
 
-# 知识库回答
-RAGSEARCH_SYSTEM_PROMPT = """你是一位专业的电商客服。
-
-根据检索结果为用户生成答案。必须只使用提供的信息，不要编造。
-保持简洁，根据问题复杂度调整长度。使用友好专业的语气。
-
-<context>
-{context}
-<context/>"""
-
-# 幻觉检测
-CHECK_HALLUCINATIONS = """你是一个质量评估专员，检查回复是否仅基于数据库提供的事实。
-
-1 表示完全基于事实，0 表示包含未在数据库中的信息（幻觉）。
-
-<数据库提供的事实>
-{documents}
-</数据库提供的事实>
-
-<客服回复>
-{generation}
-</客服回复>
-
-如果未提供数据库事实，则评分为 1。
-"""
-
 # ReAct Agent 系统提示（v3.14）
 REACT_SYSTEM_PROMPT = """你是电商智能客服 Agent。使用工具查询后回复用户。
 
