@@ -15,6 +15,7 @@ from ...components.text2cypher import (
 from ...components.text2cypher.state import CypherInputState, CypherState
 from ...components.predefined_cypher.utils import create_vector_query_matcher
 from ...retrievers.cypher_examples.base import BaseCypherExampleRetriever
+from .cypher_strategies import PredefinedTemplateStrategy
 
 
 def create_text2cypher_agent(
@@ -29,8 +30,11 @@ def create_text2cypher_agent(
 ) -> CompiledStateGraph:
     """Create a Text2Cypher agent with predefined template matching.
 
-    策略：先向量匹配预定义模板 → 命中直接执行（<100ms）
-                            → 未命中走 LLM 生成 + 5 层验证（~600ms，兜底）
+    架构（v3.16 策略模式）：
+    - PredefinedTemplateStrategy: 语义匹配预定义模板 → 直接执行（<100ms，快速路径）
+    - LLMGenerationStrategy: LLM 生成 + 5 层验证 → 执行（~600ms，兜底路径）
+
+    策略封装在 cypher_strategies.py 中，此处仅负责 LangGraph 图组装。
     """
     text2cypher_graph_builder = StateGraph(
         CypherState, input=CypherInputState, output=OverallState
@@ -39,25 +43,16 @@ def create_text2cypher_agent(
     execute_cypher = create_text2cypher_execution_node(graph=graph)
 
     if predefined_cypher_dict:
+        # 预定义模板策略 — 封装在 PredefinedTemplateStrategy 中
         matcher = create_vector_query_matcher(predefined_cypher_dict, query_descriptions or {})
+        template_strategy = PredefinedTemplateStrategy(
+            matcher=matcher, graph=graph, llm=llm, similarity_threshold=0.6,
+        )
 
         async def predefined_match(state: CypherState) -> dict:
             task = state.get("task", "")
             task_str = task[0] if isinstance(task, list) else task
-            matches = matcher.match_query(str(task_str), top_k=1)
-            if matches and matches[0]["similarity"] > 0.6:
-                cypher = matches[0]["cypher"]
-                try:
-                    params = matcher.extract_parameters(str(task_str), matches[0]["query_name"], llm=llm)
-                    records = graph.query(cypher, params={k: str(v) for k, v in params.items()})
-                except Exception:
-                    records = []
-                return {
-                    "statement": cypher, "records": records,
-                    "steps": ["predefined_match"],
-                    "next_action_cypher": "execute_cypher",
-                }
-            return {"task": task, "steps": ["predefined_match"], "next_action_cypher": "generate"}
+            return await template_strategy.generate(str(task_str))
 
         text2cypher_graph_builder.add_node("predefined_match", predefined_match)
         text2cypher_graph_builder.add_edge(START, "predefined_match")

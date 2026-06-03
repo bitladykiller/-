@@ -47,62 +47,63 @@ async def _get_memory_middleware() -> Optional[MemoryMiddleware]:
         # double-check：锁内再检查一次，避免重复创建
         if _memory_middleware_instance is not None:
             return _memory_middleware_instance
-    try:
-        import redis.asyncio as redis
-        from pymilvus import MilvusClient
+        # v3.16 修复：创建逻辑必须在锁内，否则 double-check 形同虚设
+        try:
+            import redis.asyncio as redis
+            from pymilvus import MilvusClient
 
-        redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
-        redis_stm = RedisShortTermMemory(redis_client)
+            redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+            redis_stm = RedisShortTermMemory(redis_client)
 
-        # 根据 EMBEDDING_TYPE 选择 embedding 模型
-        if settings.EMBEDDING_TYPE == "ollama":
-            from langchain_ollama import OllamaEmbeddings
-            embedding_model = OllamaEmbeddings(
-                model=settings.EMBEDDING_MODEL,
-                base_url=settings.OLLAMA_BASE_URL,
-            )
-        else:
-            from langchain_community.embeddings import HuggingFaceEmbeddings
-            embedding_model = HuggingFaceEmbeddings(model_name=settings.EMBEDDING_MODEL)
+            # 根据 EMBEDDING_TYPE 选择 embedding 模型
+            if settings.EMBEDDING_TYPE == "ollama":
+                from langchain_ollama import OllamaEmbeddings
+                embedding_model = OllamaEmbeddings(
+                    model=settings.EMBEDDING_MODEL,
+                    base_url=settings.OLLAMA_BASE_URL,
+                )
+            else:
+                from langchain_community.embeddings import HuggingFaceEmbeddings
+                embedding_model = HuggingFaceEmbeddings(model_name=settings.EMBEDDING_MODEL)
 
-        milvus_client = MilvusClient(uri=settings.MILVUS_URL)
-        milvus_ltm = SimpleLongTermMemory(
-            milvus_client=milvus_client,
-            embedding_model=embedding_model,
-            collection_name=settings.MILVUS_COLLECTION_NAME,
-        )
-
-        # 记忆抽取用独立的 LLM 实例（低温度保证抽取一致性）
-        if settings.AGENT_SERVICE == ServiceType.DEEPSEEK:
-            from langchain_deepseek import ChatDeepSeek
-            extractor_llm = ChatDeepSeek(
-                api_key=settings.DEEPSEEK_API_KEY,
-                model_name=settings.DEEPSEEK_MODEL,
-                temperature=0.3,
-            )
-        else:
-            from langchain_ollama import ChatOllama
-            extractor_llm = ChatOllama(
-                model=settings.OLLAMA_AGENT_MODEL,
-                base_url=settings.OLLAMA_BASE_URL,
-                temperature=0.3,
+            milvus_client = MilvusClient(uri=settings.MILVUS_URL)
+            milvus_ltm = SimpleLongTermMemory(
+                milvus_client=milvus_client,
+                embedding_model=embedding_model,
+                collection_name=settings.MILVUS_COLLECTION_NAME,
             )
 
-        memory_extractor = MemoryExtractor(llm_client=extractor_llm)
-        _memory_middleware_instance = MemoryMiddleware(
-            redis_stm=redis_stm,
-            milvus_ltm=milvus_ltm,
-            memory_extractor=memory_extractor,
-        )
-        # 异步健康检查，不阻塞首次调用，保存引用防止异常丢失
-        _health_check_task = asyncio.create_task(_memory_middleware_instance.health_check())
-        _health_check_task.add_done_callback(
-            lambda t: t.exception() if not t.cancelled() else None
-        )
-        return _memory_middleware_instance
-    except Exception:
-        logger.error("MemoryMiddleware 初始化失败，将以无记忆模式运行", exc_info=True)
-        return None
+            # 记忆抽取用独立的 LLM 实例（低温度保证抽取一致性）
+            if settings.AGENT_SERVICE == ServiceType.DEEPSEEK:
+                from langchain_deepseek import ChatDeepSeek
+                extractor_llm = ChatDeepSeek(
+                    api_key=settings.DEEPSEEK_API_KEY,
+                    model_name=settings.DEEPSEEK_MODEL,
+                    temperature=0.3,
+                )
+            else:
+                from langchain_ollama import ChatOllama
+                extractor_llm = ChatOllama(
+                    model=settings.OLLAMA_AGENT_MODEL,
+                    base_url=settings.OLLAMA_BASE_URL,
+                    temperature=0.3,
+                )
+
+            memory_extractor = MemoryExtractor(llm_client=extractor_llm)
+            _memory_middleware_instance = MemoryMiddleware(
+                redis_stm=redis_stm,
+                milvus_ltm=milvus_ltm,
+                memory_extractor=memory_extractor,
+            )
+            # 异步健康检查，不阻塞首次调用，保存引用防止异常丢失
+            _health_check_task = asyncio.create_task(_memory_middleware_instance.health_check())
+            _health_check_task.add_done_callback(
+                lambda t: t.exception() if not t.cancelled() else None
+            )
+            return _memory_middleware_instance
+        except Exception:
+            logger.error("MemoryMiddleware 初始化失败，将以无记忆模式运行", exc_info=True)
+            return None
 
 
 async def close_memory_middleware() -> None:
