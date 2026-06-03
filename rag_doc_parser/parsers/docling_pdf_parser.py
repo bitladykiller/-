@@ -314,27 +314,40 @@ class DoclingPDFParser(BaseDocumentParser):
         Returns:
             Markdown 格式的图片说明，无内容则返回 None。
         """
-        parts: List[str] = []
+        title: Optional[str] = None
+        description: Optional[str] = None
+        classification: Optional[str] = None
 
         # 提取 caption
         caption = getattr(item, "caption", None) or getattr(item, "text", None)
         if caption and str(caption).strip():
-            parts.append(f"**图片{f' {index}' if index else ''}标题：** {str(caption).strip()}")
+            title = str(caption).strip()
+        elif index:
+            title = f"图片 {index}"
 
         # 提取 description
-        description = getattr(item, "description", None)
-        if description and str(description).strip():
-            parts.append(f"**描述：** {str(description).strip()}")
+        raw_description = getattr(item, "description", None)
+        if raw_description and str(raw_description).strip():
+            description = str(raw_description).strip()
 
         # 提取 classification
-        classification = getattr(item, "classification", None)
-        if classification and str(classification).strip():
-            parts.append(f"**分类：** {str(classification).strip()}")
+        raw_classification = getattr(item, "classification", None)
+        if raw_classification and str(raw_classification).strip():
+            classification = str(raw_classification).strip()
 
-        if not parts:
+        if not title and not description and not classification:
             return None
 
-        return "  \n".join(parts)
+        parts: List[str] = [":::image_caption"]
+        if title:
+            parts.append(f"title: {title}")
+        if classification:
+            parts.append(f"classification: {classification}")
+        if description:
+            parts.append("")
+            parts.append(description)
+        parts.append(":::")
+        return "\n".join(parts)
 
     def _count_pages(self, doc) -> int:
         """统计文档页数。"""

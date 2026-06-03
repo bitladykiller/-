@@ -38,4 +38,3 @@ class AgentState(InputState):
     question: str = field(default_factory=str)
     answer: str = field(default_factory=str)
     hallucination: GradeHallucinations = field(default_factory=lambda: GradeHallucinations(binary_score="0"))
-    react_round: int = 0  # AgentReAct 迭代计数

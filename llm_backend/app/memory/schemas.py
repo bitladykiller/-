@@ -55,28 +55,16 @@ class SessionMeta(BaseModel):
 class SessionSummary(BaseModel):
     """
     压缩后的短期会话摘要。
+
+    不预设对话领域（不假设对话是"问题→方案"模式）。
+    LLM 自由生成摘要文本，本层只存内容和元信息。
     """
 
-    user_goal: str = Field(default="", description="用户当前主要诉求")
+    content: str = Field(default="", description="LLM 生成的压缩摘要，自由格式文本")
 
-    confirmed_facts: List[str] = Field(
-        default_factory=list,
-        description="已经确认的信息"
-    )
+    compressed_at: int = Field(default=0, description="压缩时间戳（秒）")
 
-    tried_solutions: List[str] = Field(
-        default_factory=list,
-        description="已经尝试过的方案"
-    )
-
-    rejected_solutions: List[str] = Field(
-        default_factory=list,
-        description="用户拒绝过的方案"
-    )
-
-    current_state: str = Field(default="", description="当前问题状态")
-
-    next_action: str = Field(default="", description="下一步建议动作")
+    compressed_round: int = Field(default=0, description="压缩时对应的对话轮次")
 
 
 class LongTermMemory(BaseModel):

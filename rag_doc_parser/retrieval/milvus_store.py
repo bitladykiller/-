@@ -8,11 +8,13 @@ Milvus 向量存储 — Collection 管理与向量检索。
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
-from pymilvus import MilvusClient, DataType
+from pymilvus import MilvusClient, DataType, Function, FunctionType
 
 from rag_doc_parser.retrieval.config import RetrievalConfig
+from shared_retrieval import MilvusHybridSearchCore
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +33,49 @@ class MilvusStore:
             embedding_model: Embedding 模型，需要有 embed_query(text) -> List[float] 方法。
         """
         self.config = config
-        self.embedding_model = embedding_model
+        self.embedding_model = self._resolve_embedding_model(embedding_model)
         self.client = MilvusClient(
             uri=f"http://{config.milvus_host}:{config.milvus_port}"
         )
         self._create_collection_if_not_exists()
+        self.retrieval_core = MilvusHybridSearchCore(
+            milvus_client=self.client,
+            embedding_model=self.embedding_model,
+            collection_name=self.config.milvus_collection_name,
+            dense_field="embedding",
+            sparse_field="sparse_vector",
+            dense_metric_type=self.config.milvus_metric_type,
+            dense_search_params={"nprobe": self.config.milvus_nlist},
+            hybrid_rrf_k=self.config.rrf_k,
+        )
+
+    def _resolve_embedding_model(self, embedding_model):
+        """Resolve the embedding model for document retrieval.
+
+        RAG retrieval is used from multiple entry points and many of them do not
+        explicitly inject an embedding model. Resolve a default model here so the
+        retrieval stack remains self-contained.
+        """
+        if embedding_model is not None:
+            return embedding_model
+
+        model_name = os.getenv("OLLAMA_EMBEDDING_MODEL") or os.getenv("EMBEDDING_MODEL") or "bge-m3"
+        base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
+        try:
+            from langchain_ollama import OllamaEmbeddings
+
+            logger.info("RAG retrieval using default Ollama embeddings: %s", model_name)
+            return OllamaEmbeddings(model=model_name, base_url=base_url)
+        except Exception:
+            try:
+                from langchain_community.embeddings import HuggingFaceEmbeddings
+
+                logger.info("RAG retrieval using default HuggingFace embeddings: %s", model_name)
+                return HuggingFaceEmbeddings(model_name=model_name)
+            except Exception as exc:
+                logger.error("Failed to resolve default embedding model for RAG retrieval: %s", exc, exc_info=True)
+                raise RuntimeError("embedding_model 未设置，且无法创建默认 embedding 模型") from exc
 
     # ------------------------------------------------------------------ #
     # Collection 管理
@@ -68,6 +108,14 @@ class MilvusStore:
         schema.add_field("section_path", DataType.VARCHAR, max_length=512)
         schema.add_field("raw_text", DataType.VARCHAR, max_length=8192)
         schema.add_field("embedding_text", DataType.VARCHAR, max_length=8192)
+        bm25_fn = Function(
+            name="bm25",
+            function_type=FunctionType.BM25,
+            input_field_names=["raw_text"],
+            output_field_names=["sparse_vector"],
+        )
+        schema.add_function(bm25_fn)
+        schema.add_field("sparse_vector", DataType.SPARSE_FLOAT_VECTOR)
         schema.add_field(
             "embedding",
             DataType.FLOAT_VECTOR,
@@ -80,6 +128,11 @@ class MilvusStore:
             index_type=self.config.milvus_index_type,
             metric_type=self.config.milvus_metric_type,
             params={"nlist": self.config.milvus_nlist},
+        )
+        index_params.add_index(
+            field_name="sparse_vector",
+            index_type="SPARSE_INVERTED_INDEX",
+            metric_type="BM25",
         )
 
         self.client.create_collection(
@@ -163,26 +216,19 @@ class MilvusStore:
             检索结果列表，每项包含 chunk 信息 + score。
         """
         top_k = top_k or self.config.vector_top_k
-        query_vector = await self._get_embedding(query)
-
-        results = self.client.search(
-            collection_name=self.config.milvus_collection_name,
-            data=[query_vector],
-            filter=filter_expr,
+        hits = await self.retrieval_core.search_dense(
+            query,
             limit=top_k,
+            filter_expr=filter_expr,
             output_fields=[
                 "chunk_id", "doc_id", "source_file", "chunk_type",
                 "section_path", "raw_text", "embedding_text",
             ],
         )
 
-        if not results or not results[0]:
-            return []
-
-        # 格式化输出
         formatted = []
-        for item in results[0]:
-            entity = item.get("entity", {})
+        for hit in hits:
+            entity = hit["entity"]
             formatted.append({
                 "chunk_id": entity.get("chunk_id", ""),
                 "doc_id": entity.get("doc_id", ""),
@@ -191,7 +237,42 @@ class MilvusStore:
                 "section_path": entity.get("section_path", ""),
                 "raw_text": entity.get("raw_text", ""),
                 "embedding_text": entity.get("embedding_text", ""),
-                "vector_score": item.get("distance", 0.0),
+                "vector_score": hit["score"],
             })
 
+        return formatted
+
+    async def hybrid_search(
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+        filter_expr: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Native Milvus hybrid search for document retrieval."""
+        top_k = top_k or self.config.rrf_final_top_k
+        search_limit = max(self.config.vector_top_k, self.config.bm25_top_k, top_k)
+        hits = await self.retrieval_core.search_hybrid(
+            query,
+            limit=top_k,
+            filter_expr=filter_expr,
+            output_fields=[
+                "chunk_id", "doc_id", "source_file", "chunk_type",
+                "section_path", "raw_text", "embedding_text",
+            ],
+            search_limit=search_limit,
+        )
+
+        formatted = []
+        for hit in hits:
+            entity = hit["entity"]
+            formatted.append({
+                "chunk_id": entity.get("chunk_id", ""),
+                "doc_id": entity.get("doc_id", ""),
+                "source_file": entity.get("source_file", ""),
+                "chunk_type": entity.get("chunk_type", ""),
+                "section_path": entity.get("section_path", ""),
+                "raw_text": entity.get("raw_text", ""),
+                "embedding_text": entity.get("embedding_text", ""),
+                "rrf_score": hit["score"],
+            })
         return formatted

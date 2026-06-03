@@ -15,7 +15,7 @@ from langchain_deepseek import ChatDeepSeek
 from langchain_ollama import ChatOllama
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.prebuilt import ToolNode
+from langgraph.prebuilt import create_react_agent
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
@@ -27,6 +27,7 @@ from app.lg_agent.lg_prompts import (
     GUARDRAILS_SYSTEM_PROMPT,
     RETRIEVAL_PLAN_ROUTER_PROMPT,
     REACT_SYSTEM_PROMPT,
+    REACT_ANSWER_CHECK_PROMPT,
 )
 from app.lg_agent.kg_sub_graph.kg_neo4j_conn import get_neo4j_graph
 from app.lg_agent.kg_sub_graph.agentic_rag_agents.retrievers.cypher_examples.northwind_retriever import (
@@ -76,6 +77,7 @@ _retrieval_plan_model = _create_agent_model(0.1)
 _guardrails_model = _create_agent_model(0.1)
 _cypher_model = _create_agent_model(0.2)
 _react_model = _create_agent_model(0.4)
+_react_judge_model = _create_agent_model(0.1)
 
 
 # ------------------------------------------------------------------ #
@@ -288,6 +290,13 @@ def retrieval_plan_edge(state: AgentState) -> Literal[
     return mapping.get(plan, "execute_react")  # type: ignore[return-value]
 
 
+class ReactAnswerCheckOutput(BaseModel):
+    decision: Literal["sufficient", "retry", "handoff"] = Field(
+        description="当前答案是否足够，或需要继续检索/转人工"
+    )
+    reason: str = Field(description="做出该判断的原因，供下一轮 ReAct 参考")
+
+
 # ================================================================== #
 # 执行节点 — 5 个独立函数 + 共享辅助
 # ================================================================== #
@@ -431,29 +440,13 @@ def _build_react_subgraph() -> CompiledStateGraph:
         return json.dumps(_safe_records(r), ensure_ascii=False)
 
     tools = [neo4j_query, rag_search]
-    tool_node = ToolNode(tools)
-    llm_with_tools = _react_model.bind_tools(tools)
-
-    def _should_continue(state: dict) -> Literal["tools", "__end__"]:
-        messages = state.get("messages", [])
-        if not messages:
-            return "__end__"
-        last = messages[-1]
-        if hasattr(last, "tool_calls") and last.tool_calls:
-            return "tools"
-        return "__end__"
-
-    async def _agent(state: dict) -> dict:
-        response = await llm_with_tools.ainvoke(state["messages"])
-        return {"messages": [response]}
-
-    sg = StateGraph(dict)
-    sg.add_node("agent", _agent)
-    sg.add_node("tools", tool_node)
-    sg.add_edge(START, "agent")
-    sg.add_conditional_edges("agent", _should_continue, {"tools": "tools", "__end__": END})
-    sg.add_edge("tools", "agent")
-    return sg.compile()
+    return create_react_agent(
+        model=_react_model,
+        tools=tools,
+        prompt=REACT_SYSTEM_PROMPT,
+        version="v2",
+        name="customer_service_react_agent",
+    )
 
 
 _react_subgraph = None
@@ -466,29 +459,81 @@ def _get_react_subgraph() -> CompiledStateGraph:
 
 
 async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
-    """AgentReAct 兜底：ToolNode 子图，_react_model(0.4) 探索，记忆注入。
-
-    使用 state.react_round 控制轮次上限 (5)，避免死循环。"""
+    """标准 ReAct 兜底 + 充分性状态控制，最多 5 轮完整尝试。"""
     if get_neo4j_graph() is None:
         return _no_neo4j()
 
-    react_round = getattr(state, "react_round", 0)
-    if react_round >= 5:
-        return {"messages": [AIMessage(content="亲～抱歉，这个问题可能需要人工客服协助～")]}
-
     q = await _enrich_question(state, config, _question(state))
     sg = _get_react_subgraph()
-    result = await sg.ainvoke({
-        "messages": [
-            {"role": "system", "content": REACT_SYSTEM_PROMPT},
+    subgraph_config = dict(config) if config else {}
+    # 单次标准 ReAct 子图的最大 agent/tools 步数。
+    subgraph_config["recursion_limit"] = 11
+    react_messages: list[dict[str, str]] = [{"role": "user", "content": q}]
+    insufficiency_reason = "初始状态：尚未完成充分回答。"
+
+    for attempt in range(1, 6):
+        if attempt > 1:
+            react_messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "上一次候选答案仍然不充分，请继续按标准 ReAct 检索并补足关键事实。"
+                        f"不足原因：{insufficiency_reason}"
+                    ),
+                }
+            )
+
+        result = await sg.ainvoke({"messages": react_messages}, config=subgraph_config)
+        result_messages = result.get("messages", [])
+        last_answer = result_messages[-1].content if result_messages else "未能确定回答～"
+
+        if isinstance(last_answer, str) and "need more steps" in last_answer.lower():
+            insufficiency_reason = "单次 ReAct 内部步数耗尽，仍未得到足够答案。"
+        else:
+            transcript_lines: list[str] = []
+            for msg in result_messages:
+                role = getattr(msg, "type", None) or getattr(msg, "role", "assistant")
+                content = getattr(msg, "content", "")
+                if content:
+                    transcript_lines.append(f"[{role}] {content}")
+            transcript = "\n".join(transcript_lines[-20:])
+
+            check_messages = [
+                {"role": "system", "content": REACT_ANSWER_CHECK_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"用户问题：{q}\n\n"
+                        f"ReAct 过程记录：\n{transcript}\n\n"
+                        f"当前候选答案：{last_answer}"
+                    ),
+                },
+            ]
+            check = cast(
+                ReactAnswerCheckOutput,
+                await _react_judge_model.with_structured_output(ReactAnswerCheckOutput).ainvoke(check_messages),
+            )
+
+            if check.decision == "sufficient":
+                return {
+                    "messages": [AIMessage(content="正在综合分析..."), AIMessage(content=str(last_answer))],
+                }
+
+            insufficiency_reason = check.reason or "答案信息不足。"
+
+        react_messages = [
             {"role": "user", "content": q},
+            {
+                "role": "assistant",
+                "content": str(last_answer),
+            },
         ]
-    })
-    answer = result["messages"][-1].content if result.get("messages") else "未能确定回答～"
 
     return {
-        "messages": [AIMessage(content="正在综合分析..."), AIMessage(content=str(answer))],
-        "react_round": react_round + 1,
+        "messages": [
+            AIMessage(content="正在综合分析..."),
+            AIMessage(content="亲～这个问题回答不了哦～"),
+        ],
     }
 
 
