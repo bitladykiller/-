@@ -5,8 +5,9 @@
 before_agent: Agent 执行前读取记忆
 after_agent: Agent 回复后写入记忆
 各层独立降级，故障不互相影响。
+
+v3.16: print(stderr) → logger.warning，统一使用项目日志系统。
 """
-import sys
 import time
 import asyncio
 from typing import Optional, List, Dict, Any
@@ -18,6 +19,9 @@ from app.memory.schemas import (
     MessageRecord, SessionMeta, SessionSummary,
     LongTermMemory, MemorySearchResult, AgentMemoryState,
 )
+from app.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class MemoryMiddleware:
@@ -41,7 +45,7 @@ class MemoryMiddleware:
         self.stm_config = SHORT_TERM_MEMORY_CONFIG
         self.ltm_config = LONG_TERM_MEMORY_CONFIG
         self._healthy: dict[str, bool] = {}
-        self._errors_logged: set[str] = set()  # 首次失败 stderr，避免刷屏
+        self._errors_warned: set[str] = set()  # 首次失败 logger.warning，避免刷屏
 
     # ------------------------------------------------------------------ #
     # 健康检查
@@ -95,9 +99,9 @@ class MemoryMiddleware:
                 tenant_id, user_id, session_id
             )
         except Exception:
-            if "redis_stm_read" not in self._errors_logged:
-                print("[memory] Redis STM 读取失败，短期记忆降级", file=sys.stderr)
-                self._errors_logged.add("redis_stm_read")
+            if "redis_stm_read" not in self._errors_warned:
+                logger.warning("[memory] Redis STM 读取失败，短期记忆降级")
+                self._errors_warned.add("redis_stm_read")
             memory_state.session_summary = None
             memory_state.recent_messages = []
 
@@ -111,9 +115,9 @@ class MemoryMiddleware:
                 )
                 memory_state.user_profile = profile
         except Exception:
-            if "user_profile" not in self._errors_logged:
-                print("[memory] 用户画像读取失败，降级为空画像", file=sys.stderr)
-                self._errors_logged.add("user_profile")
+            if "user_profile" not in self._errors_warned:
+                logger.warning("[memory] 用户画像读取失败，降级为空画像")
+                self._errors_warned.add("user_profile")
             memory_state.user_profile = {}
 
         # 3. 检索 Milvus 长期记忆（语义）
@@ -123,9 +127,9 @@ class MemoryMiddleware:
                     tenant_id, user_id, user_input
                 )
         except Exception:
-            if "milvus_ltm" not in self._errors_logged:
-                print("[memory] Milvus LTM 检索失败，长期记忆降级", file=sys.stderr)
-                self._errors_logged.add("milvus_ltm")
+            if "milvus_ltm" not in self._errors_warned:
+                logger.warning("[memory] Milvus LTM 检索失败，长期记忆降级")
+                self._errors_warned.add("milvus_ltm")
             memory_state.long_term_memories = []
 
         return memory_state
@@ -151,9 +155,9 @@ class MemoryMiddleware:
                 tenant_id, user_id, session_id, user_message, assistant_message
             )
         except Exception:
-            if "redis_stm_write" not in self._errors_logged:
-                print("[memory] Redis STM 写入失败", file=sys.stderr)
-                self._errors_logged.add("redis_stm_write")
+            if "redis_stm_write" not in self._errors_warned:
+                logger.warning("[memory] Redis STM 写入失败")
+                self._errors_warned.add("redis_stm_write")
 
         # 2. 判断并执行压缩，压缩成功时顺便抽取长期记忆
         try:
@@ -168,9 +172,9 @@ class MemoryMiddleware:
                     user_message, assistant_message, new_summary,
                 )
         except Exception:
-            if "compress" not in self._errors_logged:
-                print("[memory] 记忆压缩失败", file=sys.stderr)
-                self._errors_logged.add("compress")
+            if "compress" not in self._errors_warned:
+                logger.warning("[memory] 记忆压缩失败")
+                self._errors_warned.add("compress")
 
         # 4. 更新命中的长期记忆
         try:
