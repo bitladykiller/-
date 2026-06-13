@@ -297,8 +297,8 @@ class MemoryMiddleware:
                 user_id=user_id,
                 profile=profile,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"[memory] 用户画像更新失败(user_id={user_id}): {exc}")
 
     async def _update_hit_long_term_memories(
         self,

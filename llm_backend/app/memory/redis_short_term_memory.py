@@ -241,18 +241,18 @@ class RedisShortTermMemory:
         try:
             key = self._build_session_keys(tenant_id, user_id, session_id)["summary"]
             await self._write_model(key, summary)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"[stm] 保存会话摘要失败: {exc}")
 
     async def get_meta(self, tenant_id: str, user_id: str, session_id: str) -> SessionMeta:
-        """读取会话元信息，不存在时返回默认对象。"""
+        """读取会话元信息,不存在时返回默认对象。"""
         try:
             key = self._build_session_keys(tenant_id, user_id, session_id)["meta"]
             meta = await self._read_model(key, SessionMeta)
             if meta:
                 return meta
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"[stm] 读取会话元信息失败: {exc}")
         return SessionMeta()
 
     async def save_meta(
@@ -266,8 +266,8 @@ class RedisShortTermMemory:
         try:
             key = self._build_session_keys(tenant_id, user_id, session_id)["meta"]
             await self._write_model(key, meta)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"[stm] 保存会话元信息失败: {exc}")
 
     def should_compress(
         self,
@@ -345,13 +345,13 @@ class RedisShortTermMemory:
                 self.redis.expire(keys["summary"], self.ttl_seconds),
                 self.redis.expire(keys["meta"], self.ttl_seconds),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"[stm] 刷新 TTL 失败: {exc}")
 
     async def clear_session(self, tenant_id: str, user_id: str, session_id: str) -> None:
         """清理当前 session 的全部短期记忆数据。"""
         try:
             keys = self._build_session_keys(tenant_id, user_id, session_id)
             await self.redis.delete(*keys.values())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"[stm] 清理会话数据失败: {exc}")
