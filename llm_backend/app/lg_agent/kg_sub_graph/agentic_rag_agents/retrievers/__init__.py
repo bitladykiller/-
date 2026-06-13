@@ -1,1 +1,5 @@
-"""This directory contains custom retrievers."""
+"""KG 子图检索器包入口。
+
+这里放的是 KG 子图内部会用到的检索器实现，
+例如 Cypher 示例检索器。
+"""

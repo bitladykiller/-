@@ -1,25 +1,57 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, func, Enum
-from sqlalchemy.orm import relationship
-from app.core.database import Base
+"""会话模型。
+
+这里只持久化会话元信息，不保存逐条聊天消息。
+消息内容当前由短期记忆层维护。
+"""
+from __future__ import annotations
+
 import enum
+from datetime import datetime
+
+from sqlalchemy import (
+    DateTime,
+    Enum as SQLEnum,
+    ForeignKey,
+    String,
+    func,
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.database import Base
 
 
-class DialogueType(enum.Enum):
+class DialogueType(str, enum.Enum):
+    """会话类型枚举。"""
+
     NORMAL = "普通对话"
     DEEP_THINKING = "深度思考"
     WEB_SEARCH = "联网检索"
     RAG = "RAG 问答"
 
+
 class Conversation(Base):
+    """会话元信息表。"""
+
     __tablename__ = "conversations"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
-    title = Column(String(100), nullable=False)
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-    status = Column(String(20), default="ongoing")
-    dialogue_type = Column(Enum(DialogueType), nullable=False)
-    
-    # 关系
-    user = relationship("User", back_populates="conversations")
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE")
+    )
+    title: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+    status: Mapped[str] = mapped_column(String(20), default="ongoing")
+    dialogue_type: Mapped[DialogueType] = mapped_column(
+        SQLEnum(DialogueType),
+        nullable=False,
+    )
+
+    user: Mapped["User"] = relationship("User", back_populates="conversations")

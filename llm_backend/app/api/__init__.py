@@ -1,12 +1,19 @@
+"""API 路由注册入口。
+
+这里只负责聚合各个子路由模块，不承载具体接口逻辑。
+每个子路由文件已经声明了自己的 `tags`，这里不再重复配置。
+"""
+
 from fastapi import APIRouter
-from app.api.chat import router as chat_router
+
+from app.api.langgraph import router as langgraph_router
 from app.api.conversations import router as conversations_router
 from app.api.upload import router as upload_router
-from app.api.langgraph import router as langgraph_router
 
 api_router = APIRouter()
 
-api_router.include_router(chat_router, tags=["chat"])
-api_router.include_router(conversations_router, tags=["conversations"])
-api_router.include_router(upload_router, tags=["upload"])
-api_router.include_router(langgraph_router, tags=["langgraph"])
+api_router.include_router(conversations_router)
+api_router.include_router(upload_router)
+api_router.include_router(langgraph_router)
+
+__all__ = ["api_router"]

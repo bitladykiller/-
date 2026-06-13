@@ -1,11 +1,31 @@
-"""Agent 工具函数。
+"""Agent 通用工具函数。
 
-v3.17: 清理死代码。移除了 reduce_docs / format_docs / interrupt，
-这些函数未被任何生产代码调用（LangGraph 状态更新由 add_messages reducer 处理）。
+职责：
+- 提供跨节点共享的小型纯函数
+- 避免把 UUID、问题提取、统一降级响应散落到多个节点文件
 """
+
 import uuid
+
+from langchain_core.messages import AIMessage
+
+from app.lg_agent.lg_states import AgentState
 
 
 def new_uuid() -> str:
     """生成 UUID4 字符串。"""
     return str(uuid.uuid4())
+
+
+def question_from_state(state: AgentState) -> str:
+    """从 AgentState 中提取最新一条用户问题。"""
+    return state.messages[-1].content if state.messages else ""
+
+
+def no_neo4j_response() -> dict:
+    """Neo4j 不可用时的统一降级响应。"""
+    return {
+        "messages": [
+            AIMessage(content="抱歉，知识库服务暂时不可用，请稍后重试。")
+        ]
+    }

@@ -50,5 +50,6 @@ uploads/
 .omo/
 .remember/
 
-# Environment files with secrets
-llm_backend/.env.pytest_cache/
+# Tool caches
+.pytest_cache/
+.ruff_cache/

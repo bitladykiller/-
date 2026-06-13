@@ -1,11 +1,11 @@
-"""
-服务层模块。
+"""服务层包入口。
 
-v3.17: 清理死代码。移除了 BaseLLMService → DeepseekService/OllamaService → LLMFactory
-整个继承链（Agent 已统一使用 lg_models.py 的 _LazyModel + create_agent_model）。
-保留以下活跃服务：
-- conversation_service: 会话 CRUD（MySQL conversations 表）
-- indexing_service: 文档解析/索引（调用 rag_doc_parser）
-- task_queue: 异步文档解析任务（Redis 状态存储）
-- user_profile_service: 用户画像管理（MySQL + Redis 缓存）
+职责：
+- 承载会话、上传索引、任务队列、用户画像等可复用业务服务
+- 作为 `api/`、`memory/`、`lg_agent/` 复用业务流程的中间层
+
+边界：
+- `services/` 只暴露业务接口，不暴露 HTTP 路由细节
+- Agent 图编排放在 `lg_agent/`，不要回流到服务层
+- 具体的数据访问细节应继续收敛在服务内部 helper 或 `*_store.py`，而不是散到调用方
 """

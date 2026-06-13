@@ -1,71 +1,46 @@
-import sys
-import time
+"""FastAPI 应用入口。
+
+这个文件负责：
+- 声明应用入口常量
+- 调用应用工厂创建 FastAPI app
+- 保持入口导入路径稳定
+
+这个文件不负责：
+- 中间件实现细节
+- 生命周期回调实现细节
+- 路由或静态资源注册细节
+"""
+
+from __future__ import annotations
+
 from pathlib import Path
 
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-
-# 确保从仓库根目录或 `llm_backend/` 目录启动时，都能导入同仓库的兄弟包。
 REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+STATIC_DIR = Path(__file__).parent / "static" / "dist"
+APP_TITLE = "AssistGen REST API"
+HEALTH_STATUS = "ok"
+OPEN_CORS_ORIGINS = ["*"]
+OPEN_CORS_METHODS = ["*"]
+OPEN_CORS_HEADERS = ["*"]
 
-from app.core.logger import setup_logging, get_logger
+
+from main_support import create_app, ensure_repo_root_on_path
+
+ensure_repo_root_on_path(REPO_ROOT)
+
 from app.api import api_router
+from app.core.logger import get_logger, setup_logging
 
 setup_logging()
 logger = get_logger(__name__)
 
-
-app = FastAPI(title="AssistGen REST API")
-
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+app = create_app(
+    api_router=api_router,
+    logger=logger,
+    app_title=APP_TITLE,
+    static_dir=STATIC_DIR,
+    health_status=HEALTH_STATUS,
+    allow_origins=OPEN_CORS_ORIGINS,
+    allow_methods=OPEN_CORS_METHODS,
+    allow_headers=OPEN_CORS_HEADERS,
 )
-
-
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    start = time.time()
-    response = await call_next(request)
-    elapsed = (time.time() - start) * 1000
-    logger.info(f"{request.method} {request.url.path} → {response.status_code} ({elapsed:.1f}ms)")
-    return response
-
-
-@app.on_event("startup")
-async def startup():
-    """预热连接 — 避免首请求承担初始化延迟。"""
-    logger.info("预热 MemoryMiddleware...")
-    from app.lg_agent.lg_context import _get_memory_middleware
-    await _get_memory_middleware()
-    logger.info("启动完成")
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    """释放所有连接：MemoryMiddleware + TaskManager。"""
-    logger.info("关闭连接...")
-    from app.lg_agent.lg_context import close_memory_middleware
-    from app.services.task_queue import close_task_manager
-    await close_memory_middleware()
-    await close_task_manager()
-    logger.info("关闭完成")
-
-
-app.include_router(api_router, prefix="/api")
-
-
-@app.get("/health")
-async def health_check():
-    return {"status": "ok"}
-
-
-STATIC_DIR = Path(__file__).parent / "static" / "dist"
-app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")

@@ -1,0 +1,162 @@
+import asyncio
+
+from app.lg_agent import lg_execution_utils
+
+
+class FakeRetriever:
+    def __init__(self, result: dict) -> None:
+        self.result = result
+        self.queries: list[str] = []
+
+    async def search(self, task: str) -> dict:
+        self.queries.append(task)
+        return self.result
+
+
+class FakeChain:
+    def __init__(self, result: object) -> None:
+        self.result = result
+        self.payloads: list[dict[str, str]] = []
+
+    async def ainvoke(self, payload: dict[str, str]) -> object:
+        self.payloads.append(payload)
+        return self.result
+
+
+class FakePrompt:
+    def __init__(self, chain: FakeChain) -> None:
+        self.chain = chain
+        self.messages: list[tuple[str, str]] | None = None
+        self.structured_model: object | None = None
+
+    def __or__(self, structured_model: object) -> FakeChain:
+        self.structured_model = structured_model
+        return self.chain
+
+
+class FakeModel:
+    def __init__(self) -> None:
+        self.schemas: list[type[object]] = []
+
+    def with_structured_output(self, schema: type[object]) -> object:
+        self.schemas.append(schema)
+        return self
+
+
+class FakeSchema:
+    pass
+
+
+def _run(awaitable):
+    return asyncio.run(awaitable)
+
+
+def test_empty_retriever_result_and_records_from_result() -> None:
+    result = lg_execution_utils.empty_retriever_result("查订单")
+
+    assert result == {
+        "task": "查订单",
+        "records": [],
+        "errors": [],
+        "steps": [],
+    }
+    assert lg_execution_utils.records_from_result(result) == []
+    assert lg_execution_utils.records_from_result({"records": "bad"}) == []
+
+
+def test_merge_retriever_records_preserves_order() -> None:
+    merged = lg_execution_utils.merge_retriever_records(
+        {"records": [{"source": "kg"}]},
+        {"records": [{"source": "rag-1"}, {"source": "rag-2"}]},
+    )
+
+    assert merged == [
+        {"source": "kg"},
+        {"source": "rag-1"},
+        {"source": "rag-2"},
+    ]
+
+
+def test_query_builders_add_strategy_context() -> None:
+    assert "结构化数据" in lg_execution_utils.build_graph_only_query("查询空调价格")
+    assert "文档知识" in lg_execution_utils.build_rag_only_query("保修政策是什么")
+    query = lg_execution_utils.build_graph_then_rag_query(
+        "洗衣机保修多久",
+        [{"product": "X1"}],
+    )
+    assert "已知信息" in query
+    assert "洗衣机保修多久" in query
+
+
+def test_search_retriever_returns_placeholder_when_missing() -> None:
+    result = _run(lg_execution_utils.search_retriever(None, "查询订单"))
+
+    assert result["task"] == "查询订单"
+    assert result["records"] == []
+
+
+def test_search_retriever_delegates_to_retriever() -> None:
+    retriever = FakeRetriever({"records": [{"id": 1}]})
+
+    result = _run(lg_execution_utils.search_retriever(retriever, "订单状态"))
+
+    assert result == {"records": [{"id": 1}]}
+    assert retriever.queries == ["订单状态"]
+
+
+def test_summarize_and_build_response_uses_summary_result(monkeypatch) -> None:
+    async def fake_summarize_records(query: str, records: list[dict], fallback: str) -> str:
+        assert query == "预算 3000"
+        assert records == [{"product": "A1"}]
+        assert fallback == "无结果"
+        return "推荐 A1"
+
+    monkeypatch.setattr(lg_execution_utils, "summarize_records", fake_summarize_records)
+
+    payload = _run(
+        lg_execution_utils.summarize_and_build_response(
+            "预算 3000",
+            [{"product": "A1"}],
+            progress_message="正在查询...",
+            fallback="无结果",
+        )
+    )
+
+    assert [message.content for message in payload["messages"]] == [
+        "正在查询...",
+        "推荐 A1",
+    ]
+
+
+def test_ainvoke_structured_question_output_builds_prompt_chain(monkeypatch) -> None:
+    chain = FakeChain({"decision": "continue"})
+    prompt = FakePrompt(chain)
+    model = FakeModel()
+
+    def fake_from_messages(messages: list[tuple[str, str]]) -> FakePrompt:
+        prompt.messages = messages
+        return prompt
+
+    monkeypatch.setattr(
+        lg_execution_utils.ChatPromptTemplate,
+        "from_messages",
+        fake_from_messages,
+    )
+
+    result = _run(
+        lg_execution_utils.ainvoke_structured_question_output(
+            system_prompt="系统",
+            human_prompt="问题：{question}",
+            model=model,
+            output_schema=FakeSchema,
+            question="订单什么时候到",
+        )
+    )
+
+    assert result == {"decision": "continue"}
+    assert prompt.messages == [
+        ("system", "系统"),
+        ("human", "问题：{question}"),
+    ]
+    assert model.schemas == [FakeSchema]
+    assert chain.payloads == [{"question": "订单什么时候到"}]

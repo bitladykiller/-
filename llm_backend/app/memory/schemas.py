@@ -1,15 +1,43 @@
+"""记忆模块共享数据模型。
+
+这个模块负责：
+- 定义 STM（Short-Term Memory，短期记忆）和
+  LTM（Long-Term Memory，长期记忆）共享的 Pydantic / TypedDict 结构
+- 约束记忆读写层、抽取层、上下文组装层之间的字段边界
+
+这个模块不负责：
+- 记忆存储实现
+- 配置管理
+- Prompt 组装
 """
-记忆模块数据模型定义。
+from __future__ import annotations
 
-STM = Short-Term Memory，短期记忆。
-LTM = Long-Term Memory，长期记忆。
-
-本模块定义记忆模块使用的 Pydantic 模型。
-"""
-
-from typing import Any, Dict, List, Literal, Optional
+from typing import Literal, TypedDict
 
 from pydantic import BaseModel, Field
+
+
+class UserProfileFact(TypedDict):
+    """用户画像中的单条结构化事实。"""
+
+    key: str
+    value: str
+
+
+class UserProfileData(TypedDict, total=False):
+    """记忆上下文里使用的标准化用户画像结构。"""
+
+    preferred_brand: str | None
+    budget_range: str | None
+    preferred_category: str | None
+    tags: list[str]
+    facts: list[UserProfileFact]
+
+
+class UserProfilePayload(UserProfileData):
+    """用户画像服务对外返回的完整结构，额外包含 user_id。"""
+
+    user_id: int
 
 
 class MessageRecord(BaseModel):
@@ -111,21 +139,28 @@ class MemorySearchResult(BaseModel):
 class MemoryExtractorResult(BaseModel):
     """
     长期记忆抽取结果。
+
+    这里只描述会写入 Milvus 的语义记忆候选项。
+    结构化用户画像走独立画像链路，因此不会作为语义记忆类型返回。
     """
 
     memory_type: Literal[
-        "user_profile",
         "issue_history",
         "solution_note"
     ]
 
     content: str
 
-    reason: Optional[str] = None
+    reason: str | None = None
 
 
 class AgentMemoryState(BaseModel):
-    session_summary: Optional[SessionSummary] = None
-    recent_messages: List[MessageRecord] = Field(default_factory=list)
-    long_term_memories: List[MemorySearchResult] = Field(default_factory=list)
-    user_profile: Dict[str, Any] = Field(default_factory=dict)  # v3.2: MySQL 画像
+    """一次请求里复用的记忆快照。"""
+
+    session_summary: SessionSummary | None = None
+    recent_messages: list[MessageRecord] = Field(default_factory=list)
+    long_term_memories: list[MemorySearchResult] = Field(default_factory=list)
+    user_profile: UserProfileData = Field(
+        default_factory=dict,
+        description="结构化用户画像快照，由画像存储链路提供",
+    )

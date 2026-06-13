@@ -1,16 +1,66 @@
 #!/bin/bash
+set -eu
+
+NEO4J_URI="${NEO4J_URI:-bolt://localhost:7687}"
+NEO4J_USERNAME="${NEO4J_USERNAME:-neo4j}"
+NEO4J_PASSWORD="${NEO4J_PASSWORD:-12345678}"
+NEO4J_IMPORT_DATA_DIR="${NEO4J_IMPORT_DATA_DIR:-/import-data}"
+
+cypher_shell() {
+    command cypher-shell -a "${NEO4J_URI}" -u "${NEO4J_USERNAME}" -p "${NEO4J_PASSWORD}" "$@"
+}
+
+REQUIRED_CSV_FILES="
+product_nodes.csv
+category_nodes.csv
+supplier_nodes.csv
+customer_nodes.csv
+order_nodes.csv
+employee_nodes.csv
+review_nodes.csv
+shipper_nodes.csv
+product_category_edges.csv
+product_supplier_edges.csv
+order_product_edges.csv
+customer_order_edges.csv
+employee_order_edges.csv
+customer_review_edges.csv
+review_product_edges.csv
+order_shipper_edges.csv
+employee_reports_to_edges.csv
+"
+
+missing_files=""
+for file_name in ${REQUIRED_CSV_FILES}; do
+    if [ ! -f "${NEO4J_IMPORT_DATA_DIR}/${file_name}" ]; then
+        missing_files="${missing_files} ${file_name}"
+    fi
+done
+
+if [ -n "${missing_files}" ]; then
+    echo "未检测到完整 Neo4j CSV 数据集，跳过导入。"
+    echo "缺失文件:${missing_files}"
+    echo "如需启用图谱导入，请把 CSV 放到 docker/neo4j-import/ 目录。"
+    exit 0
+fi
 
 # Neo4j 数据导入脚本
 # 等待 Neo4j 服务启动
 echo "等待 Neo4j 服务启动..."
-until cypher-shell -u neo4j -p 12345678 "RETURN 1" > /dev/null 2>&1; do
+until cypher_shell "RETURN 1" > /dev/null 2>&1; do
     sleep 2
 done
 
 echo "Neo4j 服务已启动，开始导入数据..."
 
+existing_nodes=$(cypher_shell --format plain "MATCH (n) RETURN count(n) AS node_count;" | awk 'NF {last=$NF} END {print last}')
+if [ "${existing_nodes:-0}" != "0" ]; then
+    echo "检测到 Neo4j 已存在 ${existing_nodes} 个节点，跳过重复导入。"
+    exit 0
+fi
+
 # 创建约束和索引
-cypher-shell -u neo4j -p 12345678 <<EOF2
+cypher_shell <<EOF2
 // 创建唯一性约束
 CREATE CONSTRAINT IF NOT EXISTS FOR (p:Product) REQUIRE p.productId IS UNIQUE;
 CREATE CONSTRAINT IF NOT EXISTS FOR (c:Category) REQUIRE c.categoryId IS UNIQUE;
@@ -25,7 +75,7 @@ EOF2
 echo "约束创建完成，开始导入节点数据..."
 
 # 导入产品节点
-cypher-shell -u neo4j -p 12345678 <<EOF2
+cypher_shell <<EOF2
 LOAD CSV WITH HEADERS FROM 'file:///product_nodes.csv' AS row
 CREATE (p:Product {
     productId: toInteger(row.\`productId:ID(Product)\`),
@@ -46,7 +96,7 @@ EOF2
 echo "产品节点导入完成"
 
 # 导入类别节点
-cypher-shell -u neo4j -p 12345678 <<EOF2
+cypher_shell <<EOF2
 LOAD CSV WITH HEADERS FROM 'file:///category_nodes.csv' AS row
 CREATE (c:Category {
     categoryId: toInteger(row.\`categoryId:ID(Category)\`),
@@ -59,7 +109,7 @@ EOF2
 echo "类别节点导入完成"
 
 # 导入供应商节点
-cypher-shell -u neo4j -p 12345678 <<EOF2
+cypher_shell <<EOF2
 LOAD CSV WITH HEADERS FROM 'file:///supplier_nodes.csv' AS row
 CREATE (s:Supplier {
     supplierId: toInteger(row.\`supplierId:ID(Supplier)\`),
@@ -80,7 +130,7 @@ EOF2
 echo "供应商节点导入完成"
 
 # 导入客户节点
-cypher-shell -u neo4j -p 12345678 <<EOF2
+cypher_shell <<EOF2
 LOAD CSV WITH HEADERS FROM 'file:///customer_nodes.csv' AS row
 CREATE (cu:Customer {
     customerId: row.\`customerId:ID(Customer)\`,
@@ -100,7 +150,7 @@ EOF2
 echo "客户节点导入完成"
 
 # 导入订单节点
-cypher-shell -u neo4j -p 12345678 <<EOF2
+cypher_shell <<EOF2
 LOAD CSV WITH HEADERS FROM 'file:///order_nodes.csv' AS row
 CREATE (o:Order {
     orderId: toInteger(row.\`orderId:ID(Order)\`),
@@ -123,7 +173,7 @@ EOF2
 echo "订单节点导入完成"
 
 # 导入员工节点
-cypher-shell -u neo4j -p 12345678 <<EOF2
+cypher_shell <<EOF2
 LOAD CSV WITH HEADERS FROM 'file:///employee_nodes.csv' AS row
 CREATE (e:Employee {
     employeeId: toInteger(row.\`employeeId:ID(Employee)\`),
@@ -147,7 +197,7 @@ EOF2
 echo "员工节点导入完成"
 
 # 导入评论节点
-cypher-shell -u neo4j -p 12345678 <<EOF2
+cypher_shell <<EOF2
 LOAD CSV WITH HEADERS FROM 'file:///review_nodes.csv' AS row
 CREATE (r:Review {
     reviewId: toInteger(row.\`reviewId:ID(Review)\`),
@@ -162,7 +212,7 @@ EOF2
 echo "评论节点导入完成"
 
 # 导入物流节点
-cypher-shell -u neo4j -p 12345678 <<EOF2
+cypher_shell <<EOF2
 LOAD CSV WITH HEADERS FROM 'file:///shipper_nodes.csv' AS row
 CREATE (sh:Shipper {
     shipperId: toInteger(row.\`shipperId:ID(Shipper)\`),
@@ -176,7 +226,7 @@ echo "物流节点导入完成"
 echo "开始导入关系数据..."
 
 # 导入产品-类别关系
-cypher-shell -u neo4j -p 12345678 <<EOF2
+cypher_shell <<EOF2
 LOAD CSV WITH HEADERS FROM 'file:///product_category_edges.csv' AS row
 MATCH (p:Product {productId: toInteger(row.\`:START_ID(Product)\`)})
 MATCH (c:Category {categoryId: toInteger(row.\`:END_ID(Category)\`)})
@@ -186,7 +236,7 @@ EOF2
 echo "产品-类别关系导入完成"
 
 # 导入产品-供应商关系
-cypher-shell -u neo4j -p 12345678 <<EOF2
+cypher_shell <<EOF2
 LOAD CSV WITH HEADERS FROM 'file:///product_supplier_edges.csv' AS row
 MATCH (p:Product {productId: toInteger(row.\`:START_ID(Product)\`)})
 MATCH (s:Supplier {supplierId: toInteger(row.\`:END_ID(Supplier)\`)})
@@ -196,7 +246,7 @@ EOF2
 echo "产品-供应商关系导入完成"
 
 # 导入订单-产品关系
-cypher-shell -u neo4j -p 12345678 <<EOF2
+cypher_shell <<EOF2
 LOAD CSV WITH HEADERS FROM 'file:///order_product_edges.csv' AS row
 MATCH (o:Order {orderId: toInteger(row.\`:START_ID(Order)\`)})
 MATCH (p:Product {productId: toInteger(row.\`:END_ID(Product)\`)})
@@ -210,7 +260,7 @@ EOF2
 echo "订单-产品关系导入完成"
 
 # 导入客户-订单关系
-cypher-shell -u neo4j -p 12345678 <<EOF2
+cypher_shell <<EOF2
 LOAD CSV WITH HEADERS FROM 'file:///customer_order_edges.csv' AS row
 MATCH (cu:Customer {customerId: row.\`:START_ID(Customer)\`})
 MATCH (o:Order {orderId: toInteger(row.\`:END_ID(Order)\`)})
@@ -220,7 +270,7 @@ EOF2
 echo "客户-订单关系导入完成"
 
 # 导入员工-订单关系
-cypher-shell -u neo4j -p 12345678 <<EOF2
+cypher_shell <<EOF2
 LOAD CSV WITH HEADERS FROM 'file:///employee_order_edges.csv' AS row
 MATCH (e:Employee {employeeId: toInteger(row.\`:START_ID(Employee)\`)})
 MATCH (o:Order {orderId: toInteger(row.\`:END_ID(Order)\`)})
@@ -230,7 +280,7 @@ EOF2
 echo "员工-订单关系导入完成"
 
 # 导入客户-评论关系
-cypher-shell -u neo4j -p 12345678 <<EOF2
+cypher_shell <<EOF2
 LOAD CSV WITH HEADERS FROM 'file:///customer_review_edges.csv' AS row
 MATCH (cu:Customer {customerId: row.\`:START_ID(Customer)\`})
 MATCH (r:Review {reviewId: toInteger(row.\`:END_ID(Review)\`)})
@@ -240,7 +290,7 @@ EOF2
 echo "客户-评论关系导入完成"
 
 # 导入评论-产品关系
-cypher-shell -u neo4j -p 12345678 <<EOF2
+cypher_shell <<EOF2
 LOAD CSV WITH HEADERS FROM 'file:///review_product_edges.csv' AS row
 MATCH (r:Review {reviewId: toInteger(row.\`:START_ID(Review)\`)})
 MATCH (p:Product {productId: toInteger(row.\`:END_ID(Product)\`)})
@@ -250,7 +300,7 @@ EOF2
 echo "评论-产品关系导入完成"
 
 # 导入订单-物流关系
-cypher-shell -u neo4j -p 12345678 <<EOF2
+cypher_shell <<EOF2
 LOAD CSV WITH HEADERS FROM 'file:///order_shipper_edges.csv' AS row
 MATCH (o:Order {orderId: toInteger(row.\`:START_ID(Order)\`)})
 MATCH (sh:Shipper {shipperId: toInteger(row.\`:END_ID(Shipper)\`)})
@@ -260,7 +310,7 @@ EOF2
 echo "订单-物流关系导入完成"
 
 # 导入员工汇报关系
-cypher-shell -u neo4j -p 12345678 <<EOF2
+cypher_shell <<EOF2
 LOAD CSV WITH HEADERS FROM 'file:///employee_reports_to_edges.csv' AS row
 MATCH (e1:Employee {employeeId: toInteger(row.\`:START_ID(Employee)\`)})
 MATCH (e2:Employee {employeeId: toInteger(row.\`:END_ID(Employee)\`)})
@@ -273,6 +323,6 @@ echo "数据导入完成！"
 
 # 验证数据导入结果
 echo "验证数据导入结果..."
-cypher-shell -u neo4j -p 12345678 <<EOF2
+cypher_shell <<EOF2
 MATCH (n) RETURN labels(n)[0] AS label, count(n) AS count ORDER BY count DESC;
 EOF2

@@ -172,6 +172,50 @@ class Neo4jStructuredSchema(BaseModel):
         description="Metadata about the database.", default=dict()
     )
 
+    @staticmethod
+    def _build_property_values_enum(
+        prop_groups: Dict[
+            str,
+            List[
+                Neo4jStructuredSchemaPropertyString
+                | Neo4jStructuredSchemaPropertyNumber
+                | Neo4jStructuredSchemaPropertyList
+                | Neo4jStructuredSchemaPropertyDateTime
+            ],
+        ],
+    ) -> Dict[str, Dict[str, Set[str]]]:
+        """统一构造字符串枚举值映射，避免节点/关系各写一份。"""
+        return {
+            owner: {
+                prop.property: prop.get_property_values_enum()
+                for prop in prop_list
+                if isinstance(prop, Neo4jStructuredSchemaPropertyString) and prop.is_enum
+            }
+            for owner, prop_list in prop_groups.items()
+        }
+
+    @staticmethod
+    def _build_property_values_range(
+        prop_groups: Dict[
+            str,
+            List[
+                Neo4jStructuredSchemaPropertyString
+                | Neo4jStructuredSchemaPropertyNumber
+                | Neo4jStructuredSchemaPropertyList
+                | Neo4jStructuredSchemaPropertyDateTime
+            ],
+        ],
+    ) -> Dict[str, Dict[str, Neo4jStructuredSchemaPropertyNumber]]:
+        """统一构造数值范围映射，避免节点/关系各写一份。"""
+        return {
+            owner: {
+                prop.property: prop
+                for prop in prop_list
+                if isinstance(prop, Neo4jStructuredSchemaPropertyNumber)
+            }
+            for owner, prop_list in prop_groups.items()
+        }
+
     def get_node_labels(self) -> List[str]:
         """
         A list of node labels in the database.
@@ -240,14 +284,7 @@ class Neo4jStructuredSchema(BaseModel):
             ...
             }
         """
-        return {
-            label: {
-                p.property: p.get_property_values_enum()
-                for p in prop_list
-                if isinstance(p, Neo4jStructuredSchemaPropertyString) and p.is_enum
-            }
-            for label, prop_list in self.node_props.items()
-        }
+        return self._build_property_values_enum(self.node_props)
 
     def get_relationship_property_values_enum(self) -> Dict[str, Dict[str, Set[str]]]:
         """
@@ -266,14 +303,7 @@ class Neo4jStructuredSchema(BaseModel):
             }
         """
 
-        return {
-            rel_type: {
-                p.property: p.get_property_values_enum()
-                for p in prop_list
-                if isinstance(p, Neo4jStructuredSchemaPropertyString) and p.is_enum
-            }
-            for rel_type, prop_list in self.node_props.items()
-        }
+        return self._build_property_values_enum(self.rel_props)
 
     def get_node_property_values_range(
         self,
@@ -293,14 +323,7 @@ class Neo4jStructuredSchema(BaseModel):
             ...
             }
         """
-        return {
-            label: {
-                p.property: p
-                for p in prop_list
-                if isinstance(p, Neo4jStructuredSchemaPropertyNumber)
-            }
-            for label, prop_list in self.node_props.items()
-        }
+        return self._build_property_values_range(self.node_props)
 
     def get_relationship_property_values_range(
         self,
@@ -320,14 +343,7 @@ class Neo4jStructuredSchema(BaseModel):
             ...
             }
         """
-        return {
-            rel_type: {
-                p.property: p
-                for p in prop_list
-                if isinstance(p, Neo4jStructuredSchemaPropertyNumber)
-            }
-            for rel_type, prop_list in self.node_props.items()
-        }
+        return self._build_property_values_range(self.rel_props)
 
 
 class CypherValidationTask(BaseModel):

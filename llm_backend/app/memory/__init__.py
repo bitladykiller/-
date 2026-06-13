@@ -1,34 +1,81 @@
-"""
-记忆模块。
+"""记忆模块包入口。
 
-STM = Short-Term Memory，短期记忆。
-LTM = Long-Term Memory，长期记忆。
+职责：
+- 承载短期记忆、长期记忆、记忆抽取与中间件编排
+- 暴露 Agent 运行时会用到的记忆配置、数据模型和核心类
 
-本模块提供智能客服 Agent 的记忆能力，包括：
-1. 短期记忆：基于 Redis List 实现会话级滑动窗口
-2. 长期记忆：基于 Milvus 存储用户画像、历史问题和有效解决方案
+边界：
+- 只处理“记什么、怎么取、怎么压缩、怎么回写”
+- 不处理 HTTP 协议细节，也不承载 LangGraph 节点编排
 """
+from __future__ import annotations
+
+from importlib import import_module
+from typing import TYPE_CHECKING, Any
 
 from app.memory.config import (
-    SHORT_TERM_MEMORY_CONFIG,
     LONG_TERM_MEMORY_CONFIG,
     LONG_TERM_MEMORY_TYPES,
+    SHORT_TERM_MEMORY_CONFIG,
 )
-
+from app.memory.prompt_builder import (
+    build_compression_prompt,
+    build_memory_injection_prompt,
+    build_summary_injection_prompt,
+)
 from app.memory.schemas import (
+    AgentMemoryState,
+    LongTermMemory,
+    MemoryExtractorResult,
+    MemorySearchResult,
     MessageRecord,
     SessionMeta,
     SessionSummary,
-    LongTermMemory,
-    MemorySearchResult,
-    MemoryExtractorResult,
-    AgentMemoryState,
+    UserProfileData,
+    UserProfileFact,
+    UserProfilePayload,
 )
 
-from app.memory.redis_short_term_memory import RedisShortTermMemory
-from app.memory.simple_long_term_memory import SimpleLongTermMemory
-from app.memory.memory_extractor import MemoryExtractor
-from app.memory.memory_middleware import MemoryMiddleware
+if TYPE_CHECKING:
+    from app.memory.ltm.store import SimpleLongTermMemory
+    from app.memory.orchestration.extractor import MemoryExtractor
+    from app.memory.orchestration.middleware import MemoryMiddleware
+    from app.memory.stm.store import RedisShortTermMemory
+
+_LAZY_EXPORTS = {
+    "RedisShortTermMemory": (
+        "app.memory.stm.store",
+        "RedisShortTermMemory",
+    ),
+    "SimpleLongTermMemory": (
+        "app.memory.ltm.store",
+        "SimpleLongTermMemory",
+    ),
+    "MemoryExtractor": (
+        "app.memory.orchestration.extractor",
+        "MemoryExtractor",
+    ),
+    "MemoryMiddleware": (
+        "app.memory.orchestration.middleware",
+        "MemoryMiddleware",
+    ),
+}
+
+
+def __getattr__(name: str) -> Any:
+    """按需导入重依赖对象，避免轻量场景触发完整依赖链。"""
+    target = _LAZY_EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module 'app.memory' has no attribute {name!r}")
+
+    module_name, attr_name = target
+    value = getattr(import_module(module_name), attr_name)
+    globals()[name] = value
+    return value
+
+# `build_agent_prompt` 已移除；Agent Prompt 组装已收敛到
+# `lg_agent/lg_memory_prompt.py` 的 `build_memory_context`。
+
 __all__ = [
     # 配置
     "SHORT_TERM_MEMORY_CONFIG",
@@ -43,13 +90,16 @@ __all__ = [
     "MemorySearchResult",
     "MemoryExtractorResult",
     "AgentMemoryState",
+    "UserProfileFact",
+    "UserProfileData",
+    "UserProfilePayload",
 
     # 核心类
     "RedisShortTermMemory",
     "SimpleLongTermMemory",
     "MemoryExtractor",
     "MemoryMiddleware",
-
-    # v3.17 移除 "build_agent_prompt" — 未被任何生产代码调用，
-    # Agent Prompt 构建已由 lg_context.py 的 build_memory_context 替代。
+    "build_compression_prompt",
+    "build_memory_injection_prompt",
+    "build_summary_injection_prompt",
 ]

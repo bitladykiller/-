@@ -1,41 +1,53 @@
-"""
-LLM 模型工厂 + 温度分离实例。
+"""LLM 模型入口与结构化输出模型。
 
-v3.15: 从 lg_builder.py 拆分。集中管理所有 LLM 模型实例的创建和配置。
-v3.15-hotfix: 改为懒初始化，避免 import 时连接 LLM 服务导致启动崩溃。
-
-温度分配策略：
-- 0.1 — 路由/守卫/裁判等需要确定性输出的结构化任务
-- 0.2 — Cypher 生成（需要一定灵活性但不能太随机）
-- 0.4 — ReAct Agent（需要探索能力）
-- 0.7 — 通用聊天（需要创造性）
+职责：
+- 统一创建 Agent 运行时使用的 DeepSeek / Ollama 模型
+- 按逻辑角色维护温度配置，避免节点层分散写死参数
+- 通过懒初始化代理避免 import 阶段就连接外部 LLM
+- 存放节点会用到的结构化输出模型
 """
 from __future__ import annotations
 
-import logging
+from typing import Any
 
-from app.core.config import settings, ServiceType
+from pydantic import BaseModel, Field
 
-logger = logging.getLogger(__name__)
+from app.core.config import settings
+from app.core.logger import get_logger
+from app.lg_agent.lg_model_support import (
+    LazyModelProxy,
+    MODEL_TEMPERATURES,
+    ModelFactory,
+    ModelRole,
+    build_lazy_model,
+    get_or_create_cached_model,
+    lazy_model_repr,
+    resolve_model_factory,
+)
+from app.lg_agent.lg_states import (
+    RetrievalPlanType,
+    GuardrailsAction,
+    ReactJudgeDecision,
+)
+
+logger = get_logger(__name__)
 
 
-def create_agent_model(temperature: float = 0.7):
-    """根据 AGENT_SERVICE 配置创建 LLM 实例。
+def _create_deepseek_model(temperature: float) -> Any:
+    """创建 DeepSeek ChatModel。"""
+    from langchain_deepseek import ChatDeepSeek
 
-    Args:
-        temperature: 采样温度。0.0 = 确定性，1.0 = 最大随机性。
+    return ChatDeepSeek(
+        api_key=settings.DEEPSEEK_API_KEY,
+        model_name=settings.DEEPSEEK_MODEL,
+        temperature=temperature,
+    )
 
-    Returns:
-        ChatDeepSeek 或 ChatOllama 实例。
-    """
-    if settings.AGENT_SERVICE == ServiceType.DEEPSEEK:
-        from langchain_deepseek import ChatDeepSeek
-        return ChatDeepSeek(
-            api_key=settings.DEEPSEEK_API_KEY,
-            model_name=settings.DEEPSEEK_MODEL,
-            temperature=temperature,
-        )
+
+def _create_ollama_model(temperature: float) -> Any:
+    """创建 Ollama ChatModel。"""
     from langchain_ollama import ChatOllama
+
     return ChatOllama(
         model=settings.OLLAMA_AGENT_MODEL,
         base_url=settings.OLLAMA_BASE_URL,
@@ -43,118 +55,113 @@ def create_agent_model(temperature: float = 0.7):
     )
 
 
+def _resolve_model_factory() -> ModelFactory:
+    """根据 `AGENT_SERVICE` 选择当前运行时要用的模型工厂。"""
+    return resolve_model_factory(
+        settings.AGENT_SERVICE,
+        deepseek_factory=_create_deepseek_model,
+        ollama_factory=_create_ollama_model,
+    )
+
+
+def _create_chat_model(temperature: float = MODEL_TEMPERATURES["agent"]) -> Any:
+    """根据 AGENT_SERVICE 配置创建运行时 LLM 实例。
+
+    Args:
+        temperature: 采样温度。0.0 = 确定性，1.0 = 最大随机性。
+
+    Returns:
+        ChatDeepSeek 或 ChatOllama 实例。
+    """
+    return _resolve_model_factory()(temperature)
+
+
 # ================================================================== #
 # 懒初始化模型单例 — 首次访问时创建，避免 import 时连接 LLM 服务
 # ================================================================== #
 
-_models_cache: dict = {}
+_models_cache: dict[ModelRole, Any] = {}
 
 
-def _get_model(name: str, temperature: float):
-    """懒初始化模型单例。首次调用时创建，后续返回缓存。"""
-    if name not in _models_cache:
-        logger.info("初始化 LLM 模型 | name=%s | temperature=%s", name, temperature)
-        _models_cache[name] = create_agent_model(temperature)
-    return _models_cache[name]
+def clear_model_cache() -> None:
+    """清空模型缓存。
 
-
-# 通用聊天 — 高温度，回复更自然
-def _agent():
-    return _get_model("agent", 0.7)
-
-# 路由分类 — 低温度，分类结果稳定
-def _router():
-    return _get_model("router", 0.1)
-
-# 检索计划路由 — 低温度，策略选择一致
-def _retrieval_plan():
-    return _get_model("retrieval_plan", 0.1)
-
-# Guardrails 守卫 — 低温度，安全判断确定性强
-def _guardrails():
-    return _get_model("guardrails", 0.1)
-
-# Text2Cypher 生成 — 中低温度，Cypher 语法需要准确但允许一定灵活性
-def _cypher():
-    return _get_model("cypher", 0.2)
-
-# ReAct Agent — 中温度，需要探索能力但不能太发散
-def _react():
-    return _get_model("react", 0.4)
-
-# ReAct 答案裁判 — 低温度，评判标准需要一致
-def _react_judge():
-    return _get_model("react_judge", 0.1)
-
-
-# ================================================================== #
-# 向后兼容的属性访问（模块级名称，实际懒初始化）
-# ================================================================== #
-
-class _LazyModel:
-    """延迟代理：访问属性/方法时才真正创建模型。
-
-    v3.17 修复：补充 __bool__ / __await__ / __str__ / __repr__，
-    防止 `if model:` 恒为 True 误导、`await model` 触发 AttributeError。
+    主要用于测试，以及后续如果需要在不重启进程的情况下切换配置时手动刷新。
     """
-    def __init__(self, name: str, temperature: float):
-        self._name = name
-        self._temperature = temperature
-
-    def _get(self):
-        """返回底层模型实例。"""
-        return _get_model(self._name, self._temperature)
-
-    def __getattr__(self, item):
-        return getattr(self._get(), item)
-
-    def __bool__(self) -> bool:
-        """总是返回 True — 懒加载代理总是"可用"。"""
-        return True
-
-    def __await__(self):
-        """支持 `await lazy_model` — 代理到底层模型的 __await__。"""
-        return self._get().__await__()
-
-    def __str__(self) -> str:
-        return f"_LazyModel(name={self._name}, t={self._temperature})"
-
-    def __repr__(self) -> str:
-        return self.__str__()
+    _models_cache.clear()
 
 
-agent_model = _LazyModel("agent", 0.7)
-router_model = _LazyModel("router", 0.1)
-retrieval_plan_model = _LazyModel("retrieval_plan", 0.1)
-guardrails_model = _LazyModel("guardrails", 0.1)
-cypher_model = _LazyModel("cypher", 0.2)
-react_model = _LazyModel("react", 0.4)
-react_judge_model = _LazyModel("react_judge", 0.1)
+def _get_model(name: ModelRole, temperature: float) -> Any:
+    """按逻辑角色缓存模型实例。
+
+    缓存键使用 `agent/router/react...` 这类角色名，而不是 provider 名称。
+    这样调用方只关心“这个节点要什么温度和职责”，不必知道底层是
+    DeepSeek 还是 Ollama。
+    """
+    return get_or_create_cached_model(
+        _models_cache,
+        name,
+        lambda: _create_logged_model(name, temperature),
+    )
+
+
+def _create_logged_model(name: ModelRole, temperature: float) -> Any:
+    """创建模型前统一记录初始化日志。"""
+    logger.info("初始化 LLM 模型 | name=%s | temperature=%s", name, temperature)
+    return _create_chat_model(temperature)
+
+
+# ================================================================== #
+# 模块级模型入口（实际使用的是这些懒加载代理）
+# ================================================================== #
+
+_LazyModel = LazyModelProxy
+
+
+def _lazy_model_repr(name: ModelRole, temperature: float) -> str:
+    """构造懒代理的稳定字符串表示。"""
+    return lazy_model_repr(name, temperature)
+
+
+def _lazy_model(name: ModelRole) -> _LazyModel:
+    """按角色名创建懒加载代理，统一温度来源。"""
+    return build_lazy_model(name, _get_model)
+
+
+agent_model = _lazy_model("agent")
+router_model = _lazy_model("router")
+retrieval_plan_model = _lazy_model("retrieval_plan")
+guardrails_model = _lazy_model("guardrails")
+cypher_model = _lazy_model("cypher")
+react_model = _lazy_model("react")
+react_judge_model = _lazy_model("react_judge")
 
 
 # ================================================================== #
 # 节点输出模型 — 结构化输出定义
 # ================================================================== #
 #
-# v3.17: 从 lg_nodes.py 迁移至此。节点函数和模型类职责不同，
-# 模型类放在 lg_models.py 更符合模块边界。
+# 这些模型和节点函数职责不同：节点负责流程编排，模型负责约束结构化输出。
+# 放在同一个“模型入口”文件里，调用方更容易定位。
 # ================================================================== #
-
-from pydantic import BaseModel, Field
-from typing import Literal
 
 
 class RetrievalPlanOutput(BaseModel):
     """检索计划路由器的输出结构。"""
     logic: str = Field(description="选择该计划的理由")
-    plan: Literal["GRAPH_ONLY", "RAG_ONLY", "PARALLEL", "GRAPH_THEN_RAG", "AGENT_REACT"] = Field(
+    plan: RetrievalPlanType = Field(
         description="最合适的检索策略"
     )
 
 
+class GuardrailsDecision(BaseModel):
+    """Guardrails 节点的输出结构。"""
+    decision: GuardrailsAction = Field(description="是否继续执行后续检索流程")
+
+
 class ReactAnswerCheckOutput(BaseModel):
     """ReAct 答案校验器的输出结构。"""
-    decision: Literal["sufficient", "retry", "handoff"] = Field(
+    decision: ReactJudgeDecision = Field(
         description="当前答案是否足够，或需要继续检索/转人工"
     )
     reason: str = Field(description="做出该判断的原因，供下一轮 ReAct 参考")

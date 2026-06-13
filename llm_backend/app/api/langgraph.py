@@ -1,71 +1,76 @@
-"""
-LangGraph Agent API。
-v3.7: 图片在 API 层解析为文本上下文，注入 query。无 checkpointer。
-v3.17: 移除图片上传接口。图片解析功能在实际使用中调用率低且维护成本高，
-        删除后简化 API 和维护负担。
+"""LangGraph 查询接口。
+
+这个模块只负责：
+- 接收 HTTP 表单参数
+- 把用户输入包装成 LangGraph 期望的输入状态
+- 把图执行流转换成 SSE 响应
+
+不负责：
+- LangGraph 节点编排
+- 记忆读写
+- 检索与工具执行细节
 """
 from __future__ import annotations
 
-import json
-from typing import Optional
+from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, HTTPException, Form
 from fastapi.responses import StreamingResponse
 
-from app.lg_agent.lg_states import InputState
-from app.lg_agent.utils import new_uuid
-from app.lg_agent.lg_builder import graph
-from app.core.logger import get_logger
-
-logger = get_logger(__name__)
+from app.api.common import INTERNAL_SERVER_ERROR_DETAIL
+from app.api.langgraph_support import (
+    GraphStream,
+    STREAM_MODE_MESSAGES,
+    build_input_state,
+    build_sse_payload,
+    build_streaming_response,
+    build_thread_config,
+    resolve_thread_id,
+    serialize_stream_chunk,
+)
+from app.lg_agent.graph.builder import graph
 
 router = APIRouter(tags=["langgraph"])
 
 
-async def _stream_graph_response(graph_stream):
+def _build_graph_stream(
+    *,
+    query: str,
+    thread_id: str,
+    user_id: int,
+) -> GraphStream:
+    """统一组装 LangGraph 流式执行输入。"""
+    return graph.astream(
+        input=build_input_state(query),
+        stream_mode=STREAM_MODE_MESSAGES,
+        config=build_thread_config(thread_id, user_id),
+    )
+
+
+async def _stream_graph_response(
+    graph_stream: GraphStream,
+) -> AsyncIterator[str]:
     """SSE 流式输出 Agent 消息。"""
-    async for c, metadata in graph_stream:
-        if c.content and not c.additional_kwargs.get("tool_calls") \
-                and "research_plan" not in metadata.get("tags", []):
-            content_json = json.dumps(c.content, ensure_ascii=False)
-            yield f"data: {content_json}\n\n"
+    async for chunk, metadata in graph_stream:
+        payload = serialize_stream_chunk(chunk, metadata)
+        if payload is not None:
+            yield build_sse_payload(payload)
 
 
 @router.post("/langgraph/query")
 async def langgraph_query(
     query: str = Form(...),
     user_id: int = Form(...),
-    conversation_id: Optional[str] = Form(None),
-):
-    """LangGraph Agent 查询接口。
-
-    Args:
-        query: 用户输入问题。
-        user_id: 用户 ID。
-        conversation_id: 会话 ID（可选，不传则创建新会话）。
-    """
+    conversation_id: str | None = Form(None),
+) -> StreamingResponse:
+    """LangGraph Agent 查询接口。"""
     try:
-        thread_id = conversation_id if conversation_id else new_uuid()
-        thread_config = {
-            "configurable": {
-                "thread_id": thread_id,
-                "user_id": user_id,
-            }
-        }
-
-        input_state = InputState(messages=query)
-        graph_stream = graph.astream(
-            input=input_state, stream_mode="messages", config=thread_config
+        thread_id = resolve_thread_id(conversation_id)
+        graph_stream = _build_graph_stream(
+            query=query,
+            thread_id=thread_id,
+            user_id=user_id,
         )
-
-        response = StreamingResponse(
-            _stream_graph_response(graph_stream),
-            media_type="text/event-stream",
-        )
-        response.headers["X-Conversation-ID"] = thread_id
-        return response
-
-    except HTTPException:
-        raise
+        return build_streaming_response(_stream_graph_response(graph_stream), thread_id)
     except Exception:
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=INTERNAL_SERVER_ERROR_DETAIL)

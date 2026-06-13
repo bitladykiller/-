@@ -1,21 +1,39 @@
 """应用配置。
 
-v3.16: 拆分为基础设施配置和业务逻辑配置（关注点分离）。
-InfrastructureSettings: 连接地址、端口、凭据等部署相关配置。
-BusinessSettings: 服务选择、模型名称、embedding 类型等业务相关配置。
+职责：
+- 承载基础设施连接配置，例如 MySQL / Redis / Neo4j / Milvus
+- 承载业务行为配置，例如模型选择、检索数量和缓存阈值
+- 通过统一 `settings` 对象向外暴露稳定访问入口
 
-分离的好处：
-- 不同部署环境（开发/测试/生产）只需替换 InfrastructureSettings
-- 业务逻辑配置不随部署变化，可独立管理
+边界：
+- 基础设施配置描述“连到哪里”
+- 业务配置描述“应用怎么跑”
+- 组合层只负责向后兼容，不承载业务逻辑
 """
+
+from __future__ import annotations
+
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from app.core.config_support import (
+    build_database_url,
+    build_milvus_url,
+    build_redis_url,
+    resolve_setting_from_sources,
+)
 
 # 获取项目根目录
 ROOT_DIR = Path(__file__).parent.parent.parent
 ENV_FILE = ROOT_DIR / ".env"
+PROJECT_SETTINGS_CONFIG = SettingsConfigDict(
+    env_file=str(ENV_FILE),
+    env_file_encoding="utf-8",
+    case_sensitive=True,
+    extra="ignore",
+)
 
 
 class ServiceType(str, Enum):
@@ -24,11 +42,20 @@ class ServiceType(str, Enum):
     OLLAMA = "ollama"
 
 
+class ProjectBaseSettings(BaseSettings):
+    """项目统一的 BaseSettings 基类。
+
+    把 `.env` 路径、大小写敏感和额外字段策略放在一处，
+    避免 Infrastructure / Business 两个 settings 类各自重复一份配置。
+    """
+    model_config = PROJECT_SETTINGS_CONFIG
+
+
 # ================================================================== #
 # 基础设施配置 — 连接地址、端口、凭据
 # ================================================================== #
 
-class InfrastructureSettings(BaseSettings):
+class InfrastructureSettings(ProjectBaseSettings):
     """基础设施连接配置。
 
     这些值随部署环境（开发/测试/生产）变化，与环境绑定。
@@ -57,18 +84,12 @@ class InfrastructureSettings(BaseSettings):
     MILVUS_HOST: str = "localhost"
     MILVUS_PORT: int = 19530
 
-    class Config:
-        env_file = str(ENV_FILE)
-        env_file_encoding = "utf-8"
-        case_sensitive = True
-        extra = "ignore"
-
 
 # ================================================================== #
 # 业务逻辑配置 — 服务选择、模型、行为参数
 # ================================================================== #
 
-class BusinessSettings(BaseSettings):
+class BusinessSettings(ProjectBaseSettings):
     """业务逻辑配置。
 
     这些值反映应用行为，不随部署环境变化。
@@ -108,13 +129,6 @@ class BusinessSettings(BaseSettings):
     # --- Milvus Collection --- #
     MILVUS_COLLECTION_NAME: str = "customer_agent_long_memory"
 
-    class Config:
-        env_file = str(ENV_FILE)
-        env_file_encoding = "utf-8"
-        case_sensitive = True
-        extra = "ignore"
-
-
 # ================================================================== #
 # 统一 Settings — 组合基础设施和业务配置
 # ================================================================== #
@@ -122,26 +136,29 @@ class BusinessSettings(BaseSettings):
 class Settings:
     """组合配置类 — 向后兼容。
 
-    v3.17: 使用 __getattr__ 统一代理到子配置，替代 50+ 行手动 property。
+    WHY：
+    对外继续暴露单一 `settings` 入口，内部再把基础设施配置和业务配置拆开，
+    这样既保留原有调用方式，也避免为每个字段重复写代理属性。
+
     属性查找顺序：InfrastructureSettings → BusinessSettings → 计算属性。
     """
 
-    def __init__(self):
-        self._infra = InfrastructureSettings()
-        self._business = BusinessSettings()
-        # 缓存子配置的字段名集合，用于快速排除以判断是否为计算属性
-        self._all_fields: set[str] = set()
-        for src in [self._infra, self._business]:
-            for field_name in src.model_fields:
-                self._all_fields.add(field_name)
+    def __init__(
+        self,
+        *,
+        infra: InfrastructureSettings | None = None,
+        business: BusinessSettings | None = None,
+    ) -> None:
+        self._infra = infra or InfrastructureSettings()
+        self._business = business or BusinessSettings()
+        self._sources: tuple[ProjectBaseSettings, ...] = (
+            self._infra,
+            self._business,
+        )
 
-    def __getattr__(self, name: str):
+    def __getattr__(self, name: str) -> Any:
         """代理到子配置，优先 Infrastructure → Business。"""
-        # 尝试从子配置获取
-        for src in [self._infra, self._business]:
-            if name in src.model_fields:
-                return getattr(src, name)
-        raise AttributeError(f"'Settings' object has no attribute '{name}'")
+        return resolve_setting_from_sources(name, self._sources)
 
     # ---------------------------------------------------------------- #
     # 计算属性 — 组合多个子配置字段的值
@@ -150,26 +167,31 @@ class Settings:
     @property
     def DATABASE_URL(self) -> str:
         """构建 MySQL 异步连接 URL。"""
-        return (
-            f"mysql+aiomysql://{self.DB_USER}:{self.DB_PASSWORD}"
-            f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+        return build_database_url(
+            host=self.DB_HOST,
+            port=self.DB_PORT,
+            user=self.DB_USER,
+            password=self.DB_PASSWORD,
+            database=self.DB_NAME,
         )
 
     @property
     def REDIS_URL(self) -> str:
         """构建 Redis 连接 URL。"""
-        auth = f":{self.REDIS_PASSWORD}@" if self.REDIS_PASSWORD else ""
-        return f"redis://{auth}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
-
-    @property
-    def NEO4J_CONN_URL(self) -> str:
-        """Neo4j 连接 URL。"""
-        return self.NEO4J_URL
+        return build_redis_url(
+            host=self.REDIS_HOST,
+            port=self.REDIS_PORT,
+            db=self.REDIS_DB,
+            password=self.REDIS_PASSWORD,
+        )
 
     @property
     def MILVUS_URL(self) -> str:
         """Milvus 连接地址。"""
-        return f"{self.MILVUS_HOST}:{self.MILVUS_PORT}"
+        return build_milvus_url(
+            host=self.MILVUS_HOST,
+            port=self.MILVUS_PORT,
+        )
 
 
 settings = Settings()

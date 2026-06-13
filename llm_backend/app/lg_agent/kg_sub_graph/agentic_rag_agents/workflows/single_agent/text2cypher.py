@@ -1,4 +1,18 @@
-from typing import Dict, Literal, Optional
+"""Text2Cypher 单 Agent 图组装。
+
+这个模块负责：
+- 组装“预定义模板快速路径 + LLM 生成兜底路径”的 LangGraph 图
+- 把模板匹配策略和 Cypher 生成节点串成统一入口
+
+这个模块不负责：
+- 具体模板匹配实现
+- Cypher 校验规则定义
+- Neo4j 连接管理
+"""
+
+from __future__ import annotations
+
+from typing import Literal
 
 from langchain_core.language_models import BaseChatModel
 from langchain_neo4j import Neo4jGraph
@@ -18,6 +32,11 @@ from ...retrievers.cypher_examples.base import BaseCypherExampleRetriever
 from .cypher_strategies import PredefinedTemplateStrategy
 
 
+def _coerce_task_text(task: str | list[str]) -> str:
+    """把状态里的 task 统一转换为字符串。"""
+    return task[0] if isinstance(task, list) else task
+
+
 def create_text2cypher_agent(
     llm: BaseChatModel,
     graph: Neo4jGraph,
@@ -25,34 +44,43 @@ def create_text2cypher_agent(
     llm_cypher_validation: bool = True,
     max_attempts: int = 3,
     attempt_cypher_execution_on_final_attempt: bool = False,
-    predefined_cypher_dict: Optional[Dict[str, str]] = None,
-    query_descriptions: Optional[Dict[str, str]] = None,
+    predefined_cypher_dict: dict[str, str] | None = None,
+    query_descriptions: dict[str, str] | None = None,
 ) -> CompiledStateGraph:
     """Create a Text2Cypher agent with predefined template matching.
 
-    架构（v3.16 策略模式）：
-    - PredefinedTemplateStrategy: 语义匹配预定义模板 → 直接执行（<100ms，快速路径）
-    - LLMGenerationStrategy: LLM 生成 + 5 层验证 → 执行（~600ms，兜底路径）
+    WHY：
+    高频、结构稳定的问题先走模板匹配快速路径；
+    未命中时再落回完整的 LLM 生成 + 校验 + 修正链路。
 
-    策略封装在 cypher_strategies.py 中，此处仅负责 LangGraph 图组装。
+    这样做的好处是：
+    - 常见查询延迟更低
+    - 模板和 LLM 各自职责更清晰
+    - 图结构只负责编排，不混入模板细节
     """
     text2cypher_graph_builder = StateGraph(
-        CypherState, input=CypherInputState, output=OverallState
+        CypherState,
+        input_schema=CypherInputState,
+        output_schema=OverallState,
     )
 
     execute_cypher = create_text2cypher_execution_node(graph=graph)
 
     if predefined_cypher_dict:
-        # 预定义模板策略 — 封装在 PredefinedTemplateStrategy 中
-        matcher = create_vector_query_matcher(predefined_cypher_dict, query_descriptions or {})
+        matcher = create_vector_query_matcher(
+            predefined_cypher_dict,
+            query_descriptions or {},
+        )
         template_strategy = PredefinedTemplateStrategy(
-            matcher=matcher, graph=graph, llm=llm, similarity_threshold=0.6,
+            matcher=matcher,
+            graph=graph,
+            llm=llm,
+            similarity_threshold=0.6,
         )
 
         async def predefined_match(state: CypherState) -> dict:
             task = state.get("task", "")
-            task_str = task[0] if isinstance(task, list) else task
-            return await template_strategy.generate(str(task_str))
+            return await template_strategy.generate(str(_coerce_task_text(task)))
 
         text2cypher_graph_builder.add_node("predefined_match", predefined_match)
         text2cypher_graph_builder.add_edge(START, "predefined_match")

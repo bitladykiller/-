@@ -1,25 +1,30 @@
-"""
-统一日志配置。
+"""统一日志配置。
 
-用法：
-    from app.core.logger import get_logger
-    logger = get_logger(__name__)
-    logger.info("something happened", extra={"user_id": 123})
+职责：
+- 提供全局日志初始化入口
+- 维持日志初始化幂等状态
+- 暴露业务模块共用的 logger 获取与上下文格式化入口
+
+边界：
+- 纯日志格式 / handler / context helper 已下沉到 `logger_support.py`
+- 这里不承载具体业务模块的日志字段约定
 """
 
 from __future__ import annotations
 
 import logging
-import sys
-from typing import Optional
-
-
-LOG_FORMAT = (
-    "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"
+from app.core.logger_support import (
+    DATE_FORMAT,
+    LOG_FORMAT,
+    configure_noisy_loggers,
+    configure_root_logger,
+    format_log_context,
 )
-DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 _logging_initialized = False
+
+_configure_root_logger = configure_root_logger
+_configure_noisy_loggers = configure_noisy_loggers
 
 
 def setup_logging(
@@ -38,26 +43,14 @@ def setup_logging(
     if _logging_initialized:
         return
 
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter(format_str, datefmt=date_format))
-
     root = logging.getLogger()
-    root.setLevel(level)
-    # 避免重复添加（uvicorn reload 场景）
-    if not any(isinstance(h, logging.StreamHandler) for h in root.handlers):
-        root.addHandler(handler)
-
-    # 抑制过于啰嗦的第三方库日志
-    for noisy in (
-        "sqlalchemy.engine",
-        "pymilvus.client",
-        "pymilvus.milvus_client",
-        "httpx",
-        "httpcore",
-        "urllib3",
-        "asyncio",
-    ):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
+    configure_root_logger(
+        root,
+        level=level,
+        format_str=format_str,
+        date_format=date_format,
+    )
+    configure_noisy_loggers()
 
     _logging_initialized = True
 
@@ -69,3 +62,6 @@ def get_logger(name: str) -> logging.Logger:
         name: 通常传 __name__ 即可。
     """
     return logging.getLogger(name)
+
+
+__all__ = ["setup_logging", "get_logger", "format_log_context"]

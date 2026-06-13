@@ -1,193 +1,281 @@
-"""
-Redis 短期记忆模块（ZSET + MsgPack + Zstd 优化版）。
+"""Redis 短期记忆模块（ZSET + MsgPack + Zstd）。
 
 STM = Short-Term Memory，短期记忆。
-使用 Redis ZSET 替代 List 实现滑动窗口。
-Score = 时间戳，Value = MsgPack + Zstd 压缩后的消息体。
-支持按时间和按条数两种滑动方式。
-"""
-import json
-import time
-import asyncio
-from typing import List, Optional, Dict, Any
-import redis.asyncio as redis
-import msgpack
-import zstandard as zstd
-from app.memory.config import SHORT_TERM_MEMORY_CONFIG
-from app.memory.schemas import MessageRecord, SessionMeta, SessionSummary
+使用 Redis ZSET 保存最近消息，`stm_compressor.py` 负责消息压缩格式。
 
-# 多级压缩器：按消息大小选择压缩级别，平衡 CPU 和存储
-_zstd_fast   = zstd.ZstdCompressor(level=1)   # 500MB/s,  2-4KB 中型消息
-_zstd_normal = zstd.ZstdCompressor(level=3)   # 200MB/s, 4-16KB 大型消息
-_zstd_high   = zstd.ZstdCompressor(level=9)   #  50MB/s, >16KB 超大型消息，存储优先
-_zstd_decompressor = zstd.ZstdDecompressor()   # 解压器不关心压缩级别，全兼容
+本文件主要职责：
+- 管理 session 级 messages / summary / meta / lock 四类 key
+- 维护消息滑动窗口
+- 在需要时触发对话压缩
+"""
+from __future__ import annotations
+
+import asyncio
+import time
+from collections.abc import Awaitable, Callable
+from typing import TypeAlias
+
+import redis.asyncio as redis
+
+from app.core.logger import get_logger
+from app.memory.config import (
+    ShortTermMemoryConfig,
+    short_term_compression_config,
+    short_term_config,
+    short_term_redis_config,
+    short_term_window_config,
+)
+from app.memory.schemas import MessageRecord, SessionMeta, SessionSummary
+from app.memory.stm_store_utils import (
+    SessionKeys,
+    build_session_keys,
+    decode_messages,
+    decode_model,
+    extract_summary_from_response,
+    message_score,
+    split_messages_for_compression,
+)
+from app.memory.stm_compressor import compress_message
+
+logger = get_logger(__name__)
+
+SummaryCompressor: TypeAlias = Callable[[str, list[MessageRecord]], Awaitable[str]]
+COMPRESS_FETCH_LIMIT = 100
 
 
 class RedisShortTermMemory:
-    """优化版短期记忆模块（ZSET + MsgPack + Zstd 压缩）。
-
-    STM = Short-Term Memory，短期记忆。
-    使用 Redis ZSET 保存当前 session 的对话消息。
-    Score = 毫秒时间戳，天然按时间排序。
-    支持按消息条数和时间窗口两种滑动方式。
-    """
+    """Redis 短期记忆存储层。"""
 
     def __init__(self, redis_client: redis.Redis):
         self.redis = redis_client
-        self.config = SHORT_TERM_MEMORY_CONFIG
-        self.key_prefix = self.config["redis"]["key_prefix"]
-        self.ttl_seconds = self.config["redis"]["ttl_seconds"]
-        self.lock_ttl_seconds = self.config["redis"]["lock_ttl_seconds"]
-        self.max_messages = self.config["window"]["max_messages"]
-        self.max_rounds = self.config["window"]["max_rounds"]
-        self.compression_enabled = self.config["compression"]["enabled"]
-        self.trigger_rounds = self.config["compression"]["trigger_rounds"]
-        self.trigger_messages = self.config["compression"]["trigger_messages"]
-        self.keep_recent_rounds = self.config["compression"]["keep_recent_rounds"]
-        self.summary_max_chars = self.config["compression"]["summary_max_chars"]
-        self.time_window_seconds = self.config.get("time_window_seconds", self.ttl_seconds)
+        self.config: ShortTermMemoryConfig = short_term_config()
 
-    # ------------------------------------------------------------------ #
-    # 压缩与解压
-    # ------------------------------------------------------------------ #
+        redis_config = short_term_redis_config()
+        window_config = short_term_window_config()
+        compression_config = short_term_compression_config()
 
-    def _compress(self, message: MessageRecord) -> bytes:
-        """MsgPack + 多级 Zstd 压缩。
+        self.key_prefix = redis_config["key_prefix"]
+        self.ttl_seconds = redis_config["ttl_seconds"]
+        self.lock_ttl_seconds = redis_config["lock_ttl_seconds"]
+        self.max_messages = window_config["max_messages"]
+        self.compression_enabled = compression_config["enabled"]
+        self.trigger_rounds = compression_config["trigger_rounds"]
+        self.trigger_messages = compression_config["trigger_messages"]
+        self.keep_recent_rounds = compression_config["keep_recent_rounds"]
+        self.time_window_seconds = self.config["time_window_seconds"]
 
-        ≤2KB   → 仅 MsgPack（\x00 前缀）
-        2-4KB  → MsgPack + Zstd level=1（\x01 前缀，快速）
-        4-16KB → MsgPack + Zstd level=3（\x02 前缀，平衡）
-        >16KB  → MsgPack + Zstd level=9（\x03 前缀，高压缩比）
-        """
-        packed = msgpack.packb(message.model_dump(), use_bin_type=True)
+    def _build_session_keys(
+        self,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+    ) -> SessionKeys:
+        """一次性返回当前 session 会用到的所有 key。"""
+        return build_session_keys(
+            self.key_prefix,
+            tenant_id,
+            user_id,
+            session_id,
+        )
 
-        if len(packed) <= 2048:
-            return b'\x00' + packed
-        elif len(packed) <= 4096:
-            return b'\x01' + _zstd_fast.compress(packed)
-        elif len(packed) <= 16384:
-            return b'\x02' + _zstd_normal.compress(packed)
-        else:
-            return b'\x03' + _zstd_high.compress(packed)
+    async def _read_model(
+        self,
+        key: str,
+        model_cls: type[SessionMeta] | type[SessionSummary],
+    ) -> SessionMeta | SessionSummary | None:
+        """从 Redis 读取并解码指定模型。"""
+        return decode_model(await self.redis.get(key), model_cls)
 
-    def _decompress(self, data: bytes) -> MessageRecord:
-        """解压：解压器不关心压缩级别，flag >= 0x01 均走 zstd 解压。"""
-        flag, payload = data[0], data[1:]
-        if flag in (0x01, 0x02, 0x03):
-            unpacked = msgpack.unpackb(_zstd_decompressor.decompress(payload), raw=False)
-        else:
-            unpacked = msgpack.unpackb(payload, raw=False)
-        return MessageRecord(**unpacked)
+    async def _write_model(
+        self,
+        key: str,
+        model: SessionMeta | SessionSummary,
+    ) -> None:
+        """把 Pydantic 模型序列化后写回 Redis。"""
+        await self.redis.set(key, model.model_dump_json(), ex=self.ttl_seconds)
 
-    # ------------------------------------------------------------------ #
-    # Redis Key 构造
-    # ------------------------------------------------------------------ #
+    def _split_messages_for_compression(
+        self,
+        messages: list[MessageRecord],
+    ) -> tuple[list[MessageRecord], list[MessageRecord]]:
+        """把消息切成“需要压缩的旧消息”和“需要保留的最近消息”。"""
+        return split_messages_for_compression(
+            messages,
+            self.keep_recent_rounds,
+        )
 
-    def build_messages_key(self, t: str, u: str, s: str) -> str:
-        return f"{self.key_prefix}:{t}:{u}:{s}:messages"
+    async def _prune_message_window(self, key: str) -> None:
+        """维护消息滑动窗口：同时控制条数、时间窗口和 TTL。"""
+        await self.redis.zremrangebyrank(key, 0, -self.max_messages - 1)
+        cutoff = int(time.time() * 1000) - self.time_window_seconds * 1000
+        await self.redis.zremrangebyscore(key, 0, cutoff)
+        await self.redis.expire(key, self.ttl_seconds)
 
-    def build_summary_key(self, t: str, u: str, s: str) -> str:
-        return f"{self.key_prefix}:{t}:{u}:{s}:summary"
+    async def _rewrite_recent_messages(
+        self,
+        *,
+        key: str,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        messages: list[MessageRecord],
+    ) -> None:
+        """用压缩后保留的最近消息重建消息窗口。"""
+        if not messages:
+            return
+        await self.redis.delete(key)
+        for message in messages:
+            await self.append_message(tenant_id, user_id, session_id, message)
 
-    def build_meta_key(self, t: str, u: str, s: str) -> str:
-        return f"{self.key_prefix}:{t}:{u}:{s}:meta"
+    async def _update_summary_from_messages(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        old_summary_str: str,
+        messages_to_compress: list[MessageRecord],
+        llm_compress_func: SummaryCompressor,
+    ) -> None:
+        """调用摘要压缩函数，并在成功时写回新的 session summary。"""
+        if not messages_to_compress:
+            return
+        new_summary_str = await llm_compress_func(old_summary_str, messages_to_compress)
+        new_summary = extract_summary_from_response(new_summary_str)
+        if new_summary:
+            await self.save_summary(tenant_id, user_id, session_id, new_summary)
 
-    def build_lock_key(self, t: str, u: str, s: str) -> str:
-        return f"{self.key_prefix}:{t}:{u}:{s}:lock"
+    async def _prepare_compression_context(
+        self,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+    ) -> tuple[SessionKeys, SessionMeta, str, list[MessageRecord], list[MessageRecord]] | None:
+        """读取压缩所需上下文，并在不满足条件时直接返回 None。"""
+        meta = await self.get_meta(tenant_id, user_id, session_id)
+        msg_count = await self.get_message_count(tenant_id, user_id, session_id)
+        if not self.should_compress(
+            meta.total_turns,
+            meta.last_compressed_turn,
+            msg_count,
+        ):
+            return None
 
-    # ------------------------------------------------------------------ #
-    # 消息操作（ZSET 版本）
-    # ------------------------------------------------------------------ #
+        keys = self._build_session_keys(tenant_id, user_id, session_id)
+        old_summary = await self.get_summary(tenant_id, user_id, session_id)
+        all_messages = await self.get_recent_messages(
+            tenant_id,
+            user_id,
+            session_id,
+            limit=COMPRESS_FETCH_LIMIT,
+        )
+        old_summary_str = old_summary.model_dump_json() if old_summary else ""
+        messages_to_compress, messages_to_keep = self._split_messages_for_compression(
+            all_messages
+        )
+        return keys, meta, old_summary_str, messages_to_compress, messages_to_keep
 
     async def append_message(
-        self, tenant_id: str, user_id: str, session_id: str, message: MessageRecord,
+        self,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        message: MessageRecord,
     ) -> None:
+        """写入一条短期消息，并维护滑动窗口。"""
         try:
-            key = self.build_messages_key(tenant_id, user_id, session_id)
-            score = message.created_at if message.created_at > 1000000000000 else int(time.time() * 1000)
-            compressed = self._compress(message)
-            await self.redis.zadd(key, {compressed: score})
-            await self.redis.zremrangebyrank(key, 0, -self.max_messages - 1)
-            cutoff = int(time.time() * 1000) - self.time_window_seconds * 1000
-            await self.redis.zremrangebyscore(key, 0, cutoff)
-            await self.redis.expire(key, self.ttl_seconds)
+            key = self._build_session_keys(tenant_id, user_id, session_id)["messages"]
+            await self.redis.zadd(
+                key,
+                {compress_message(message): message_score(message)},
+            )
+            await self._prune_message_window(key)
         except Exception:
-            pass
+            logger.warning("[stm] append_message 失败", exc_info=True)
 
     async def get_recent_messages(
-        self, tenant_id: str, user_id: str, session_id: str, limit: int = None,
-    ) -> List[MessageRecord]:
+        self,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        limit: int | None = None,
+    ) -> list[MessageRecord]:
+        """按时间顺序返回最近消息。"""
         try:
-            key = self.build_messages_key(tenant_id, user_id, session_id)
+            key = self._build_session_keys(tenant_id, user_id, session_id)["messages"]
             limit = limit or self.max_messages
             raw = await self.redis.zrevrange(key, 0, limit - 1)
-            result = []
-            for data in raw:
-                try:
-                    result.append(self._decompress(data))
-                except Exception:
-                    pass
-            result.reverse()
-            return result
+            return decode_messages(raw)
         except Exception:
             return []
 
     async def get_message_count(self, tenant_id: str, user_id: str, session_id: str) -> int:
+        """返回当前 session 的消息条数。"""
         try:
-            key = self.build_messages_key(tenant_id, user_id, session_id)
+            key = self._build_session_keys(tenant_id, user_id, session_id)["messages"]
             return await self.redis.zcard(key)
         except Exception:
             return 0
 
-    # ------------------------------------------------------------------ #
-    # 摘要操作
-    # ------------------------------------------------------------------ #
-
-    async def get_summary(self, tenant_id: str, user_id: str, session_id: str) -> Optional[SessionSummary]:
+    async def get_summary(
+        self,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+    ) -> SessionSummary | None:
+        """读取会话摘要。"""
         try:
-            key = self.build_summary_key(tenant_id, user_id, session_id)
-            raw = await self.redis.get(key)
-            if raw:
-                data = json.loads(raw.decode('utf-8') if isinstance(raw, bytes) else raw)
-                return SessionSummary(**data)
+            key = self._build_session_keys(tenant_id, user_id, session_id)["summary"]
+            return await self._read_model(key, SessionSummary)
+        except Exception:
+            return None
+
+    async def save_summary(
+        self,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        summary: SessionSummary,
+    ) -> None:
+        """保存会话摘要。"""
+        try:
+            key = self._build_session_keys(tenant_id, user_id, session_id)["summary"]
+            await self._write_model(key, summary)
         except Exception:
             pass
-        return None
-
-    async def save_summary(self, tenant_id: str, user_id: str, session_id: str, summary: SessionSummary) -> None:
-        try:
-            key = self.build_summary_key(tenant_id, user_id, session_id)
-            await self.redis.set(key, summary.model_dump_json(), ex=self.ttl_seconds)
-        except Exception:
-            pass
-
-    # ------------------------------------------------------------------ #
-    # 元信息操作
-    # ------------------------------------------------------------------ #
 
     async def get_meta(self, tenant_id: str, user_id: str, session_id: str) -> SessionMeta:
+        """读取会话元信息，不存在时返回默认对象。"""
         try:
-            key = self.build_meta_key(tenant_id, user_id, session_id)
-            raw = await self.redis.get(key)
-            if raw:
-                data = json.loads(raw.decode('utf-8') if isinstance(raw, bytes) else raw)
-                return SessionMeta(**data)
+            key = self._build_session_keys(tenant_id, user_id, session_id)["meta"]
+            meta = await self._read_model(key, SessionMeta)
+            if meta:
+                return meta
         except Exception:
             pass
         return SessionMeta()
 
-    async def save_meta(self, tenant_id: str, user_id: str, session_id: str, meta: SessionMeta) -> None:
+    async def save_meta(
+        self,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        meta: SessionMeta,
+    ) -> None:
+        """保存会话元信息。"""
         try:
-            key = self.build_meta_key(tenant_id, user_id, session_id)
-            await self.redis.set(key, meta.model_dump_json(), ex=self.ttl_seconds)
+            key = self._build_session_keys(tenant_id, user_id, session_id)["meta"]
+            await self._write_model(key, meta)
         except Exception:
             pass
 
-    # ------------------------------------------------------------------ #
-    # 压缩判断与执行
-    # ------------------------------------------------------------------ #
-
-    def should_compress(self, total_turns: int, last_compressed_turn: int, message_count: int) -> bool:
+    def should_compress(
+        self,
+        total_turns: int,
+        last_compressed_turn: int,
+        message_count: int,
+    ) -> bool:
+        """根据轮次和消息数判断是否触发压缩。"""
         if not self.compression_enabled:
             return False
         if total_turns - last_compressed_turn >= self.trigger_rounds:
@@ -197,73 +285,73 @@ class RedisShortTermMemory:
         return False
 
     async def compress_session_memory(
-        self, tenant_id: str, user_id: str, session_id: str, llm_compress_func,
+        self,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        llm_compress_func: SummaryCompressor,
     ) -> bool:
+        """压缩旧消息，并保留最近若干轮原始消息。"""
         try:
-            meta = await self.get_meta(tenant_id, user_id, session_id)
-            msg_count = await self.get_message_count(tenant_id, user_id, session_id)
-            if not self.should_compress(meta.total_turns, meta.last_compressed_turn, msg_count):
+            context = await self._prepare_compression_context(
+                tenant_id,
+                user_id,
+                session_id,
+            )
+            if context is None:
                 return False
 
-            lock_key = self.build_lock_key(tenant_id, user_id, session_id)
-            acquired = await self.redis.set(lock_key, "1", ex=self.lock_ttl_seconds, nx=True)
+            keys, meta, old_summary_str, messages_to_compress, messages_to_keep = context
+            acquired = await self.redis.set(
+                keys["lock"],
+                "1",
+                ex=self.lock_ttl_seconds,
+                nx=True,
+            )
             if not acquired:
                 return False
 
             try:
-                old_summary = await self.get_summary(tenant_id, user_id, session_id)
-                all_messages = await self.get_recent_messages(tenant_id, user_id, session_id, limit=100)
-                old_summary_str = old_summary.model_dump_json() if old_summary else ""
-
-                recent_count = self.keep_recent_rounds * 2
-                messages_to_keep = all_messages[-recent_count:]
-                messages_to_compress = all_messages[:-recent_count] if len(all_messages) > recent_count else []
-
-                if messages_to_compress:
-                    new_summary_str = await llm_compress_func(old_summary_str, messages_to_compress)
-                    import re as _re
-                    match = _re.search(r"\{.*\}", new_summary_str, _re.DOTALL)
-                    if match:
-                        data = json.loads(match.group())
-                        new_summary = SessionSummary(**data)
-                        await self.save_summary(tenant_id, user_id, session_id, new_summary)
-
-                if messages_to_keep:
-                    msg_key = self.build_messages_key(tenant_id, user_id, session_id)
-                    await self.redis.delete(msg_key)
-                    for msg in messages_to_keep:
-                        await self.append_message(tenant_id, user_id, session_id, msg)
+                await self._update_summary_from_messages(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    session_id=session_id,
+                    old_summary_str=old_summary_str,
+                    messages_to_compress=messages_to_compress,
+                    llm_compress_func=llm_compress_func,
+                )
+                await self._rewrite_recent_messages(
+                    key=keys["messages"],
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    session_id=session_id,
+                    messages=messages_to_keep,
+                )
 
                 meta.last_compressed_turn = meta.total_turns
                 await self.save_meta(tenant_id, user_id, session_id, meta)
                 return True
             finally:
-                await self.redis.delete(lock_key)
+                await self.redis.delete(keys["lock"])
         except Exception:
             return False
 
-    # ------------------------------------------------------------------ #
-    # 辅助方法
-    # ------------------------------------------------------------------ #
-
     async def refresh_ttl(self, tenant_id: str, user_id: str, session_id: str) -> None:
+        """刷新当前 session 相关 key 的 TTL。"""
         try:
+            keys = self._build_session_keys(tenant_id, user_id, session_id)
             await asyncio.gather(
-                self.redis.expire(self.build_messages_key(tenant_id, user_id, session_id), self.ttl_seconds),
-                self.redis.expire(self.build_summary_key(tenant_id, user_id, session_id), self.ttl_seconds),
-                self.redis.expire(self.build_meta_key(tenant_id, user_id, session_id), self.ttl_seconds),
+                self.redis.expire(keys["messages"], self.ttl_seconds),
+                self.redis.expire(keys["summary"], self.ttl_seconds),
+                self.redis.expire(keys["meta"], self.ttl_seconds),
             )
         except Exception:
             pass
 
     async def clear_session(self, tenant_id: str, user_id: str, session_id: str) -> None:
+        """清理当前 session 的全部短期记忆数据。"""
         try:
-            keys = [
-                self.build_messages_key(tenant_id, user_id, session_id),
-                self.build_summary_key(tenant_id, user_id, session_id),
-                self.build_meta_key(tenant_id, user_id, session_id),
-                self.build_lock_key(tenant_id, user_id, session_id),
-            ]
-            await self.redis.delete(*keys)
+            keys = self._build_session_keys(tenant_id, user_id, session_id)
+            await self.redis.delete(*keys.values())
         except Exception:
             pass

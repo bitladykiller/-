@@ -10,11 +10,9 @@ services:
       MYSQL_USER: kefu_user
       MYSQL_PASSWORD: 1234
       TZ: Asia/Shanghai
-    ports:
-      - "13306:3306"
     volumes:
-      - ./docker_data/mysql:/var/lib/mysql
-      - ./mysql-init:/docker-entrypoint-initdb.d
+      - mysql_data:/var/lib/mysql
+      - ./mysql-init:/docker-entrypoint-initdb.d:ro
     command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
@@ -24,35 +22,48 @@ services:
 
   # Neo4j 图数据库服务
   neo4j:
-    image: neo4j:latest
+    # 锁定到本机现有 `neo4j:latest` 对应的 digest，避免 `latest` 漂移。
+    image: neo4j@sha256:09c2b7ce2f7a9b7c230669d7a50c0c8fcd548d1891e701cf11685e7afdebbaf4
     container_name: kefu_neo4j
     restart: unless-stopped
     environment:
       NEO4J_AUTH: neo4j/12345678
-    ports:
-      - "17474:7474"
-      - "17687:7687"
     volumes:
-      - ./docker_data/neo4j/data:/data
-      - ./docker_data/neo4j/logs:/logs
-      - ./docker_data/neo4j/plugins:/plugins
-      - ./llm_backend/app/graphrag/origin_data/data/neo4j_admin:/var/lib/neo4j/import
-      - ./neo4j-import.sh:/var/lib/neo4j/scripts/neo4j-import.sh
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_plugins:/plugins
+      - ./docker/neo4j-import:/var/lib/neo4j/import:ro
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
 
+  # Neo4j 初始化导入任务
+  neo4j-importer:
+    image: neo4j@sha256:09c2b7ce2f7a9b7c230669d7a50c0c8fcd548d1891e701cf11685e7afdebbaf4
+    container_name: kefu_neo4j_importer
+    restart: "no"
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    environment:
+      NEO4J_IMPORT_DATA_DIR: /import-data
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: 12345678
+    volumes:
+      - ./neo4j-import.sh:/scripts/neo4j-import.sh:ro
+      - ./docker/neo4j-import:/import-data:ro
+    command: ["/bin/bash", "/scripts/neo4j-import.sh"]
+
   # Redis 缓存服务
   redis:
     image: redis:7.0.10
     container_name: kefu_redis
     restart: unless-stopped
-    ports:
-      - "16379:6379"
     volumes:
-      - ./docker_data/redis:/data
+      - redis_data:/data
     command: redis-server --appendonly yes --requirepass ""
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -71,8 +82,8 @@ services:
       ETCD_QUOTA_BACKEND_BYTES: "4294967296"
       ETCD_SNAPSHOT_COUNT: "50000"
     volumes:
-      - ./docker_data/etcd:/etcd
-    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+      - etcd_data:/etcd
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
     healthcheck:
       test: ["CMD", "etcdctl", "endpoint", "health"]
       interval: 10s
@@ -81,18 +92,15 @@ services:
 
   # Milvus 依赖 - MinIO
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
     container_name: kefu_minio
     restart: unless-stopped
     environment:
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
-    ports:
-      - "19000:9000"
-      - "19001:9001"
     volumes:
-      - ./docker_data/minio:/minio_data
-    command: minio server /minio_data --console-address ":9001"
+      - minio_data:/minio_data
+    command: minio server /minio_data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 10s
@@ -107,11 +115,8 @@ services:
     environment:
       ETCD_ENDPOINTS: etcd:2379
       MINIO_ADDRESS: minio:9000
-    ports:
-      - "19530:19530"
-      - "19091:9091"
     volumes:
-      - ./docker_data/milvus:/var/lib/milvus
+      - milvus_data:/var/lib/milvus
     command: ["milvus", "run", "standalone"]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
@@ -124,7 +129,60 @@ services:
       minio:
         condition: service_healthy
 
+  # FastAPI 后端应用
+  app:
+    build:
+      context: .
+      dockerfile: llm_backend/Dockerfile
+    image: deepseek-agent-app:local
+    container_name: kefu_app
+    restart: unless-stopped
+    env_file:
+      - ./llm_backend/.env
+      - ./.env.docker
+    command: ["/app/docker/app/start.sh"]
+    ports:
+      - "8000:8000"
+    volumes:
+      - app_uploads:/app/llm_backend/uploads
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      mysql:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      neo4j-importer:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+
 networks:
   default:
     name: kefu_network
     driver: bridge
+
+volumes:
+  mysql_data:
+    name: kefu_mysql_data
+  neo4j_data:
+    name: kefu_neo4j_data
+  neo4j_logs:
+    name: kefu_neo4j_logs
+  neo4j_plugins:
+    name: kefu_neo4j_plugins
+  redis_data:
+    name: kefu_redis_data
+  etcd_data:
+    name: kefu_etcd_data
+  minio_data:
+    name: kefu_minio_data
+  milvus_data:
+    name: kefu_milvus_data
+  app_uploads:
+    name: kefu_app_uploads

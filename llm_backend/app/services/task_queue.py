@@ -1,181 +1,146 @@
-"""
-异步任务队列 — 基于 Redis 的轻量级后台任务管理。
+"""异步任务队列。
 
-设计思路（WHY）：
-- 文档解析（PDF/DOCX）是 CPU 密集型操作，在 HTTP 请求中同步执行会阻塞 worker。
-- 项目已有 Redis，无需引入 Celery 等重型框架。
-- 使用 asyncio.create_task + Redis 状态存储实现轻量级异步任务。
+职责：
+- 为文档解析等长耗时任务生成 task_id
+- 用 Redis 保存任务状态，供轮询接口读取
+- 用 `asyncio.create_task` 托管后台协程
 
-使用方式：
-1. 调用 TaskManager.submit() 提交任务，获得 task_id
-2. 前端通过 task_id 轮询 TaskManager.get_status()
-3. 任务完成后 status 包含 result 或 error
-
-任务状态生命周期：pending → running → completed / failed
+边界：
+- 这里只负责“提交 / 状态流转 / 结果持久化”
+- 不负责具体的文档解析业务
+- 关闭时只释放 Redis 连接，不主动改写后台任务生命周期
 """
 from __future__ import annotations
 
 import asyncio
-import json
-import logging
-import uuid
-from datetime import datetime
-from enum import Enum
-from typing import Any, Callable, Coroutine, Optional
+from typing import Any, cast
 
-import redis.asyncio as aioredis
+from app.core.logger import get_logger
+from app.services.task_queue_runtime import (
+    close_runtime_safely,
+    get_or_create_runtime,
+    reset_runtime,
+)
+from app.services.task_queue_support import (
+    TaskCallable,
+    TaskStore,
+    create_redis_client,
+    read_task_status,
+    run_task_with_status_updates,
+    spawn_tracked_task,
+    task_callable_name,
+    write_task_status,
+)
+from app.services.task_queue_utils import (
+    TaskStatus,
+    TaskStatusPayload,
+    new_task_id,
+)
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
-class TaskStatus(str, Enum):
-    """任务状态枚举。"""
-    PENDING = "pending"        # 已提交，等待执行
-    RUNNING = "running"        # 正在执行
-    COMPLETED = "completed"    # 执行成功
-    FAILED = "failed"          # 执行失败
-
-
-# Redis key 模板
-_TASK_KEY_PREFIX = "task:doc_parse:"
-_TASK_TTL = 3600 * 24  # 任务状态保留 24 小时
+def _build_task_manager(redis_url: str) -> "TaskManager":
+    """根据 Redis URL 构造 TaskManager 实例。"""
+    return TaskManager(create_redis_client(redis_url))
 
 
 class TaskManager:
-    """基于 Redis 的异步任务管理器。
+    """基于 Redis 的异步任务管理器。"""
 
-    职责：
-    - 提交异步任务并分配 task_id
-    - 在 Redis 中维护任务状态（pending/running/completed/failed）
-    - 提供状态查询接口
-
-    使用方式：
-        manager = TaskManager(redis_client)
-        task_id = await manager.submit(my_coroutine_func, arg1, arg2)
-        status = await manager.get_status(task_id)
-    """
-
-    def __init__(self, redis_client: aioredis.Redis) -> None:
+    def __init__(self, redis_client: TaskStore) -> None:
         self._redis = redis_client
-        # 保存 task 引用，防止 "Task exception was never retrieved" 警告
-        self._pending_tasks: set[asyncio.Task] = set()
+        # 保留后台任务引用，避免任务未完成前被垃圾回收后丢失异常信息。
+        self._pending_tasks: set[asyncio.Task[Any]] = set()
 
-    def _task_key(self, task_id: str) -> str:
-        """生成 Redis key。"""
-        return f"{_TASK_KEY_PREFIX}{task_id}"
-
-    async def _set_status(
+    async def _save_status(
         self,
         task_id: str,
         status: TaskStatus,
         *,
         result: Any = None,
-        error: Optional[str] = None,
+        error: str | None = None,
     ) -> None:
-        """更新任务状态到 Redis。"""
-        data = {
-            "task_id": task_id,
-            "status": status.value,
-            "updated_at": datetime.now().isoformat(),
-        }
-        if result is not None:
-            data["result"] = result
-        if error is not None:
-            data["error"] = error
+        """统一写入任务状态，主流程只表达状态流转。"""
+        await write_task_status(
+            self._redis,
+            task_id,
+            status,
+            result=result,
+            error=error,
+        )
 
-        key = self._task_key(task_id)
-        await self._redis.set(key, json.dumps(data, ensure_ascii=False, default=str), ex=_TASK_TTL)
+    def _spawn_task(
+        self,
+        task_id: str,
+        coro_func: TaskCallable,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        """创建后台任务并保留引用，避免异常未消费警告。"""
+        spawn_tracked_task(
+            self._pending_tasks,
+            task_id,
+            run_task_with_status_updates(
+                self._redis,
+                logger,
+                task_id,
+                coro_func,
+                *args,
+                **kwargs,
+            ),
+        )
 
     async def submit(
         self,
-        coro_func: Callable[..., Coroutine],
+        coro_func: TaskCallable,
         *args: Any,
         **kwargs: Any,
     ) -> str:
-        """提交一个异步任务。
+        """提交一个后台协程任务并返回 task_id。"""
+        task_id = new_task_id()
+        await self._save_status(task_id, TaskStatus.PENDING)
 
-        Args:
-            coro_func: 异步函数（协程函数）。
-            *args, **kwargs: 传递给 coro_func 的参数。
-
-        Returns:
-            task_id: 任务唯一标识，用于后续查询状态。
-        """
-        task_id = uuid.uuid4().hex[:12]
-
-        # 初始状态：pending
-        await self._set_status(task_id, TaskStatus.PENDING)
-
-        # 启动后台任务，保存引用防止异常丢失
-        task = asyncio.create_task(self._run_task(task_id, coro_func, *args, **kwargs))
-        self._pending_tasks.add(task)
-        task.add_done_callback(self._pending_tasks.discard)
-
-        logger.info("任务已提交 | task_id=%s | func=%s", task_id, coro_func.__name__)
+        self._spawn_task(task_id, coro_func, *args, **kwargs)
+        logger.info(
+            "任务已提交 | task_id=%s | func=%s",
+            task_id,
+            task_callable_name(coro_func),
+        )
         return task_id
 
-    async def _run_task(
-        self,
-        task_id: str,
-        coro_func: Callable[..., Coroutine],
-        *args: Any,
-        **kwargs: Any,
-    ) -> None:
-        """后台执行任务并更新状态。"""
-        await self._set_status(task_id, TaskStatus.RUNNING)
-        try:
-            result = await coro_func(*args, **kwargs)
-            await self._set_status(task_id, TaskStatus.COMPLETED, result=result)
-            logger.info("任务完成 | task_id=%s", task_id)
-        except Exception as exc:
-            await self._set_status(task_id, TaskStatus.FAILED, error=str(exc))
-            logger.error("任务失败 | task_id=%s | %s", task_id, exc, exc_info=True)
+    async def get_status(self, task_id: str) -> TaskStatusPayload | None:
+        """读取任务状态，不存在时返回 None。"""
+        return await read_task_status(self._redis, task_id)
 
-    async def get_status(self, task_id: str) -> Optional[dict]:
-        """查询任务状态。
+    async def close(self) -> None:
+        """关闭底层 Redis 连接。
 
-        Args:
-            task_id: 任务唯一标识。
-
-        Returns:
-            任务状态字典，包含 task_id/status/updated_at/result/error。
-            任务不存在时返回 None。
+        TaskManager 不在这里取消后台任务，避免关闭动作和业务任务生命周期耦合。
+        应用层如果需要优雅停机，应先阻止新任务进入，再决定是否等待现有任务收尾。
         """
-        key = self._task_key(task_id)
-        raw = await self._redis.get(key)
-        if raw is None:
-            return None
-        return json.loads(raw)
-
-
-# ================================================================== #
-# 模块级单例 — 加 asyncio.Lock 防并发创建
-# ================================================================== #
-
-_task_manager_instance: Optional[TaskManager] = None
-_task_manager_lock: asyncio.Lock = asyncio.Lock()
+        await self._redis.close()
 
 
 async def get_task_manager() -> TaskManager:
     """获取 TaskManager 单例。首次调用时创建 Redis 连接。"""
-    global _task_manager_instance
-    if _task_manager_instance is not None:
-        return _task_manager_instance
-    async with _task_manager_lock:
-        if _task_manager_instance is not None:
-            return _task_manager_instance
-        from app.core.config import settings
-        redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
-        _task_manager_instance = TaskManager(redis_client)
-        return _task_manager_instance
+    from app.core.config import settings
+
+    return cast(
+        TaskManager,
+        await get_or_create_runtime(
+            lambda: _build_task_manager(settings.REDIS_URL)
+        ),
+    )
 
 
 async def close_task_manager() -> None:
-    """关闭 TaskManager 的 Redis 连接。在应用 shutdown 时调用。"""
-    global _task_manager_instance
-    if _task_manager_instance is not None:
-        try:
-            await _task_manager_instance._redis.close()
-        except Exception:
-            pass
-        _task_manager_instance = None
+    """关闭 TaskManager 的 Redis 连接。"""
+    manager = reset_runtime()
+    if manager is None:
+        return
+
+    await close_runtime_safely(manager)
+
+
+__all__ = ["TaskStatusPayload", "TaskManager", "get_task_manager", "close_task_manager"]
