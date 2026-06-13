@@ -46,6 +46,9 @@ docker-down: ## 停止 Docker 服务
 docker-logs: ## 查看 Docker 日志
 	docker compose logs -f
 
+neo4j-import: ## 导入 Neo4j 数据
+	./scripts/neo4j-import.sh
+
 pre-commit: ## 运行 pre-commit hooks
 	pre-commit run --all-files
 

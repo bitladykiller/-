@@ -12,7 +12,7 @@ services:
       TZ: Asia/Shanghai
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./mysql-init:/docker-entrypoint-initdb.d:ro
+      - ./configs/mysql-init:/docker-entrypoint-initdb.d:ro
     command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
@@ -32,7 +32,7 @@ services:
       - neo4j_data:/data
       - neo4j_logs:/logs
       - neo4j_plugins:/plugins
-      - ./docker/neo4j-import:/var/lib/neo4j/import:ro
+      - ./configs/docker/neo4j-import:/var/lib/neo4j/import:ro
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
       interval: 10s
@@ -54,7 +54,7 @@ services:
       NEO4J_PASSWORD: 12345678
     volumes:
       - ./neo4j-import.sh:/scripts/neo4j-import.sh:ro
-      - ./docker/neo4j-import:/import-data:ro
+      - ./configs/docker/neo4j-import:/import-data:ro
     command: ["/bin/bash", "/scripts/neo4j-import.sh"]
 
   # Redis 缓存服务
@@ -140,7 +140,7 @@ services:
     env_file:
       - ./llm_backend/.env
       - ./.env.docker
-    command: ["/app/docker/app/start.sh"]
+    command: ["/app/configs/docker/app/start.sh"]
     ports:
       - "8000:8000"
     volumes:

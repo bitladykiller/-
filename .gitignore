@@ -43,8 +43,8 @@ log/
 .env.local
 .env.*.local
 
-# Uploads
-uploads/
+# Uploads (moved to data/)
+data/uploads/
 
 # IDE
 .omo/
