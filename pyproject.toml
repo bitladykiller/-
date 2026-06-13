@@ -1,0 +1,112 @@
+[project]
+name = "deepseek-agent"
+version = "3.34.0"
+description = "基于大语言模型的智能客服系统"
+authors = [{name = "Your Name", email = "your.email@example.com"}]
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+# 运行依赖唯一来源是 requirements.txt（Docker 与 pip install -e . 共用）。
+# 之前这里维护第二份清单，已与 requirements.txt 漂移（例如缺 langchain-deepseek）——
+# 两份清单意味着"本地装的"和"容器装的"可以悄悄不一致。
+dynamic = ["dependencies"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+    "mypy>=1.7.0",
+    "pre-commit>=3.5.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+pythonpath = ["."]
+python_files = ["test_*.py", "*_test.py"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["app"]
+extend-exclude = ["uploads", "app/static/dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "C", "B", "UP"]
+# E501: Cypher/SQL 长字符串不适合强制折行
+# B008: FastAPI Depends 常见写法
+# C901: 复杂业务函数（workflow/react/parser）暂不机械拆分
+ignore = ["E501", "B008", "C901"]
+
+[tool.mypy]
+python_version = "3.10"
+explicit_package_bases = true
+mypy_path = "."
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+strict_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+namespace_packages = true
+# 第三方动态库导致的噪音：不阻断本地开发，真实逻辑仍由 pytest 兜底
+disable_error_code = [
+  "no-any-return",
+  "import-untyped",
+  "import-not-found",
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "langchain.*",
+    "langgraph.*",
+    "pymilvus.*",
+    "neo4j.*",
+    "sklearn.*",
+    "msgpack.*",
+    "pyzstd.*",
+]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+ignore_errors = true
