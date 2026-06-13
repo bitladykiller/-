@@ -59,7 +59,8 @@ class MemoryExtractor:
             )
             profile = normalize_profile_data(parsed.get("profile"))
             return semantic, profile
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"[memory] LLM 响应解析失败: {exc}")
             return [], {}
 
     def should_save(self, content: str) -> bool:

@@ -206,7 +206,8 @@ class RedisShortTermMemory:
             limit = limit or self.max_messages
             raw = await self.redis.zrevrange(key, 0, limit - 1)
             return decode_messages(raw)
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"[stm] 读取最近消息失败: {exc}")
             return []
 
     async def get_message_count(self, tenant_id: str, user_id: str, session_id: str) -> int:
@@ -214,7 +215,8 @@ class RedisShortTermMemory:
         try:
             key = self._build_session_keys(tenant_id, user_id, session_id)["messages"]
             return await self.redis.zcard(key)
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"[stm] 获取消息计数失败: {exc}")
             return 0
 
     async def get_summary(
@@ -227,7 +229,8 @@ class RedisShortTermMemory:
         try:
             key = self._build_session_keys(tenant_id, user_id, session_id)["summary"]
             return await self._read_model(key, SessionSummary)
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"[stm] 读取会话摘要失败: {exc}")
             return None
 
     async def save_summary(
@@ -333,7 +336,8 @@ class RedisShortTermMemory:
                 return True
             finally:
                 await self.redis.delete(keys["lock"])
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"[stm] 压缩会话记忆失败: {exc}")
             return False
 
     async def refresh_ttl(self, tenant_id: str, user_id: str, session_id: str) -> None:

@@ -167,7 +167,8 @@ def parse_llm_response(response: str) -> dict[str, Any]:
         if not isinstance(parsed, dict):
             return {}
         return parsed
-    except Exception:
+    except Exception as exc:
+        logger.debug(f"[memory] JSON 解析失败: {exc}")
         return {}
 
 

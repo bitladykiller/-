@@ -125,7 +125,8 @@ def decode_messages(raw_messages: list[bytes | str]) -> list[MessageRecord]:
     for raw_message in raw_messages:
         try:
             messages.append(decompress_message(raw_message))
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"[stm] 解压消息失败: {exc}")
             continue
 
     messages.reverse()
