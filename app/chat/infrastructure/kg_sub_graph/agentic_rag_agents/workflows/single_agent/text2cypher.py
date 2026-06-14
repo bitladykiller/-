@@ -148,13 +148,6 @@ _VALIDATION_PROMPT = ChatPromptTemplate.from_messages(
         ),
     ]
 )
-
-
-def _coerce_task_text(task: str | list[str]) -> str:
-    """把状态里的 task 统一转换为字符串。"""
-    return task[0] if isinstance(task, list) else task
-
-
 def _create_text2cypher_generation_node(
     llm: BaseChatModel,
     graph: Neo4jGraph,
@@ -165,8 +158,9 @@ def _create_text2cypher_generation_node(
 
     async def generate_cypher(state: CypherInputState) -> dict[str, Any]:
         task = state.get("task", "")
+        normalized_task = task[0] if isinstance(task, list) else task
         examples = cypher_example_retriever.get_examples(
-            query=_coerce_task_text(task),
+            query=normalized_task,
             k=3,
         )
         generated_cypher = await text2cypher_chain.ainvoke(
@@ -308,7 +302,7 @@ def create_text2cypher_agent(
 
         async def predefined_match(state: CypherState) -> dict:
             task = state.get("task", "")
-            normalized_task = str(_coerce_task_text(task))
+            normalized_task = str(task[0] if isinstance(task, list) else task)
             matches = matcher.match_query(normalized_task, top_k=1)
             if not matches or matches[0]["similarity"] <= 0.6:
                 return {
