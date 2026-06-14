@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 
 def extract_first_json_object(content: str) -> str | None:
     """提取首个完整 JSON 对象，避免额外文本或字符串里的大括号干扰。"""
@@ -34,3 +37,15 @@ def extract_first_json_object(content: str) -> str | None:
                 return content[start : index + 1]
 
     return None
+
+
+def parse_first_json_object(content: str) -> dict[str, Any] | None:
+    """提取并解析首个 JSON 对象；仅接受字典结构。"""
+    payload = extract_first_json_object(content)
+    if payload is None:
+        return None
+    try:
+        parsed = json.loads(payload)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None

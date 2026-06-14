@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -18,7 +17,7 @@ import requests
 from sklearn.metrics.pairwise import cosine_similarity
 
 from app.shared.core.config import settings
-from app.shared.core.json_utils import extract_first_json_object
+from app.shared.core.json_utils import parse_first_json_object
 
 _DEFAULT_EMBEDDING_DIM = 1024
 _PARAM_PATTERNS: dict[str, re.Pattern[str]] = {
@@ -99,11 +98,8 @@ def extract_parameters_with_rules(
 def parse_json_response(content: str) -> dict[str, Any]:
     """从模型返回内容中提取 JSON 对象。"""
     try:
-        payload = extract_first_json_object(content)
-        if payload is None:
-            return {}
-        parsed = json.loads(payload)
-        return parsed if isinstance(parsed, dict) else {}
+        parsed = parse_first_json_object(content)
+        return parsed or {}
     except Exception:
         return {}
 

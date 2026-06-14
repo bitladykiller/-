@@ -8,12 +8,11 @@
 
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
 from app.shared.core.logger import get_logger
-from app.shared.core.json_utils import extract_first_json_object
+from app.shared.core.json_utils import parse_first_json_object
 from app.knowledge.infrastructure.config import (
     compiled_sensitive_patterns,
     long_term_memory_type_values,
@@ -81,13 +80,8 @@ def extract_response_text(response: Any) -> str:
 def parse_llm_response(response: str) -> dict[str, Any]:
     """从 LLM 返回文本中提取首个 JSON 对象。"""
     try:
-        payload = extract_first_json_object(response)
-        if payload is None:
-            return {}
-        parsed = json.loads(payload)
-        if not isinstance(parsed, dict):
-            return {}
-        return parsed
+        parsed = parse_first_json_object(response)
+        return parsed or {}
     except Exception as exc:
         logger.debug("[memory] JSON 解析失败: %s", exc)
         return {}
