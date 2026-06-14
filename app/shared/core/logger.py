@@ -12,7 +12,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 import logging
 import sys
 
@@ -31,48 +30,18 @@ _NOISY_LOGGERS = (
 _logging_initialized = False
 
 
-def _has_log_value(value: object) -> bool:
-    """判断上下文字段是否值得写入日志。"""
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return bool(value.strip())
-    if isinstance(value, (list, tuple, set, dict)):
-        return bool(value)
-    return True
-
-
-def _iter_log_context_parts(**context: object) -> Iterator[str]:
-    """遍历值得写入日志的上下文字段片段。"""
-    for key, value in context.items():
-        if _has_log_value(value):
-            yield f"{key}={value}"
-
-
 def format_log_context(**context: object) -> str:
     """把上下文字段拼成稳定日志片段，避免业务模块重复手写。"""
-    return " ".join(_iter_log_context_parts(**context))
-
-
-def _build_stream_handler(
-    format_str: str,
-    date_format: str,
-) -> logging.StreamHandler:
-    """构造统一格式的 stdout handler。"""
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter(format_str, datefmt=date_format))
-    return handler
-
-
-def _has_stream_handler(logger: logging.Logger) -> bool:
-    """判断 logger 是否已经挂载了控制台输出 handler。"""
-    for handler in logger.handlers:
-        if isinstance(handler, logging.StreamHandler) and not isinstance(
-            handler,
-            logging.FileHandler,
-        ):
-            return True
-    return False
+    parts: list[str] = []
+    for key, value in context.items():
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        if isinstance(value, (list, tuple, set, dict)) and not value:
+            continue
+        parts.append(f"{key}={value}")
+    return " ".join(parts)
 
 
 def configure_noisy_loggers(level: int = logging.WARNING) -> None:
@@ -90,8 +59,17 @@ def configure_root_logger(
 ) -> None:
     """对目标 root logger 应用统一级别和 handler 策略。"""
     root.setLevel(level)
-    if not _has_stream_handler(root):
-        root.addHandler(_build_stream_handler(format_str, date_format))
+    has_stream_handler = any(
+        isinstance(handler, logging.StreamHandler)
+        and not isinstance(handler, logging.FileHandler)
+        for handler in root.handlers
+    )
+    if has_stream_handler:
+        return
+
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter(format_str, datefmt=date_format))
+    root.addHandler(handler)
 
 
 def setup_logging(

@@ -27,18 +27,6 @@ _LONG_TERM_MEMORY_NOTE = "注意：以上长期记忆仅供参考，用户当前
 _COMPRESSION_ASSISTANT_ROLE = "对话摘要助手"
 
 
-def _get_memory_type_label(memory_type: str) -> str:
-    """获取记忆类型的中文标签。"""
-    return _MEMORY_TYPE_LABELS.get(memory_type, memory_type)
-
-
-def _format_memory_line(index: int, search_result: MemorySearchResult) -> str:
-    """把单条长期记忆格式化为提示词中的一行。"""
-    memory = search_result.memory
-    memory_type = _get_memory_type_label(memory.memory_type)
-    return f"{index}. {memory_type}：{memory.content}"
-
-
 def _build_prompt_block(
     title: str,
     body: str,
@@ -53,23 +41,6 @@ def _build_prompt_block(
     return f"{block}\n{note}" if note else block
 
 
-def _format_message_for_compression(message: MessageRecord) -> str | None:
-    """把一条短期消息格式化成压缩提示词里的单行文本。"""
-    if not getattr(message, "role", None) or not getattr(message, "content", None):
-        return None
-    return f"[{message.role}]: {message.content}"
-
-
-def _format_messages_for_compression(messages: list[MessageRecord]) -> str:
-    """把历史消息列表格式化为压缩提示词中的文本块。"""
-    lines = [
-        formatted
-        for message in messages
-        if (formatted := _format_message_for_compression(message)) is not None
-    ]
-    return "\n".join(lines)
-
-
 def build_memory_injection_prompt(
     long_term_memories: list[MemorySearchResult] | None,
 ) -> str:
@@ -77,10 +48,16 @@ def build_memory_injection_prompt(
     if not long_term_memories:
         return ""
 
-    memories_text = "\n".join(
-        _format_memory_line(index, search_result)
-        for index, search_result in enumerate(long_term_memories, 1)
-    )
+    memory_lines: list[str] = []
+    for index, search_result in enumerate(long_term_memories, 1):
+        memory = search_result.memory
+        memory_type_label = _MEMORY_TYPE_LABELS.get(
+            memory.memory_type,
+            memory.memory_type,
+        )
+        memory_lines.append(f"{index}. {memory_type_label}：{memory.content}")
+
+    memories_text = "\n".join(memory_lines)
     return _build_prompt_block(
         _LONG_TERM_MEMORY_TITLE,
         memories_text,
@@ -103,7 +80,11 @@ def build_compression_prompt(
     compressed_round: int,
 ) -> str:
     """构建 STM 压缩阶段发给 LLM 的摘要提示词。"""
-    messages_text = _format_messages_for_compression(old_messages)
+    messages_text = "\n".join(
+        f"[{message.role}]: {message.content}"
+        for message in old_messages
+        if getattr(message, "role", None) and getattr(message, "content", None)
+    )
     return f"""你是{_COMPRESSION_ASSISTANT_ROLE}。请将以下对话历史压缩为一段简洁的摘要。
 
 已有的摘要（如有）：{old_summary or "无"}
