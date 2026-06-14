@@ -162,28 +162,6 @@ def has_dedup_match(
     return max_score >= similarity_threshold
 
 
-def should_insert_memory(
-    *,
-    milvus_client: Any,
-    collection_name: str,
-    embedding: list[float],
-    filter_expr: str,
-    top_k: int,
-    output_fields: list[str],
-    similarity_threshold: float,
-) -> bool:
-    """执行去重检索，返回是否应继续插入新长期记忆。"""
-    results = search_records(
-        milvus_client,
-        collection_name,
-        embedding,
-        filter_expr,
-        limit=top_k,
-        output_fields=output_fields,
-    )
-    return not has_dedup_match(results, similarity_threshold)
-
-
 class _HitUpdatePlan(TypedDict):
     """长期记忆命中后的更新计划。"""
 
@@ -299,59 +277,22 @@ def create_default_retrieval_core(
     )
 
 
-def ensure_collection_ready(
-    *,
-    milvus_client: Any,
-    collection_name: str,
-    logger: Any,
-) -> None:
-    """初始化长期记忆 collection，不存在时自动创建。"""
-    created = ensure_memory_collection(
-        milvus_client,
-        collection_name,
-    )
-    if not created:
-        logger.info(f"Collection {collection_name} 已存在")
-        return
-    logger.info(f"Collection {collection_name} 创建成功（含 BM25 全文索引）")
-
-
-async def search_hybrid_memories(
-    *,
-    retrieval_core: Any,
-    query: str,
-    top_k: int,
-    filter_expr: str,
-    output_fields: list[str],
-    score_threshold: float,
-    search_limit_multiplier: int,
-) -> list[MemorySearchResult]:
-    """执行 hybrid 检索并转换成统一结果结构。"""
-    hits = await retrieval_core.search_hybrid(
-        query,
-        limit=top_k,
-        filter_expr=filter_expr,
-        output_fields=output_fields,
-        score_threshold=score_threshold,
-        search_limit=top_k * search_limit_multiplier,
-    )
-    return search_results_from_hits(hits)
-
-
 def ensure_collection_ready_or_raise(
     *,
     milvus_client: Any,
     collection_name: str,
     logger: LoggerLike,
-    ensure_collection_ready: Callable[..., None],
 ) -> None:
     """确保长期记忆 collection 已就绪；失败时统一补充上下文日志。"""
     try:
-        ensure_collection_ready(
-            milvus_client=milvus_client,
-            collection_name=collection_name,
-            logger=logger,
+        created = ensure_memory_collection(
+            milvus_client,
+            collection_name,
         )
+        if not created:
+            logger.info(f"Collection {collection_name} 已存在")
+            return
+        logger.info(f"Collection {collection_name} 创建成功（含 BM25 全文索引）")
     except Exception as exc:
         logger.error(
             f"创建 Collection {collection_name} 失败 | {exc}",
@@ -441,7 +382,6 @@ async def deduplicate_memory_content(
     get_embedding: EmbeddingGetter,
     logger: LoggerLike,
     build_active_memory_filter: Callable[[str, str, str | None], str],
-    should_insert_memory: Callable[..., bool],
     deduplication_config: dict[str, Any],
     dedup_output_fields: list[str],
     milvus_client: Any,
@@ -454,14 +394,17 @@ async def deduplicate_memory_content(
             return False
 
         filter_expr = build_active_memory_filter(tenant_id, user_id, memory_type)
-        return should_insert_memory(
-            milvus_client=milvus_client,
-            collection_name=collection_name,
-            embedding=embedding,
-            filter_expr=filter_expr,
-            top_k=deduplication_config["top_k"],
+        results = search_records(
+            milvus_client,
+            collection_name,
+            embedding,
+            filter_expr,
+            limit=deduplication_config["top_k"],
             output_fields=dedup_output_fields,
-            similarity_threshold=deduplication_config["similarity_threshold"],
+        )
+        return not has_dedup_match(
+            results,
+            deduplication_config["similarity_threshold"],
         )
     except Exception as exc:
         logger.error(
@@ -486,7 +429,6 @@ async def search_active_hybrid_memories(
         [dict[str, Any], str, str, int | None, float | None],
         tuple[str, int, float],
     ],
-    search_hybrid_memories: Callable[..., Awaitable[list[MemorySearchResult]]],
     preview_text: Callable[[str, int], str],
     logger: LoggerLike,
     search_log_preview_limit: int,
@@ -501,15 +443,15 @@ async def search_active_hybrid_memories(
             top_k,
             score_threshold,
         )
-        return await search_hybrid_memories(
-            retrieval_core=retrieval_core,
-            query=query,
+        hits = await retrieval_core.search_hybrid(
+            query,
+            limit=resolved_top_k,
             filter_expr=filter_expr,
             output_fields=output_fields,
             score_threshold=resolved_score_threshold,
-            search_limit_multiplier=search_limit_multiplier,
-            top_k=resolved_top_k,
+            search_limit=resolved_top_k * search_limit_multiplier,
         )
+        return search_results_from_hits(hits)
     except Exception as exc:
         logger.error(
             f"hybrid_search 异常 | tenant={tenant_id} user={user_id} "
@@ -582,7 +524,6 @@ class SimpleLongTermMemory:
             milvus_client=self.milvus_client,
             collection_name=self.collection_name,
             logger=logger,
-            ensure_collection_ready=ensure_collection_ready,
         )
 
     # ------------------------------------------------------------------ #
@@ -662,7 +603,6 @@ class SimpleLongTermMemory:
             get_embedding=self._get_embedding,
             logger=logger,
             build_active_memory_filter=build_active_memory_filter,
-            should_insert_memory=should_insert_memory,
             deduplication_config=self.deduplication_config,
             dedup_output_fields=DEDUP_OUTPUT_FIELDS,
             milvus_client=self.milvus_client,
@@ -705,7 +645,6 @@ class SimpleLongTermMemory:
             retrieval_core=self.retrieval_core,
             output_fields=MEMORY_OUTPUT_FIELDS,
             resolve_active_search=resolve_active_search_request,
-            search_hybrid_memories=search_hybrid_memories,
             preview_text=preview_text,
             logger=logger,
             search_log_preview_limit=SEARCH_LOG_PREVIEW_LIMIT,

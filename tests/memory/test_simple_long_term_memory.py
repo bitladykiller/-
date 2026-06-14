@@ -42,7 +42,7 @@ def _run(awaitable):
 
 
 def _build_ltm(monkeypatch, *, retrieval_core: FakeRetrievalCore | None = None):
-    monkeypatch.setattr(ltm_module, "ensure_collection_ready", lambda **_kwargs: None)
+    monkeypatch.setattr(ltm_module, "ensure_collection_ready_or_raise", lambda **_kwargs: None)
     embedding_model = FakeEmbeddingModel()
     return ltm_module.SimpleLongTermMemory(
         milvus_client=object(),
@@ -59,9 +59,38 @@ def test_constructor_uses_injected_retrieval_core(monkeypatch) -> None:
     assert ltm.retrieval_core is fake_core
 
 
+def test_ensure_collection_ready_or_raise_logs_created_or_existing(monkeypatch) -> None:
+    class FakeLogger:
+        def __init__(self) -> None:
+            self.info_messages: list[str] = []
+
+        def info(self, message: str) -> None:
+            self.info_messages.append(message)
+
+    logger = FakeLogger()
+    monkeypatch.setattr(ltm_module, "ensure_memory_collection", lambda *_args, **_kwargs: False)
+    ltm_module.ensure_collection_ready_or_raise(
+        milvus_client=object(),
+        collection_name="memory_coll",
+        logger=logger,
+    )
+
+    monkeypatch.setattr(ltm_module, "ensure_memory_collection", lambda *_args, **_kwargs: True)
+    ltm_module.ensure_collection_ready_or_raise(
+        milvus_client=object(),
+        collection_name="memory_coll",
+        logger=logger,
+    )
+
+    assert logger.info_messages == [
+        "Collection memory_coll 已存在",
+        "Collection memory_coll 创建成功（含 BM25 全文索引）",
+    ]
+
+
 def test_save_memory_inserts_record_built_from_embedding(monkeypatch) -> None:
     inserted_records: list[list[dict]] = []
-    monkeypatch.setattr(ltm_module, "ensure_collection_ready", lambda **_kwargs: None)
+    monkeypatch.setattr(ltm_module, "ensure_collection_ready_or_raise", lambda **_kwargs: None)
     monkeypatch.setattr(
         ltm_module,
         "insert_records",
@@ -134,12 +163,22 @@ def test_hybrid_search_uses_multiplier_for_search_limit(monkeypatch) -> None:
 
 
 def test_deduplicate_memory_returns_false_when_hit_threshold_reached(monkeypatch) -> None:
-    helper_calls: list[dict] = []
-    monkeypatch.setattr(ltm_module, "ensure_collection_ready", lambda **_kwargs: None)
+    search_calls: list[dict] = []
+    monkeypatch.setattr(ltm_module, "ensure_collection_ready_or_raise", lambda **_kwargs: None)
     monkeypatch.setattr(
         ltm_module,
-        "should_insert_memory",
-        lambda **kwargs: helper_calls.append(kwargs) or False,
+        "search_records",
+        lambda _client, _collection_name, embedding, filter_expr, *, limit, output_fields: (
+            search_calls.append(
+                {
+                    "embedding": embedding,
+                    "filter_expr": filter_expr,
+                    "limit": limit,
+                    "output_fields": output_fields,
+                }
+            )
+            or [[{"distance": 0.95}]]
+        ),
     )
 
     ltm = ltm_module.SimpleLongTermMemory(
@@ -160,16 +199,13 @@ def test_deduplicate_memory_returns_false_when_hit_threshold_reached(monkeypatch
     )
 
     assert should_save is False
-    assert helper_calls == [
+    assert search_calls == [
         {
-            "milvus_client": ltm.milvus_client,
-            "collection_name": "memory_coll",
             "embedding": [0.5, 0.6],
             "filter_expr": 'tenant_id == "tenant-1" and user_id == "user-1" and '
             'memory_type == "issue_history" and is_deleted == false',
-            "top_k": 2,
+            "limit": 2,
             "output_fields": ltm_module.DEDUP_OUTPUT_FIELDS,
-            "similarity_threshold": 0.9,
         }
     ]
 
