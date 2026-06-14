@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import Any, TypedDict
 
 from langchain_core.messages import AIMessage
@@ -35,13 +35,6 @@ def _message_role(message: Any) -> str:
     )
 
 
-def _message_content(message: Any) -> str:
-    """统一读取消息文本内容。"""
-    if isinstance(message, dict):
-        return str(message.get("content", "") or "")
-    return str(getattr(message, "content", "") or "")
-
-
 def build_safe_messages(
     system_prompt: str,
     messages: Sequence[Any],
@@ -50,7 +43,10 @@ def build_safe_messages(
     safe: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     for message in messages:
         role = _message_role(message) or "user"
-        content = _message_content(message)
+        if isinstance(message, dict):
+            content = str(message.get("content", "") or "")
+        else:
+            content = str(getattr(message, "content", "") or "")
         if role == "user":
             wrapped, _ = wrap_user_message(content)
             safe.append({"role": "user", "content": wrapped})
@@ -77,44 +73,33 @@ def build_simple_message_response(message: str) -> MessagePayload:
     return {"messages": [AIMessage(content=message)]}
 
 
-def _find_last_message_content(
-    messages: list[Any],
-    *,
-    predicate: Callable[[Any], bool],
-    skip_progress: bool = False,
-) -> str:
-    """反向查找最后一条满足条件的消息文本。"""
-    for message in reversed(messages):
-        if not predicate(message):
-            continue
-        content = _message_content(message)
-        if skip_progress and content and "正在" in content:
-            continue
-        return content
-    return ""
-
-
 def find_last_user_message(messages: list[Any]) -> str:
     """返回最后一条用户消息内容。"""
-    return _find_last_message_content(
-        messages,
-        predicate=lambda message: _message_role(message) in {"human", "user"},
-    )
+    for message in reversed(messages):
+        if _message_role(message) not in {"human", "user"}:
+            continue
+        if isinstance(message, dict):
+            return str(message.get("content", "") or "")
+        return str(getattr(message, "content", "") or "")
+    return ""
 
 
 def find_last_assistant_message(messages: list[Any]) -> str:
     """返回最后一条有效助手消息，优先跳过进度提示。"""
-    assistant_message = _find_last_message_content(
-        messages,
-        predicate=lambda message: _message_role(message) in {"ai", "assistant"},
-        skip_progress=True,
-    )
-    if assistant_message:
-        return assistant_message
-    return _find_last_message_content(
-        messages,
-        predicate=lambda message: _message_role(message) in {"ai", "assistant"},
-    )
+    fallback = ""
+    for message in reversed(messages):
+        if _message_role(message) not in {"ai", "assistant"}:
+            continue
+        if isinstance(message, dict):
+            content = str(message.get("content", "") or "")
+        else:
+            content = str(getattr(message, "content", "") or "")
+        if not fallback:
+            fallback = content
+        if content and "正在" in content:
+            continue
+        return content
+    return fallback
 
 
 __all__ = [
