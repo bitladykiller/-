@@ -38,11 +38,6 @@ ProfileReader: TypeAlias = Callable[[int, Any | None], Awaitable[UserProfileData
 ProfileWriter: TypeAlias = Callable[[int, UserProfileData, Any | None], Awaitable[bool]]
 
 
-def coerce_user_id(user_id: str) -> int:
-    """把字符串 user_id 安全转换为 int，失败时返回 0。"""
-    return int(user_id) if user_id and user_id.isdigit() else 0
-
-
 async def load_user_profile(
     user_id: int,
     redis_client: Any | None = None,
@@ -123,7 +118,7 @@ class MemoryMiddleware:
             memory_state.session_summary = None
             memory_state.recent_messages = []
 
-        uid = coerce_user_id(user_id)
+        uid = int(user_id) if user_id and user_id.isdigit() else 0
         if uid > 0:
             try:
                 memory_state.user_profile = await self.profile_reader(
@@ -248,7 +243,7 @@ class MemoryMiddleware:
                         memory.content,
                     )
 
-                uid = coerce_user_id(user_id)
+                uid = int(user_id) if user_id and user_id.isdigit() else 0
                 if uid > 0 and profile and isinstance(profile, dict):
                     try:
                         await self.profile_writer(

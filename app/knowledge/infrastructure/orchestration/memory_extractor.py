@@ -203,32 +203,10 @@ class MemoryExtractor:
         - profile_data: 存入 MySQL（preferred_brand, budget_range, preferred_category, tags, facts）
         """
         try:
-            prompt = self._build_extract_prompt(
-                user_message, assistant_message, session_summary
-            )
-            response = await self.llm_client.ainvoke(prompt)
-            raw = extract_response_text(response)
-            parsed = parse_llm_response(raw)
-            semantic = build_semantic_memories(
-                parsed,
-                sensitive_patterns=self.sensitive_patterns,
-            )
-            profile = normalize_profile_data(parsed.get("profile"))
-            return semantic, profile
-        except Exception as exc:
-            logger.debug("[memory] LLM 响应解析失败: %s", exc)
-            return [], {}
+            summary_text = extract_summary_text(session_summary)
+            summary_block = f"\n当前会话摘要：{summary_text}" if summary_text else ""
 
-    def _build_extract_prompt(
-        self,
-        user_message: str,
-        assistant_message: str,
-        session_summary: str | SessionSummary | None = None,
-    ) -> str:
-        summary_text = extract_summary_text(session_summary)
-        summary_block = f"\n当前会话摘要：{summary_text}" if summary_text else ""
-
-        return f"""你是长期记忆抽取助手。从客服对话中判断是否有值得写入长期记忆的信息。
+            prompt = f"""你是长期记忆抽取助手。从客服对话中判断是否有值得写入长期记忆的信息。
 
 **重要：如果本轮对话只是普通寒暄、简单问答、临时咨询，没有任何长期记忆价值，直接返回空 JSON {{}}。**
 
@@ -264,3 +242,15 @@ class MemoryExtractor:
   "profile": {{}}
 }}
 只输出JSON，不要其他内容。"""
+            response = await self.llm_client.ainvoke(prompt)
+            raw = extract_response_text(response)
+            parsed = parse_llm_response(raw)
+            semantic = build_semantic_memories(
+                parsed,
+                sensitive_patterns=self.sensitive_patterns,
+            )
+            profile = normalize_profile_data(parsed.get("profile"))
+            return semantic, profile
+        except Exception as exc:
+            logger.debug("[memory] LLM 响应解析失败: %s", exc)
+            return [], {}
