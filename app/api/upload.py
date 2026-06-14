@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import TypedDict
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
@@ -52,16 +52,6 @@ class StoredUploadFileInfo(UploadFileInfo, total=False):
     upload_time: str
     directory: str
 
-
-class UploadTarget(TypedDict):
-    """上传落盘目标。"""
-
-    user_uuid: str
-    timestamp: str
-    upload_dir: Path
-    file_path: Path
-
-
 class UploadAcceptedResponse(StoredUploadFileInfo, total=False):
     """上传接口的成功返回结构。"""
 
@@ -79,55 +69,6 @@ def validate_upload(file: UploadFile) -> None:
         )
     if not file.content_type:
         raise HTTPException(status_code=400, detail=_UNKNOWN_FILE_TYPE_DETAIL)
-
-
-def build_upload_target(
-    user_id: int,
-    filename: str | None,
-    *,
-    upload_dir_root: Path,
-    uuid_module: Any,
-    clock: type[datetime],
-) -> UploadTarget:
-    """构造用户目录、时间目录和最终保存路径。"""
-    user_uuid = str(uuid_module.uuid5(uuid_module.NAMESPACE_DNS, f"user_{user_id}"))
-    timestamp = clock.now().strftime("%Y%m%d_%H%M%S")
-    upload_dir = upload_dir_root / user_uuid / timestamp
-    upload_dir.mkdir(parents=True, exist_ok=True)
-
-    original_name = Path(filename or "upload").stem
-    ext = get_document_extension(filename)
-    new_filename = f"{original_name}_{timestamp}{ext}"
-    return {
-        "user_uuid": user_uuid,
-        "timestamp": timestamp,
-        "upload_dir": upload_dir,
-        "file_path": upload_dir / new_filename,
-    }
-
-
-def build_file_info(
-    *,
-    file: UploadFile,
-    user_id: int,
-    user_uuid: str,
-    timestamp: str,
-    file_path: Path,
-    directory: Path,
-    size: int,
-) -> StoredUploadFileInfo:
-    """组装统一的上传文件元信息。"""
-    return {
-        "filename": file_path.name,
-        "original_name": file.filename,
-        "size": size,
-        "type": file.content_type,
-        "path": file_path.as_posix(),
-        "user_id": user_id,
-        "user_uuid": user_uuid,
-        "upload_time": timestamp,
-        "directory": directory.as_posix(),
-    }
 
 
 def _validate_magic_bytes(filename: str, content: bytes) -> bool:
@@ -160,43 +101,33 @@ async def read_upload_content(
     return content
 
 
-def build_upload_accepted_response(
-    file_info: StoredUploadFileInfo,
-    task_id: str,
-) -> UploadAcceptedResponse:
-    """统一构造上传受理响应。"""
-    return {
-        **file_info,
-        "task_id": task_id,
-        "message": _UPLOAD_ACCEPTED_MESSAGE,
-    }
-
-
 async def _store_upload(file: UploadFile, user_id: int) -> StoredUploadFileInfo:
     """完成上传文件的校验、落盘与元信息组装。"""
-    target = build_upload_target(
-        user_id,
-        file.filename,
-        upload_dir_root=UPLOAD_DIR,
-        uuid_module=uuid,
-        clock=datetime,
-    )
+    user_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    upload_dir = UPLOAD_DIR / user_uuid / timestamp
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    original_name = Path(file.filename or "upload").stem
+    file_path = upload_dir / f"{original_name}_{timestamp}{get_document_extension(file.filename)}"
     content = await read_upload_content(
         file,
         max_upload_size_bytes=MAX_UPLOAD_SIZE_BYTES,
         file_size_exceeded_detail=FILE_SIZE_EXCEEDED_DETAIL,
         content_extension_mismatch_detail=CONTENT_EXTENSION_MISMATCH_DETAIL,
     )
-    target["file_path"].write_bytes(content)
-    return build_file_info(
-        file=file,
-        user_id=user_id,
-        user_uuid=target["user_uuid"],
-        timestamp=target["timestamp"],
-        file_path=target["file_path"],
-        directory=target["upload_dir"],
-        size=len(content),
-    )
+    file_path.write_bytes(content)
+    return {
+        "filename": file_path.name,
+        "original_name": file.filename,
+        "size": len(content),
+        "type": file.content_type,
+        "path": file_path.as_posix(),
+        "user_id": user_id,
+        "user_uuid": user_uuid,
+        "upload_time": timestamp,
+        "directory": upload_dir.as_posix(),
+    }
 
 
 @router.post("/upload")
@@ -210,7 +141,11 @@ async def upload_file(
         file_info = await _store_upload(file, user_id)
         task_manager = await get_task_manager()
         task_id = await task_manager.submit(IndexingService().process_file, file_info)
-        return build_upload_accepted_response(file_info, task_id)
+        return {
+            **file_info,
+            "task_id": task_id,
+            "message": _UPLOAD_ACCEPTED_MESSAGE,
+        }
 
     return await run_api_action(
         "upload_file",
