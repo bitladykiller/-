@@ -64,23 +64,18 @@ def extract_response_text(response: Any) -> str:
     if isinstance(content, list):
         text_parts: list[str] = []
         for item in content:
-            part = _extract_content_part_text(item)
+            if isinstance(item, str):
+                part = item
+            elif isinstance(item, dict):
+                text = item.get("text")
+                part = text if isinstance(text, str) else ""
+            else:
+                text = getattr(item, "text", None)
+                part = text if isinstance(text, str) else ""
             if part:
                 text_parts.append(part)
         return "\n".join(text_parts)
     return str(content)
-
-
-def _extract_content_part_text(item: Any) -> str:
-    """提取 content 列表中单个片段的文本内容。"""
-    if isinstance(item, str):
-        return item
-    if isinstance(item, dict):
-        text = item.get("text")
-        return text if isinstance(text, str) else ""
-
-    text = getattr(item, "text", None)
-    return text if isinstance(text, str) else ""
 
 
 def _extract_first_json_object(response: str) -> str | None:
@@ -131,52 +126,28 @@ def parse_llm_response(response: str) -> dict[str, Any]:
         return {}
 
 
-def _mask_phone_match(match: re.Match[str]) -> str:
-    """手机号保留前三后四，中间四位打码。"""
-    value = match.group()
-    return value[:3] + "****" + value[-4:]
-
-
-def _mask_id_card_match(match: re.Match[str]) -> str:
-    """身份证号保留前四后四，中间打码。"""
-    value = match.group()
-    return value[:4] + "**********" + value[-4:]
-
-
-def _mask_bank_card_match(match: re.Match[str]) -> str:
-    """银行卡号保留前四后四，按分段形式打码。"""
-    value = match.group()
-    return value[:4] + " **** **** " + value[-4:]
-
-
-def _mask_email_match(match: re.Match[str]) -> str:
-    """邮箱保留前三位和域名，其余局部打码。"""
-    value = match.group()
-    local_part, _, domain = value.partition("@")
-    return local_part[:3] + "***@" + domain
-
-
-def _should_save_memory_content(
-    content: str,
-    sensitive_patterns: tuple[re.Pattern[str], ...],
-) -> bool:
-    """判断抽取内容是否值得保存为长期记忆。"""
-    if len(content) < 10:
-        return False
-    for pattern in sensitive_patterns:
-        if pattern.search(content):
-            return False
-    if content.strip() in _GREETING_MESSAGES:
-        return False
-    return True
-
-
 def _mask_sensitive_info(content: str) -> str:
     """对可保留内容做脱敏，而不是简单丢弃整条信息。"""
-    content = _PHONE_PATTERN.sub(_mask_phone_match, content)
-    content = _ID_CARD_PATTERN.sub(_mask_id_card_match, content)
-    content = _BANK_CARD_PATTERN.sub(_mask_bank_card_match, content)
-    content = _EMAIL_PATTERN.sub(_mask_email_match, content)
+    content = _PHONE_PATTERN.sub(
+        lambda match: match.group()[:3] + "****" + match.group()[-4:],
+        content,
+    )
+    content = _ID_CARD_PATTERN.sub(
+        lambda match: match.group()[:4] + "**********" + match.group()[-4:],
+        content,
+    )
+    content = _BANK_CARD_PATTERN.sub(
+        lambda match: match.group()[:4] + " **** **** " + match.group()[-4:],
+        content,
+    )
+    content = _EMAIL_PATTERN.sub(
+        lambda match: (
+            match.group().partition("@")[0][:3]
+            + "***@"
+            + match.group().partition("@")[2]
+        ),
+        content,
+    )
     return content
 
 
@@ -193,7 +164,11 @@ def build_semantic_memories(
 
         content = _mask_sensitive_info(item.get("content", ""))
         memory_type = item.get("memory_type", "")
-        if not content or not _should_save_memory_content(content, sensitive_patterns):
+        if not content or len(content) < 10:
+            continue
+        if any(pattern.search(content) for pattern in sensitive_patterns):
+            continue
+        if content.strip() in _GREETING_MESSAGES:
             continue
         if memory_type not in _SAVEABLE_MEMORY_TYPES:
             continue
