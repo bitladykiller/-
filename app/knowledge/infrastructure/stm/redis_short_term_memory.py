@@ -385,58 +385,6 @@ class RedisShortTermMemory:
             ex=self.settings.ttl_seconds,
         )
 
-    async def _prune_message_window(self, key: str) -> None:
-        """维护消息滑动窗口。"""
-        await prune_message_window(
-            redis_client=self.redis,
-            key=key,
-            settings=self.settings,
-        )
-
-    async def _rewrite_recent_messages(
-        self,
-        *,
-        key: str,
-        tenant_id: str,
-        user_id: str,
-        session_id: str,
-        messages: list[MessageRecord],
-    ) -> None:
-        """用压缩后保留的最近消息重建消息窗口。"""
-        await rewrite_recent_messages(
-            key=key,
-            messages=messages,
-            reset_messages=self.redis.delete,
-            append_message=lambda message: self.append_message(
-                tenant_id,
-                user_id,
-                session_id,
-                message,
-            ),
-        )
-
-    async def _update_summary_from_messages(
-        self,
-        *,
-        tenant_id: str,
-        user_id: str,
-        session_id: str,
-        old_summary_str: str,
-        messages_to_compress: list[MessageRecord],
-        llm_compress_func: SummaryCompressor,
-    ) -> None:
-        """调用摘要压缩函数，并在成功时写回新的 session summary。"""
-        await persist_summary_from_messages(
-            tenant_id=tenant_id,
-            user_id=user_id,
-            session_id=session_id,
-            old_summary_str=old_summary_str,
-            messages_to_compress=messages_to_compress,
-            llm_compress_func=llm_compress_func,
-            extract_summary_from_response=extract_summary_from_response,
-            save_summary=self.save_summary,
-        )
-
     async def _prepare_compression_context(
         self,
         tenant_id: str,
@@ -478,7 +426,11 @@ class RedisShortTermMemory:
                 key,
                 {compress_message(message): message_score(message)},
             )
-            await self._prune_message_window(key)
+            await prune_message_window(
+                redis_client=self.redis,
+                key=key,
+                settings=self.settings,
+            )
         except Exception:
             logger.warning("[stm] append_message 失败", exc_info=True)
 
@@ -596,20 +548,26 @@ class RedisShortTermMemory:
                 redis_client=self.redis,
                 context=context,
                 lock_ttl_seconds=self.settings.lock_ttl_seconds,
-                update_summary=lambda current: self._update_summary_from_messages(
+                update_summary=lambda current: persist_summary_from_messages(
                     tenant_id=tenant_id,
                     user_id=user_id,
                     session_id=session_id,
                     old_summary_str=current.old_summary_str,
                     messages_to_compress=current.messages_to_compress,
                     llm_compress_func=llm_compress_func,
+                    extract_summary_from_response=extract_summary_from_response,
+                    save_summary=self.save_summary,
                 ),
-                rewrite_messages=lambda current: self._rewrite_recent_messages(
+                rewrite_messages=lambda current: rewrite_recent_messages(
                     key=current.keys["messages"],
-                    tenant_id=tenant_id,
-                    user_id=user_id,
-                    session_id=session_id,
                     messages=current.messages_to_keep,
+                    reset_messages=self.redis.delete,
+                    append_message=lambda message: self.append_message(
+                        tenant_id,
+                        user_id,
+                        session_id,
+                        message,
+                    ),
                 ),
                 save_meta=lambda meta: self.save_meta(tenant_id, user_id, session_id, meta),
             )
