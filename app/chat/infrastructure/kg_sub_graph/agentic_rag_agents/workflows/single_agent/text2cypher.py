@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 from operator import add
-from typing import Annotated, Any, List, Literal, Protocol
+from typing import Annotated, Any, List, Protocol
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.output_parsers import StrOutputParser
@@ -334,11 +334,6 @@ def create_text2cypher_agent(
         text2cypher_graph_builder.add_node("predefined_match", predefined_match)
         text2cypher_graph_builder.add_edge(START, "predefined_match")
 
-        def _match_edge(state: CypherState) -> Literal["execute_cypher", "generate_cypher"]:
-            if state.get("records") is not None:
-                return "execute_cypher"
-            return "generate_cypher"
-
     async def execute_cypher(state: CypherState) -> dict[str, list[CypherOutputState] | list[str]]:
         """执行 Cypher 查询并回填统一输出结构。"""
         records = graph.query(state.get("statement", ""))
@@ -378,10 +373,18 @@ def create_text2cypher_agent(
     text2cypher_graph_builder.add_node("execute_cypher", execute_cypher)
 
     if predefined_cypher_dict:
-        text2cypher_graph_builder.add_conditional_edges("predefined_match", _match_edge, {
-            "execute_cypher": "execute_cypher",
-            "generate_cypher": "generate_cypher",
-        })
+        text2cypher_graph_builder.add_conditional_edges(
+            "predefined_match",
+            lambda state: (
+                "execute_cypher"
+                if state.get("records") is not None
+                else "generate_cypher"
+            ),
+            {
+                "execute_cypher": "execute_cypher",
+                "generate_cypher": "generate_cypher",
+            },
+        )
     else:
         text2cypher_graph_builder.add_edge(START, "generate_cypher")
 
