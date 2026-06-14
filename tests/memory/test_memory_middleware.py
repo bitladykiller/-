@@ -1,5 +1,6 @@
 import asyncio
 
+import app.knowledge.infrastructure.orchestration.memory_middleware as memory_middleware
 from app.knowledge.domain.schemas import (
     LongTermMemory,
     MemoryExtractorResult,
@@ -9,6 +10,18 @@ from app.knowledge.domain.schemas import (
     SessionSummary,
 )
 from app.knowledge.infrastructure.orchestration.memory_middleware import MemoryMiddleware
+
+
+class FakeLogger:
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+        self.debugs: list[str] = []
+
+    def warning(self, message: str) -> None:
+        self.warnings.append(message)
+
+    def debug(self, message: str) -> None:
+        self.debugs.append(message)
 
 
 class FakeRedisShortTermMemory:
@@ -229,6 +242,51 @@ def test_before_agent_loads_all_memory_layers() -> None:
     assert milvus_ltm.hybrid_search_calls == [("tenant-1", "42", "怎么修空调")]
 
 
+def test_before_agent_degrades_and_warns_once_on_memory_load_failures(monkeypatch) -> None:
+    class BrokenRedisShortTermMemory(FakeRedisShortTermMemory):
+        async def get_summary(self, tenant_id: str, user_id: str, session_id: str) -> SessionSummary:
+            raise RuntimeError("redis failed")
+
+    class BrokenLongTermMemory(FakeLongTermMemory):
+        async def hybrid_search(
+            self,
+            tenant_id: str,
+            user_id: str,
+            user_input: str,
+        ) -> list[MemorySearchResult]:
+            raise RuntimeError("milvus failed")
+
+    logger = FakeLogger()
+    monkeypatch.setattr(memory_middleware, "logger", logger)
+
+    async def broken_profile_reader(user_id: int, redis_client: object | None):
+        raise RuntimeError("profile failed")
+
+    middleware = MemoryMiddleware(
+        redis_stm=BrokenRedisShortTermMemory(should_compress_result=False),
+        milvus_ltm=BrokenLongTermMemory(),
+        memory_extractor=FakeMemoryExtractor(),
+        profile_reader=broken_profile_reader,
+    )
+
+    first = _run(middleware.before_agent("tenant-1", "42", "session-1", "怎么修空调"))
+    second = _run(middleware.before_agent("tenant-1", "42", "session-1", "怎么修空调"))
+
+    assert first.session_summary is None
+    assert first.recent_messages == []
+    assert first.user_profile == {}
+    assert first.long_term_memories == []
+    assert second.session_summary is None
+    assert second.recent_messages == []
+    assert second.user_profile == {}
+    assert second.long_term_memories == []
+    assert logger.warnings == [
+        "[memory] Redis STM 读取失败，短期记忆降级",
+        "[memory] 用户画像读取失败，降级为空画像",
+        "[memory] Milvus LTM 检索失败，长期记忆降级",
+    ]
+
+
 def test_after_agent_persists_turn_extracts_memory_and_updates_hits() -> None:
     redis_stm = FakeRedisShortTermMemory(should_compress_result=True)
     milvus_ltm = FakeLongTermMemory()
@@ -301,6 +359,50 @@ def test_after_agent_persists_turn_extracts_memory_and_updates_hits() -> None:
     ]
 
 
+def test_after_agent_logs_profile_write_failure_without_aborting(monkeypatch) -> None:
+    logger = FakeLogger()
+    monkeypatch.setattr(memory_middleware, "logger", logger)
+    redis_stm = FakeRedisShortTermMemory(should_compress_result=True)
+    milvus_ltm = FakeLongTermMemory()
+    extractor = FakeMemoryExtractor(
+        semantic_memories=[
+            MemoryExtractorResult(
+                memory_type="solution_note",
+                content="建议先检查电源和 WiFi",
+            )
+        ],
+        profile={"preferred_category": "智能门铃"},
+    )
+
+    async def broken_profile_writer(user_id: int, profile: dict, redis_client: object | None):
+        raise RuntimeError("profile failed")
+
+    middleware = MemoryMiddleware(
+        redis_stm=redis_stm,
+        milvus_ltm=milvus_ltm,
+        memory_extractor=extractor,
+        profile_writer=broken_profile_writer,
+    )
+
+    _run(
+        middleware.after_agent(
+            "tenant-1",
+            "5",
+            "session-1",
+            "门铃连不上网",
+            "你可以先检查一下 WiFi 和电源",
+        )
+    )
+
+    assert milvus_ltm.deduplicate_calls == [
+        ("tenant-1", "5", "solution_note", "建议先检查电源和 WiFi")
+    ]
+    assert milvus_ltm.saved_memories == [
+        ("tenant-1", "5", "solution_note", "建议先检查电源和 WiFi")
+    ]
+    assert logger.debugs == ["[memory] 用户画像更新失败(user_id=5): profile failed"]
+
+
 def test_after_agent_skips_extraction_when_compress_did_not_complete() -> None:
     redis_stm = FakeRedisShortTermMemory(
         should_compress_result=True,
@@ -345,3 +447,54 @@ def test_after_agent_skips_extraction_when_compress_did_not_complete() -> None:
     assert milvus_ltm.deduplicate_calls == []
     assert milvus_ltm.saved_memories == []
     assert profile_writer_calls == []
+
+
+def test_after_agent_updates_hits_best_effort() -> None:
+    class PartiallyFailingLongTermMemory(FakeLongTermMemory):
+        async def update_memory_hit_info(self, memory: LongTermMemory) -> bool:
+            if memory.memory_id == "mem-fail":
+                raise RuntimeError("boom")
+            self.updated_memory_ids.append(memory.memory_id)
+            return True
+
+    redis_stm = FakeRedisShortTermMemory(should_compress_result=False)
+    milvus_ltm = PartiallyFailingLongTermMemory()
+    middleware = MemoryMiddleware(
+        redis_stm=redis_stm,
+        milvus_ltm=milvus_ltm,
+        memory_extractor=FakeMemoryExtractor(),
+    )
+
+    _run(
+        middleware.after_agent(
+            "tenant-1",
+            "5",
+            "session-1",
+            "门铃连不上网",
+            "你可以先检查一下 WiFi 和电源",
+            [
+                MemorySearchResult(
+                    memory=LongTermMemory(
+                        memory_id="mem-ok",
+                        tenant_id="tenant-1",
+                        user_id="5",
+                        memory_type="issue_history",
+                        content="正常命中",
+                    ),
+                    score=0.9,
+                ),
+                MemorySearchResult(
+                    memory=LongTermMemory(
+                        memory_id="mem-fail",
+                        tenant_id="tenant-1",
+                        user_id="5",
+                        memory_type="issue_history",
+                        content="单条失败",
+                    ),
+                    score=0.8,
+                ),
+            ],
+        )
+    )
+
+    assert milvus_ltm.updated_memory_ids == ["mem-ok"]
