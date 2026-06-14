@@ -94,6 +94,37 @@ def test_build_semantic_memories_masks_and_filters_items() -> None:
     assert semantic[0].reason == "含长期问题"
 
 
+def test_build_semantic_memories_masks_multiple_sensitive_patterns() -> None:
+    extractor = MemoryExtractor(FakeLLMClient("{}"))
+    parsed = {
+        "semantic": [
+            {
+                "memory_type": "issue_history",
+                "content": (
+                    "用户手机号13812345678，身份证100000000000000000，"
+                    "银行卡6222021234567890，邮箱abc@example.com"
+                ),
+            }
+        ]
+    }
+
+    semantic = build_semantic_memories(
+        parsed,
+        sensitive_patterns=extractor.sensitive_patterns,
+    )
+
+    assert [item.model_dump() for item in semantic] == [
+        {
+            "memory_type": "issue_history",
+            "content": (
+                "用户手机号138****5678，身份证1000**********0000，"
+                "银行卡6222 **** **** 7890，邮箱a***@example.com"
+            ),
+            "reason": None,
+        }
+    ]
+
+
 def test_memory_extractor_extract_returns_semantic_and_normalized_profile() -> None:
     llm_client = FakeLLMClient(
         FakeResponseObject(

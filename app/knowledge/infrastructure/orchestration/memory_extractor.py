@@ -126,31 +126,6 @@ def parse_llm_response(response: str) -> dict[str, Any]:
         return {}
 
 
-def _mask_sensitive_info(content: str) -> str:
-    """对可保留内容做脱敏，而不是简单丢弃整条信息。"""
-    content = _PHONE_PATTERN.sub(
-        lambda match: match.group()[:3] + "****" + match.group()[-4:],
-        content,
-    )
-    content = _ID_CARD_PATTERN.sub(
-        lambda match: match.group()[:4] + "**********" + match.group()[-4:],
-        content,
-    )
-    content = _BANK_CARD_PATTERN.sub(
-        lambda match: match.group()[:4] + " **** **** " + match.group()[-4:],
-        content,
-    )
-    content = _EMAIL_PATTERN.sub(
-        lambda match: (
-            match.group().partition("@")[0][:3]
-            + "***@"
-            + match.group().partition("@")[2]
-        ),
-        content,
-    )
-    return content
-
-
 def build_semantic_memories(
     parsed: dict[str, Any],
     *,
@@ -162,7 +137,27 @@ def build_semantic_memories(
         if not isinstance(item, dict):
             continue
 
-        content = _mask_sensitive_info(item.get("content", ""))
+        content = str(item.get("content", "") or "")
+        content = _PHONE_PATTERN.sub(
+            lambda match: match.group()[:3] + "****" + match.group()[-4:],
+            content,
+        )
+        content = _ID_CARD_PATTERN.sub(
+            lambda match: match.group()[:4] + "**********" + match.group()[-4:],
+            content,
+        )
+        content = _BANK_CARD_PATTERN.sub(
+            lambda match: match.group()[:4] + " **** **** " + match.group()[-4:],
+            content,
+        )
+        content = _EMAIL_PATTERN.sub(
+            lambda match: (
+                match.group().partition("@")[0][:3]
+                + "***@"
+                + match.group().partition("@")[2]
+            ),
+            content,
+        )
         memory_type = item.get("memory_type", "")
         if not content or len(content) < 10:
             continue
