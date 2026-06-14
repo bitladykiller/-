@@ -8,7 +8,7 @@ RAG 文档解析器 — python-docx 兜底解析器。
 from __future__ import annotations
 
 import logging
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from rag_doc_parser.config import ParserConfig
 from rag_doc_parser.exceptions import DocumentParseError

@@ -7,57 +7,23 @@ RAG 文档解析与切分 — 主控管线。
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import List, Optional
 
 from rag_doc_parser.config import ParserConfig
-from rag_doc_parser.exceptions import UnsupportedFileTypeError, DocumentParseError
-from rag_doc_parser.models import DocumentChunk, new_doc_id, new_uuid
-from rag_doc_parser.parsers.base import BaseDocumentParser
-from rag_doc_parser.parsers.docling_pdf_parser import DoclingPDFParser
-from rag_doc_parser.parsers.docling_docx_parser import DoclingDOCXParser
-from rag_doc_parser.parsers.docx_fallback_parser import DocxFallbackParser
+from rag_doc_parser.exceptions import DocumentParseError, UnsupportedFileTypeError
+from rag_doc_parser.models import DocumentChunk
+from rag_doc_parser.markdown.block_parser import BlockParser
 from rag_doc_parser.markdown.cleaner import MarkdownCleaner
 from rag_doc_parser.markdown.heading_parser import HeadingParser
-from rag_doc_parser.markdown.block_parser import BlockParser
-from rag_doc_parser.splitters.text_splitter import TextSplitter
-from rag_doc_parser.splitters.table_splitter import TableSplitter
+from rag_doc_parser.parsers.docling_docx_parser import DoclingDOCXParser
+from rag_doc_parser.parsers.docling_pdf_parser import DoclingPDFParser
+from rag_doc_parser.parsers.docx_fallback_parser import DocxFallbackParser
 from rag_doc_parser.splitters.code_splitter import CodeSplitter
+from rag_doc_parser.splitters.table_splitter import TableSplitter
+from rag_doc_parser.splitters.text_splitter import TextSplitter
 
 logger = logging.getLogger(__name__)
-
-
-def _get_parser(file_path: str, config: ParserConfig) -> BaseDocumentParser:
-    """根据文件扩展名选择合适的解析器。"""
-    ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
-    if ext == "pdf":
-        return DoclingPDFParser(config)
-    elif ext == "docx":
-        return DoclingDOCXParser(config)
-    else:
-        raise UnsupportedFileTypeError(file_path)
-
-
-def _split_block(block, config: ParserConfig) -> List[str]:
-    """根据 block 类型选择合适的切分器。"""
-    if block.block_type == "table":
-        if config.enable_table_split:
-            splitter = TableSplitter(config.max_table_rows_per_chunk)
-            return splitter.split(block.content)
-        return [block.content]
-    elif block.block_type == "code":
-        if config.enable_code_split:
-            splitter = CodeSplitter(config.max_code_lines_per_chunk)
-            return splitter.split(block.content)
-        return [block.content]
-    elif block.block_type == "image_caption":
-        # 图片说明通常完整保留，太长才切
-        if len(block.content) > config.text_chunk_size:
-            splitter = TextSplitter(config.text_chunk_size, config.text_chunk_overlap)
-            return splitter.split_text(block.content)
-        return [block.content]
-    else:
-        splitter = TextSplitter(config.text_chunk_size, config.text_chunk_overlap)
-        return splitter.split_text(block.content)
 
 
 def parse_document(
@@ -82,10 +48,17 @@ def parse_document(
     if config is None:
         config = ParserConfig.from_env()
     if doc_id is None:
-        doc_id = new_doc_id()
+        doc_id = f"doc_{uuid.uuid4().hex[:12]}"
 
     # 1. 解析文件 → Markdown
-    parser = _get_parser(file_path, config)
+    ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
+    if ext == "pdf":
+        parser = DoclingPDFParser(config)
+    elif ext == "docx":
+        parser = DoclingDOCXParser(config)
+    else:
+        raise UnsupportedFileTypeError(file_path)
+
     try:
         doc = parser.parse(file_path, doc_id)
     except DocumentParseError:
@@ -107,18 +80,43 @@ def parse_document(
         markdown = cleaner.clean(markdown)
 
     # 3. 标题解析 → Sections
-    heading_parser = HeadingParser(config)
+    heading_parser = HeadingParser()
     sections = heading_parser.parse(markdown)
 
     # 4. Block 识别 + 切分
     block_parser = BlockParser()
+    text_splitter = TextSplitter(config.text_chunk_size, config.text_chunk_overlap)
     chunks: List[DocumentChunk] = []
 
     for section in sections:
         blocks = block_parser.parse(section)
 
         for block in blocks:
-            pieces = _split_block(block, config)
+            if block.block_type == "table" and config.enable_table_split:
+                table_splitter = TableSplitter(config.max_table_rows_per_chunk)
+                table_chunks = table_splitter.split(
+                    block,
+                    doc_id,
+                    source_file,
+                    chunk_id_prefix=f"{doc_id}_{block.block_id}_",
+                )
+                chunks.extend([chunk for chunk in table_chunks if chunk.raw_text.strip()])
+                continue
+
+            if block.block_type == "code" and config.enable_code_split:
+                code_splitter = CodeSplitter(config.max_code_lines_per_chunk)
+                pieces = code_splitter.split(
+                    block.content,
+                    block.metadata.get("language", "") or "",
+                )
+            elif block.block_type == "image_caption":
+                # 图片说明通常完整保留，太长才切。
+                if len(block.content) > config.text_chunk_size:
+                    pieces = text_splitter.split(block.content)
+                else:
+                    pieces = [block.content]
+            else:
+                pieces = text_splitter.split(block.content)
 
             for i, piece in enumerate(pieces):
                 chunk_id = f"{doc_id}_{block.block_id}_{i}"

@@ -42,25 +42,3 @@ class DoclingParseError(DocumentParseError):
     def __init__(self, message: str, file_path: str = ""):
         super().__init__(message, file_path=file_path, parser_name="Docling")
 
-
-class MarkdownParseError(Exception):
-    """Markdown 解析异常。
-
-    用于标题解析器、Block 识别器等 Markdown 处理阶段出错时抛出。
-    """
-
-    def __init__(self, message: str):
-        super().__init__(f"Markdown 解析失败: {message}")
-
-
-class ChunkBuildError(Exception):
-    """切分块构建异常。
-
-    用于生成 DocumentChunk 阶段出错时抛出。
-    """
-
-    def __init__(self, message: str, block_id: str = ""):
-        detail = f"Chunk 构建失败: {message}"
-        if block_id:
-            detail += f"（block_id: {block_id}）"
-        super().__init__(detail)

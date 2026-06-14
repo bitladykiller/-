@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 class HybridSearcher:
     """混合检索引擎。
 
-    整合向量检索（Milvus）和关键词检索（BM25），
-    通过 RRF 融合后可选 Reranker 精排。
+    基于 Milvus 原生 hybrid search 做 dense + sparse 召回，
+    再按需接入 Reranker 精排。
 
     用法:
         searcher = HybridSearcher(config, embedding_model)
@@ -36,14 +36,13 @@ class HybridSearcher:
         self.config = config or RetrievalConfig()
         self.milvus = MilvusStore(self.config, embedding_model)
         self.reranker = Reranker(self.config.rerank_model) if self.config.enable_rerank else None
-        self._indexed = False
 
     # ------------------------------------------------------------------ #
     # 索引
     # ------------------------------------------------------------------ #
 
     async def index(self, chunks: List[Any]) -> int:
-        """将 DocumentChunk 列表同时写入 Milvus 和 BM25 索引。
+        """将 DocumentChunk 列表写入 Milvus 检索集合。
 
         Args:
             chunks: DocumentChunk 列表。
@@ -54,7 +53,6 @@ class HybridSearcher:
         # Milvus 向量索引
         count = await self.milvus.insert_chunks(chunks)
 
-        self._indexed = True
         logger.info(f"混合索引完成: {count} 条记录")
         return count
 
@@ -99,7 +97,3 @@ class HybridSearcher:
             )
 
         return fused[:final_top_k]
-
-    def clear(self):
-        """重置运行态标记（Milvus 数据保留）。"""
-        self._indexed = False

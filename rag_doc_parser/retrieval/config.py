@@ -1,13 +1,12 @@
 """
 检索模块配置。
 
-定义 Milvus 连接、BM25 参数、RRF 参数、Reranker 参数。
+定义 Milvus 混合检索与 Reranker 参数。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 
 @dataclass
@@ -31,14 +30,12 @@ class RetrievalConfig:
     # ------------------------------------------------------------------ #
     # 向量检索参数
     # ------------------------------------------------------------------ #
-    vector_top_k: int = 20  # 向量检索返回条数（给 RRF 用，取多一些）
+    vector_top_k: int = 20  # dense 检索候选条数
 
     # ------------------------------------------------------------------ #
-    # BM25 检索参数
+    # 稀疏检索参数
     # ------------------------------------------------------------------ #
-    bm25_top_k: int = 20  # BM25 检索返回条数
-    bm25_k1: float = 1.5  # BM25 词频饱和参数
-    bm25_b: float = 0.75  # BM25 文档长度归一化参数
+    bm25_top_k: int = 20  # sparse 检索候选条数
 
     # ------------------------------------------------------------------ #
     # RRF 融合参数
@@ -56,9 +53,7 @@ class RetrievalConfig:
     # ------------------------------------------------------------------ #
     # 文本字段配置
     # ------------------------------------------------------------------ #
-    text_field: str = "embedding_text"  # 用于 embedding 的字段
     display_field: str = "raw_text"  # 用于展示的字段
-    sparse_field: str = "raw_text"  # 用于 BM25 的字段
 
     def __post_init__(self):
         if self.vector_top_k <= 0:

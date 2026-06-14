@@ -6,15 +6,12 @@ RAG 文档解析器 — 基类。
 
 from __future__ import annotations
 
-import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
 
 from rag_doc_parser.config import ParserConfig
 from rag_doc_parser.models import ParsedMarkdownDocument
-
-logger = logging.getLogger(__name__)
 
 
 class BaseDocumentParser(ABC):

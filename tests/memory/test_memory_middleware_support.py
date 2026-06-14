@@ -1,18 +1,7 @@
 import asyncio
 
-from app.memory.memory_middleware_support import (
-    build_summary_compressor,
-    build_turn_messages,
-    coerce_llm_response_text,
-    load_long_term_memory_state,
-    load_short_term_memory_state,
-    load_user_profile_state,
-    save_profile_if_present,
-    save_semantic_memories,
-    save_short_term_turn,
-    update_hit_long_term_memories,
-)
-from app.memory.schemas import (
+import app.knowledge.infrastructure.orchestration.memory_middleware as memory_middleware
+from app.knowledge.domain.schemas import (
     AgentMemoryState,
     LongTermMemory,
     MemoryExtractorResult,
@@ -139,7 +128,7 @@ def _run(awaitable):
 
 
 def test_build_turn_messages_and_response_coercion_are_stable() -> None:
-    messages = build_turn_messages(
+    messages = memory_middleware._build_turn_messages(
         user_message="用户问题",
         assistant_message="助手回答",
         created_at=123,
@@ -149,8 +138,8 @@ def test_build_turn_messages_and_response_coercion_are_stable() -> None:
     assert [message.role for message in messages] == ["user", "assistant"]
     assert messages[0].message_id == "msg_u_123"
     assert messages[1].message_id == "msg_a_123"
-    assert coerce_llm_response_text(type("Response", (), {"content": "abc"})()) == "abc"
-    assert coerce_llm_response_text({"foo": "bar"}) == "{'foo': 'bar'}"
+    assert memory_middleware._coerce_llm_response_text(type("Response", (), {"content": "abc"})()) == "abc"
+    assert memory_middleware._coerce_llm_response_text({"foo": "bar"}) == "{'foo': 'bar'}"
 
 
 def test_load_state_helpers_populate_memory_layers() -> None:
@@ -176,7 +165,7 @@ def test_load_state_helpers_populate_memory_layers() -> None:
         return {"preferred_brand": "海尔"}
 
     _run(
-        load_short_term_memory_state(
+        memory_middleware.load_short_term_memory_state(
             memory_state,
             redis_stm=redis_stm,
             tenant_id="tenant-1",
@@ -185,7 +174,7 @@ def test_load_state_helpers_populate_memory_layers() -> None:
         )
     )
     _run(
-        load_user_profile_state(
+        memory_middleware.load_user_profile_state(
             memory_state,
             profile_reader=fake_profile_reader,
             profile_cache="cache",
@@ -193,7 +182,7 @@ def test_load_state_helpers_populate_memory_layers() -> None:
         )
     )
     _run(
-        load_long_term_memory_state(
+        memory_middleware.load_long_term_memory_state(
             memory_state,
             milvus_ltm=milvus_ltm,
             ltm_enabled=True,
@@ -215,7 +204,7 @@ def test_save_short_term_turn_updates_meta_and_refreshes_ttl() -> None:
     redis_stm = FakeRedisSTM()
 
     _run(
-        save_short_term_turn(
+        memory_middleware.save_short_term_turn(
             redis_stm=redis_stm,
             tenant_id="tenant-1",
             user_id="42",
@@ -236,10 +225,10 @@ def test_save_short_term_turn_updates_meta_and_refreshes_ttl() -> None:
 def test_build_summary_compressor_uses_prompt_builder_and_response_content(monkeypatch) -> None:
     llm_client = FakeLLMClient()
     monkeypatch.setattr(
-        "app.memory.memory_middleware_support.build_compression_prompt",
+        "app.knowledge.infrastructure.orchestration.memory_middleware.build_compression_prompt",
         lambda **kwargs: f"round={kwargs['compressed_round']} summary={kwargs['old_summary']}",
     )
-    compressor = build_summary_compressor(
+    compressor = memory_middleware.build_summary_compressor(
         llm_client=llm_client,
         compressed_round=3,
     )
@@ -260,7 +249,7 @@ def test_save_semantic_memories_and_profile_save_follow_filters() -> None:
         return True
 
     _run(
-        save_semantic_memories(
+        memory_middleware.save_semantic_memories(
             milvus_ltm=milvus_ltm,
             tenant_id="tenant-1",
             user_id="42",
@@ -271,7 +260,7 @@ def test_save_semantic_memories_and_profile_save_follow_filters() -> None:
         )
     )
     _run(
-        save_profile_if_present(
+        memory_middleware.save_profile_if_present(
             profile_writer=fake_profile_writer,
             profile_cache="cache",
             user_id="42",
@@ -279,7 +268,7 @@ def test_save_semantic_memories_and_profile_save_follow_filters() -> None:
         )
     )
     _run(
-        save_profile_if_present(
+        memory_middleware.save_profile_if_present(
             profile_writer=fake_profile_writer,
             profile_cache="cache",
             user_id="not-int",
@@ -301,7 +290,7 @@ def test_update_hit_long_term_memories_is_best_effort() -> None:
     milvus_ltm = FakeLongTermMemory()
 
     _run(
-        update_hit_long_term_memories(
+        memory_middleware.update_hit_long_term_memories(
             milvus_ltm=milvus_ltm,
             long_term_memories=[
                 MemorySearchResult(

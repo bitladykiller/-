@@ -1,21 +1,16 @@
-from app.memory.ltm_operation_utils import (
-    build_cluster_merge_plan,
+from app.knowledge.infrastructure.ltm.simple_long_term_memory import (
     build_hit_update_plan,
     build_new_memory_insert_record,
-    build_soft_delete_record,
     preview_text,
     resolve_active_search_request,
-    resolve_search_params,
 )
-from app.memory.schemas import LongTermMemory
+from app.knowledge.domain.schemas import LongTermMemory
 
 
 def test_preview_text_and_search_param_resolution_are_stable() -> None:
     search_config = {"top_k": 5, "score_threshold": 0.72}
 
     assert preview_text("abcdef", 3) == "abc"
-    assert resolve_search_params(search_config, None, None) == (5, 0.72)
-    assert resolve_search_params(search_config, 2, 0.88) == (2, 0.88)
     assert resolve_active_search_request(
         search_config,
         "tenant-1",
@@ -26,6 +21,17 @@ def test_preview_text_and_search_param_resolution_are_stable() -> None:
         'tenant_id == "tenant-1" and user_id == "user-1" and is_deleted == false',
         5,
         0.72,
+    )
+    assert resolve_active_search_request(
+        search_config,
+        "tenant-1",
+        "user-1",
+        2,
+        0.88,
+    ) == (
+        'tenant_id == "tenant-1" and user_id == "user-1" and is_deleted == false',
+        2,
+        0.88,
     )
 
 
@@ -56,7 +62,7 @@ def test_build_new_memory_insert_record_returns_full_payload() -> None:
     }
 
 
-def test_build_hit_update_plan_and_soft_delete_record_follow_strategy() -> None:
+def test_build_hit_update_plan_follows_strategy() -> None:
     memory = LongTermMemory(
         memory_id="mem-1",
         tenant_id="tenant-1",
@@ -84,39 +90,3 @@ def test_build_hit_update_plan_and_soft_delete_record_follow_strategy() -> None:
             "last_hit_at": 200,
         },
     }
-    assert build_soft_delete_record("mem-1", 300) == {
-        "memory_id": "mem-1",
-        "updated_at": 300,
-        "is_deleted": True,
-    }
-
-
-def test_build_cluster_merge_plan_returns_main_record_and_delete_list() -> None:
-    merge_plan = build_cluster_merge_plan(
-        [
-            {
-                "memory_id": "mem-1",
-                "content": "第一次描述",
-                "updated_at": 10,
-                "hit_count": 1,
-                "last_hit_at": 50,
-                "embedding": [1.0, 0.0],
-            },
-            {
-                "memory_id": "mem-2",
-                "content": "第二次描述",
-                "updated_at": 20,
-                "hit_count": 3,
-                "last_hit_at": 80,
-                "embedding": [0.99, 0.01],
-            },
-        ],
-        now_ts=99,
-    )
-
-    assert merge_plan["merged_content"] == "第一次描述；第二次描述"
-    assert merge_plan["deleted_memory_ids"] == ["mem-1"]
-    assert merge_plan["merged_record"]["memory_id"] == "mem-2"
-    assert merge_plan["merged_record"]["updated_at"] == 99
-    assert merge_plan["merged_record"]["hit_count"] == 4
-    assert merge_plan["merged_record"]["last_hit_at"] == 80

@@ -1,13 +1,13 @@
 """
 RAG 文档解析器 — Markdown 表格工具。
 
-提供表格识别、解析、构建和行计数功能。
+提供表格识别、解析和构建功能。
 """
 
 from __future__ import annotations
 
 import re
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 
 # 表格行正则：以 | 开头和结尾，中间有 | 分隔
@@ -73,7 +73,7 @@ def parse_markdown_table(
     rows: List[List[str]] = []
     separator_found = False
 
-    for i, line in enumerate(lines):
+    for line in lines:
         if not is_markdown_table(line):
             continue
 
@@ -140,32 +140,3 @@ def build_markdown_table(
 
     return "\n".join(lines)
 
-
-def count_table_rows(table_text: str) -> int:
-    """统计 Markdown 表格的数据行数（不含表头和分隔行）。
-
-    Args:
-        table_text: Markdown 表格文本。
-
-    Returns:
-        数据行数。
-    """
-    lines = [l.strip() for l in table_text.strip().split("\n") if l.strip()]
-
-    count = 0
-    separator_found = False
-
-    for line in lines:
-        if not is_markdown_table(line):
-            continue
-
-        # 跳过分隔行
-        if _SEPARATOR_RE.match(line):
-            separator_found = True
-            continue
-
-        # 分隔行之前的行（表头）不计入
-        if separator_found:
-            count += 1
-
-    return count

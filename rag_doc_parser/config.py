@@ -8,7 +8,7 @@ RAG 文档解析与切分模块 — 配置管理。
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 
@@ -39,11 +39,6 @@ class ParserConfig:
     enable_markdown_cleaning: bool = True
     enable_table_split: bool = True
     enable_code_split: bool = True
-
-    # ------------------------------------------------------------------ #
-    # 文档默认值
-    # ------------------------------------------------------------------ #
-    default_doc_title: str = "Untitled"
 
     # ------------------------------------------------------------------ #
     # Docling PDF 配置
@@ -109,8 +104,3 @@ class ParserConfig:
             vlm_api_base_url=_env_or("VLM_API_BASE_URL"),
             vlm_model=_env_or("VLM_MODEL"),
         )
-
-    @property
-    def vlm_api_key(self) -> Optional[str]:
-        """从环境变量读取 VLM API Key。"""
-        return _env_or(self.vlm_api_key_env)

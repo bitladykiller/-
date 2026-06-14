@@ -1,7 +1,6 @@
 import asyncio
 
-from app.memory.memory_middleware import MemoryMiddleware
-from app.memory.schemas import (
+from app.knowledge.domain.schemas import (
     LongTermMemory,
     MemoryExtractorResult,
     MemorySearchResult,
@@ -9,6 +8,7 @@ from app.memory.schemas import (
     SessionMeta,
     SessionSummary,
 )
+from app.knowledge.infrastructure.orchestration.memory_middleware import MemoryMiddleware
 
 
 class FakeRedisShortTermMemory:

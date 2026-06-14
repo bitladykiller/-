@@ -7,14 +7,11 @@ RAG 文档解析器 — Markdown 内容块解析器。
 
 from __future__ import annotations
 
-import logging
 import re
 from typing import List
 
 from rag_doc_parser.markdown.table_utils import is_markdown_table
 from rag_doc_parser.models import MarkdownBlock, MarkdownSection, new_uuid
-
-logger = logging.getLogger(__name__)
 
 # 代码块开始标记：```language
 _CODE_FENCE_START = re.compile(r"^```(\w*)\s*$")

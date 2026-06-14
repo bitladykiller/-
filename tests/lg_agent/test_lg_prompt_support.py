@@ -1,11 +1,6 @@
 from pathlib import Path
 
-from app.lg_agent.lg_prompt_support import (
-    build_prompt_mapping,
-    load_prompts_from_yaml,
-    normalize_prompt_overrides,
-    prompt_yaml_path,
-)
+import app.chat.infrastructure.modeling.prompts as prompts
 
 
 class FakeLogger:
@@ -23,11 +18,11 @@ class FakeLogger:
 
 
 def test_prompt_yaml_path_resolves_yaml_in_same_directory() -> None:
-    assert prompt_yaml_path("/tmp/agent/lg_prompts.py") == Path("/tmp/agent/lg_prompts.yaml")
+    assert prompts.prompt_yaml_path("/tmp/agent/lg_prompts.py") == Path("/tmp/agent/lg_prompts.yaml")
 
 
 def test_normalize_prompt_overrides_filters_non_string_pairs() -> None:
-    overrides = normalize_prompt_overrides(
+    overrides = prompts._normalize_prompt_overrides(
         {
             "router_system": "router prompt",
             "general_query": 123,
@@ -44,7 +39,7 @@ def test_load_prompts_from_yaml_returns_empty_for_invalid_yaml_shape(
     yaml_path = tmp_path / "lg_prompts.yaml"
     yaml_path.write_text("- item1\n- item2\n", encoding="utf-8")
 
-    assert load_prompts_from_yaml(FakeLogger(), yaml_path) == {}
+    assert prompts.load_prompts_from_yaml(FakeLogger(), yaml_path) == {}
 
 
 def test_load_prompts_from_yaml_reads_string_overrides(tmp_path: Path) -> None:
@@ -54,14 +49,14 @@ def test_load_prompts_from_yaml_reads_string_overrides(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    assert load_prompts_from_yaml(FakeLogger(), yaml_path) == {
+    assert prompts.load_prompts_from_yaml(FakeLogger(), yaml_path) == {
         "router_system": "custom router",
         "react_system": "custom react",
     }
 
 
 def test_build_prompt_mapping_merges_overrides_on_top_of_defaults() -> None:
-    prompt_mapping = build_prompt_mapping(
+    prompt_mapping = prompts.build_prompt_mapping(
         {
             "router_system": "default router",
             "general_query": "default general",

@@ -1,4 +1,4 @@
-from app.memory.memory_config_defaults import (
+from app.knowledge.infrastructure.config import (
     LONG_TERM_MEMORY_CONFIG,
     LONG_TERM_MEMORY_TYPES,
     SENSITIVE_PATTERNS,

@@ -1,6 +1,6 @@
 import logging
 
-import app.core.logger as logger_module
+import app.shared.core.logger as logger_module
 
 
 def test_format_log_context_filters_empty_values() -> None:
@@ -10,20 +10,21 @@ def test_format_log_context_filters_empty_values() -> None:
         tags=[],
         note=None,
         status="ok",
+        zero_value=0,
     )
 
-    assert context == "user_id=1 status=ok"
+    assert context == "user_id=1 status=ok zero_value=0"
 
 
 def test_configure_root_logger_adds_single_stream_handler() -> None:
     logger = logging.Logger("test.root")
-    logger_module._configure_root_logger(
+    logger_module.configure_root_logger(
         logger,
         level=logging.INFO,
         format_str="%(message)s",
         date_format="%Y-%m-%d",
     )
-    logger_module._configure_root_logger(
+    logger_module.configure_root_logger(
         logger,
         level=logging.INFO,
         format_str="%(message)s",

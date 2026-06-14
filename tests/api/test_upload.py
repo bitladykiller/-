@@ -48,10 +48,10 @@ def test_process_upload_runs_validation_storage_and_task_submission(monkeypatch)
         return manager
 
     monkeypatch.setattr(upload_api, "validate_upload", fake_validate_upload)
-    monkeypatch.setattr(upload_api, "store_upload", fake_store_upload)
+    monkeypatch.setattr(upload_api, "_store_upload", fake_store_upload)
     monkeypatch.setattr(upload_api, "get_task_manager", fake_get_task_manager)
 
-    response = _run(upload_api._process_upload(file, 7))
+    response = _run(upload_api.upload_file(file, 7))
 
     assert captured == [
         ("validate", file),
@@ -74,14 +74,14 @@ def test_get_upload_status_or_raise_returns_status_and_raises_404(monkeypatch) -
         return FakeTaskManager(status={"status": "running"})
 
     monkeypatch.setattr(upload_api, "get_task_manager", fake_get_task_manager_ok)
-    assert _run(upload_api._get_upload_status_or_raise("task-ok")) == {"status": "running"}
+    assert _run(upload_api.get_upload_status("task-ok")) == {"status": "running"}
 
     async def fake_get_task_manager_missing():
         return FakeTaskManager(status=None)
 
     monkeypatch.setattr(upload_api, "get_task_manager", fake_get_task_manager_missing)
     with pytest.raises(HTTPException) as exc:
-        _run(upload_api._get_upload_status_or_raise("task-missing"))
+        _run(upload_api.get_upload_status("task-missing"))
 
     assert exc.value.status_code == 404
     assert exc.value.detail == "任务不存在: task-missing"

@@ -1,4 +1,4 @@
-from app.memory.config import (
+from app.knowledge.infrastructure.config import (
     compiled_sensitive_patterns,
     long_term_collection_name,
     long_term_deduplication_config,

@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-import app.memory.simple_long_term_memory as ltm_module
+import app.knowledge.infrastructure.ltm.simple_long_term_memory as ltm_module
 
 
 class FakeEmbeddingModel:
@@ -18,20 +18,7 @@ class FakeEmbeddingModel:
 
 class FakeRetrievalCore:
     def __init__(self) -> None:
-        self.dense_calls: list[dict] = []
         self.hybrid_calls: list[dict] = []
-        self.dense_hits = [
-            {
-                "entity": {
-                    "memory_id": "mem-1",
-                    "tenant_id": "tenant-1",
-                    "user_id": "user-1",
-                    "memory_type": "issue_history",
-                    "content": "之前咨询过空调维修",
-                },
-                "score": 0.91,
-            }
-        ]
         self.hybrid_hits = [
             {
                 "entity": {
@@ -44,10 +31,6 @@ class FakeRetrievalCore:
                 "score": 0.88,
             }
         ]
-
-    async def search_dense(self, query: str, **kwargs):
-        self.dense_calls.append({"query": query, **kwargs})
-        return self.dense_hits
 
     async def search_hybrid(self, query: str, **kwargs):
         self.hybrid_calls.append({"query": query, **kwargs})
@@ -122,32 +105,6 @@ def test_save_memory_inserts_record_built_from_embedding(monkeypatch) -> None:
     ]
 
 
-def test_search_memory_uses_resolved_active_filter(monkeypatch) -> None:
-    fake_core = FakeRetrievalCore()
-    ltm, _embedding_model = _build_ltm(monkeypatch, retrieval_core=fake_core)
-    ltm.search_config = {"top_k": 4, "score_threshold": 0.75}
-
-    results = _run(
-        ltm.search_memory(
-            "tenant-1",
-            "user-1",
-            "怎么修空调",
-        )
-    )
-
-    assert len(results) == 1
-    assert results[0].memory.memory_id == "mem-1"
-    assert fake_core.dense_calls == [
-        {
-            "query": "怎么修空调",
-            "limit": 4,
-            "filter_expr": 'tenant_id == "tenant-1" and user_id == "user-1" and is_deleted == false',
-            "output_fields": ltm_module.MEMORY_OUTPUT_FIELDS,
-            "score_threshold": 0.75,
-        }
-    ]
-
-
 def test_hybrid_search_uses_multiplier_for_search_limit(monkeypatch) -> None:
     fake_core = FakeRetrievalCore()
     ltm, _embedding_model = _build_ltm(monkeypatch, retrieval_core=fake_core)
@@ -214,4 +171,45 @@ def test_deduplicate_memory_returns_false_when_hit_threshold_reached(monkeypatch
             "output_fields": ltm_module.DEDUP_OUTPUT_FIELDS,
             "similarity_threshold": 0.9,
         }
+    ]
+
+
+def test_update_memory_hit_info_updates_memory_and_upserts_partial_record(monkeypatch) -> None:
+    upserted_records: list[list[dict]] = []
+    ltm, _embedding_model = _build_ltm(monkeypatch, retrieval_core=FakeRetrievalCore())
+    ltm.update_on_hit_config = {
+        "enabled": True,
+        "update_last_hit_at": True,
+        "increase_hit_count": True,
+    }
+    monkeypatch.setattr(ltm, "_now_ts", lambda: 200)
+    monkeypatch.setattr(
+        ltm_module,
+        "upsert_records",
+        lambda _client, _collection_name, records: upserted_records.append(records),
+    )
+    memory = ltm_module.LongTermMemory(
+        memory_id="mem-1",
+        tenant_id="tenant-1",
+        user_id="user-1",
+        memory_type="issue_history",
+        content="门铃掉线",
+        hit_count=2,
+        last_hit_at=100,
+    )
+
+    updated = _run(ltm.update_memory_hit_info(memory))
+
+    assert updated is True
+    assert memory.hit_count == 3
+    assert memory.last_hit_at == 200
+    assert upserted_records == [
+        [
+            {
+                "memory_id": "mem-1",
+                "updated_at": 200,
+                "hit_count": 3,
+                "last_hit_at": 200,
+            }
+        ]
     ]

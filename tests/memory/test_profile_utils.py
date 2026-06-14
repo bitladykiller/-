@@ -1,9 +1,7 @@
-from app.memory.profile_utils import (
-    build_profile_field_values,
-    build_user_profile_facts,
+from app.knowledge.infrastructure.profile.profile_payload_support import (
     coerce_user_profile_payload,
-    decode_profile_tags_json,
 )
+import app.user.application.user_profile_store as profile_store
 
 
 def test_coerce_user_profile_payload_returns_stable_defaults() -> None:
@@ -30,12 +28,12 @@ def test_coerce_user_profile_payload_returns_stable_defaults() -> None:
 
 
 def test_decode_profile_tags_json_filters_invalid_values() -> None:
-    assert decode_profile_tags_json('["空调", "空调", "", "高端"]') == ["空调", "高端"]
-    assert decode_profile_tags_json("not-json") == []
+    assert profile_store.decode_profile_tags_json('["空调", "空调", "", "高端"]') == ["空调", "高端"]
+    assert profile_store.decode_profile_tags_json("not-json") == []
 
 
 def test_build_user_profile_facts_filters_invalid_rows() -> None:
-    facts = build_user_profile_facts(
+    facts = profile_store.build_user_profile_facts(
         [
             {"fact_key": "workspace", "fact_value": "阿里"},
             {"fact_key": "workspace", "fact_value": ""},
@@ -47,7 +45,7 @@ def test_build_user_profile_facts_filters_invalid_rows() -> None:
 
 
 def test_build_profile_field_values_keeps_explicit_empty_tags() -> None:
-    field_values = build_profile_field_values(
+    field_values = profile_store.build_profile_field_values(
         preferred_brand="  小米 ",
         budget_range=None,
         preferred_category="",

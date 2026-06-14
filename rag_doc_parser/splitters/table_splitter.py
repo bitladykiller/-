@@ -7,12 +7,11 @@ RAG 文档解析器 — 表格切分器。
 from __future__ import annotations
 
 import logging
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from rag_doc_parser.markdown.table_utils import (
     build_markdown_table,
     parse_markdown_table,
-    count_table_rows,
 )
 from rag_doc_parser.models import DocumentChunk, MarkdownBlock, new_uuid
 

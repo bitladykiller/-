@@ -2,8 +2,8 @@ import asyncio
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.lg_agent import lg_nodes
-from app.lg_agent.lg_states import AgentState
+import app.chat.infrastructure.graph.lifecycle_nodes as lg_nodes
+from app.chat.infrastructure.graph.state import AgentState
 
 
 class FakeMemoryMiddleware:

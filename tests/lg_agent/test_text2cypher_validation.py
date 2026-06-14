@@ -1,11 +1,9 @@
-from app.lg_agent.kg_sub_graph.agentic_rag_agents.components.text2cypher.validation.models import (
+from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.text2cypher.validation.models import (
     CypherValidationTask,
     Neo4jStructuredSchema,
     Neo4jStructuredSchemaPropertyNumber,
-    Neo4jStructuredSchemaPropertyString,
-    Neo4jStructuredSchemaRelationship,
 )
-from app.lg_agent.kg_sub_graph.agentic_rag_agents.components.text2cypher.validation.schema_validation_rules import (
+from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.text2cypher.validation.schema_validation_rules import (
     build_validation_task_groups,
     validate_property_names_with_enum,
     validate_property_values_with_enum,
@@ -17,12 +15,12 @@ def _build_schema() -> Neo4jStructuredSchema:
     return Neo4jStructuredSchema(
         node_props={
             "Product": [
-                Neo4jStructuredSchemaPropertyString(
-                    property="status",
-                    type="STRING",
-                    values=["active", "inactive"],
-                    distinct_count=2,
-                ),
+                {
+                    "property": "status",
+                    "type": "STRING",
+                    "values": ["active", "inactive"],
+                    "distinct_count": 2,
+                },
                 Neo4jStructuredSchemaPropertyNumber(
                     property="price",
                     type="FLOAT",
@@ -33,12 +31,12 @@ def _build_schema() -> Neo4jStructuredSchema:
         },
         rel_props={
             "PURCHASED": [
-                Neo4jStructuredSchemaPropertyString(
-                    property="channel",
-                    type="STRING",
-                    values=["app", "web"],
-                    distinct_count=2,
-                ),
+                {
+                    "property": "channel",
+                    "type": "STRING",
+                    "values": ["app", "web"],
+                    "distinct_count": 2,
+                },
                 Neo4jStructuredSchemaPropertyNumber(
                     property="quantity",
                     type="INTEGER",
@@ -48,11 +46,7 @@ def _build_schema() -> Neo4jStructuredSchema:
             ]
         },
         relationships=[
-            Neo4jStructuredSchemaRelationship(
-                start="User",
-                type="PURCHASED",
-                end="Product",
-            )
+            {"start": "User", "type": "PURCHASED", "end": "Product"}
         ],
         metadata={},
     )

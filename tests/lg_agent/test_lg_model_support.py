@@ -1,4 +1,4 @@
-from app.lg_agent.lg_model_support import (
+from app.chat.infrastructure.modeling.models import (
     build_lazy_model,
     get_or_create_cached_model,
     resolve_model_factory,

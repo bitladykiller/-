@@ -14,16 +14,16 @@ test: ## 运行测试
 	pytest tests/ -v
 
 test-cov: ## 运行测试并生成覆盖率报告
-	pytest tests/ --cov=llm_backend --cov-report=html --cov-report=term
+	pytest tests/ --cov=app --cov-report=html --cov-report=term
 
 lint: ## 代码检查
-	ruff check llm_backend/ rag_doc_parser/ shared_retrieval/
+	ruff check app/ rag_doc_parser/ shared_retrieval/ scripts/ tests/
 
 format: ## 格式化代码
-	ruff format llm_backend/ rag_doc_parser/ shared_retrieval/
+	ruff format app/ rag_doc_parser/ shared_retrieval/ scripts/ tests/
 
 type-check: ## 类型检查
-	mypy llm_backend/ rag_doc_parser/ shared_retrieval/
+	mypy app/ rag_doc_parser/ shared_retrieval/
 
 clean: ## 清理构建产物
 	find . -type d -name "__pycache__" -exec rm -rf {} +
@@ -53,4 +53,4 @@ pre-commit: ## 运行 pre-commit hooks
 	pre-commit run --all-files
 
 dev: ## 开发模式启动
-	python -m llm_backend.run
+	python -m app.run

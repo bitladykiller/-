@@ -1,4 +1,4 @@
-from app.lg_agent.lg_retriever_support import (
+from app.chat.infrastructure.retrievers.retriever_implementations import (
     build_milvus_doc_fallback_record,
     build_milvus_doc_record,
     normalize_retriever_result,

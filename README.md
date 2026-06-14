@@ -52,7 +52,7 @@
 先把根目录的环境变量模板复制到后端运行目录：
 
 ```bash
-cp .env.example llm_backend/.env
+cp .env.example app/.env
 ```
 
 然后只需要填写 API Key、模型配置等业务参数。
@@ -103,12 +103,12 @@ docker volume ls | grep '^local.*kefu_'
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python -m llm_backend.run
+python -m app.run
 ```
 
 `requirements.txt` 已包含 `shared_retrieval` 与 `rag_doc_parser` 的本地可编辑安装，无需额外手工安装兄弟模块。
 
-如果继续用本地开发模式，仍然可以沿用 `llm_backend/.env` 中的宿主机端口配置。
+如果继续用本地开发模式，仍然可以沿用 `app/.env` 中的宿主机端口配置。
 
 ### 5. 开发检查（可选）
 
@@ -118,66 +118,51 @@ python -m llm_backend.run
 
 ```bash
 pytest
-ruff check llm_backend/app llm_backend/scripts
+ruff check app scripts tests
 ```
 
 ## 项目结构
 
+当前项目以 `app/` 作为唯一主代码树，旧兼容目录已经清理，后续开发都直接围绕领域目录展开。
+
 ```
 deepseek_agent/
-├── .env.example              # 环境变量模板（复制到 llm_backend/.env）
-├── .env.docker               # Compose 环境下的基础设施地址覆盖
-├── .dockerignore
-├── docker/
-│   └── app/
-│       └── start.sh          # app 容器启动脚本（建表 + 启动 uvicorn）
-├── docker/neo4j-import/      # Neo4j CSV 占位目录；有数据时 importer 自动导入
-├── llm_backend/
-│   ├── Dockerfile            # 后端镜像构建文件
-│   ├── main.py                 # FastAPI 入口
-│   ├── main_support.py         # 应用工厂 / 中间件 / 路由与静态资源注册 helper
-│   ├── main_runtime_support.py # startup / shutdown 运行时资源管理 helper
-│   ├── run.py                  # 本地开发启动入口
-│   ├── run_support.py          # uvicorn 启动参数 / 切目录 helper
-│   ├── scripts/
-│   │   ├── init_db.py          # 本地重置数据库
-│   │   └── bootstrap_compose_db.py # Compose 建表脚本（不删表）
-│   ├── app/
-│   │   ├── api/                # conversations / upload / langgraph
-│   │   ├── core/               # 配置 / MySQL 连接 / 日志
-│   │   ├── lg_agent/           # LangGraph Agent
-│   │   │   ├── graph/            #   主图、状态、节点、消息与边路由入口
-│   │   │   ├── retrieval/        #   检索抽象、注册表、KG/RAG 和摘要入口
-│   │   │   ├── react/            #   ReAct 子图、运行时与 helper 入口
-│   │   │   ├── memory_bridge/    #   Agent 和记忆系统桥接入口
-│   │   │   ├── modeling/         #   模型与 Prompt 入口
-│   │   │   └── kg_sub_graph/     #   KG 底层实现细节
-│   │   ├── memory/             # 记忆域：config / stm / ltm / profile / orchestration
-│   │   ├── models/             # SQLAlchemy 模型
-│   │   ├── services/           # 会话 / 索引 / 任务 / 用户画像
-│   │   └── security/           # XML 隔离 + Prompt 注入防御
-│   └── static/dist/            # 前端
-├── rag_doc_parser/             # RAG 文档解析（PDF/DOCX → Milvus）
-├── docker-compose.yml          # 基础设施 + app + Neo4j 导入任务（命名卷持久化）
-├── neo4j-import.sh             # 可重复执行的 Neo4j 导入脚本（无 CSV 时自动跳过）
-└── requirements.txt
+├── app/                         # 主应用目录
+│   ├── api/                     # FastAPI 路由与请求组装
+│   ├── chat/                    # 对话域
+│   ├── knowledge/               # 记忆 / 检索 / 画像域
+│   ├── user/                    # 用户与会话模型域
+│   ├── shared/                  # 共享基础设施
+│   └── scripts/                 # 应用内维护脚本
+├── docs/                        # 架构、部署、迁移文档
+├── scripts/                     # 仓库级辅助脚本
+├── tests/                       # 测试目录
+├── docker-compose.yml           # Docker Compose 配置
+├── pyproject.toml               # Python / Ruff / Pytest 配置
+└── README.md                    # 项目说明
 ```
+
+### 架构特点
+
+- **领域驱动设计**：按业务场景（chat/knowledge/user）划分领域
+- **分层架构**：每个领域内部采用 domain → application → infrastructure → interface 四层结构
+- **依赖倒置**：领域层不依赖外部框架，基础设施层通过依赖注入提供服务
+- **单一主树**：旧兼容目录已移除，代码入口统一收敛到 `app/`
 
 ## 相关文档
 
 - [CHANGELOG.md](CHANGELOG.md) — 版本更新日志
+- [app/README.md](app/README.md) — 当前主代码树说明
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 当前架构和目录边界
+- [docs/MIGRATION.md](docs/MIGRATION.md) — 新旧导入路径和迁移策略
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — 部署与启动方式
+- [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) — 开发规范
 - [rag_doc_parser/README.md](rag_doc_parser/README.md) — RAG 文档解析模块
-- [llm_backend/app/README.md](llm_backend/app/README.md) — 后端应用模块总览
-- [llm_backend/app/api/README.md](llm_backend/app/api/README.md) — API 路由边界说明
-- [llm_backend/app/services/README.md](llm_backend/app/services/README.md) — Services 业务编排层说明
-- [llm_backend/app/core/README.md](llm_backend/app/core/README.md) — Core 基础设施模块说明
-- [llm_backend/app/models/README.md](llm_backend/app/models/README.md) — 持久化模型边界说明
-- [llm_backend/app/security/README.md](llm_backend/app/security/README.md) — Prompt 防护工具边界说明
-- [llm_backend/scripts/README.md](llm_backend/scripts/README.md) — 维护脚本边界说明
-- [llm_backend/app/lg_agent/README.md](llm_backend/app/lg_agent/README.md) — LangGraph Agent 模块设计说明
-- [llm_backend/app/lg_agent/kg_sub_graph/README.md](llm_backend/app/lg_agent/kg_sub_graph/README.md) — KG 子图实现边界说明
-- [llm_backend/app/memory/README.md](llm_backend/app/memory/README.md) — 记忆模块设计说明
-- [智能客服Agent项目详细文档.md](../智能客服Agent项目详细文档.md) — 完整架构文档
+- [app/scripts/README.md](app/scripts/README.md) — 应用内维护脚本说明
+- [app/shared/core/README.md](app/shared/core/README.md) — 共享基础设施说明
+- [app/shared/security/README.md](app/shared/security/README.md) — Prompt 防护说明
+- [app/user/infrastructure/models/README.md](app/user/infrastructure/models/README.md) — 持久化模型说明
+- [app/chat/infrastructure/kg_sub_graph/README.md](app/chat/infrastructure/kg_sub_graph/README.md) — KG 子图说明
 
 ## License
 

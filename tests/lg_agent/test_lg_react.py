@@ -2,9 +2,8 @@ import asyncio
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-import app.lg_agent.lg_react as lg_react
-import app.lg_agent.lg_react_runtime as lg_react_runtime
-from app.lg_agent.lg_states import AgentState
+import app.chat.infrastructure.react.react as lg_react
+from app.chat.infrastructure.graph.state import AgentState
 
 
 class FakeCompiledSubgraph:
@@ -22,7 +21,7 @@ def _run(awaitable):
 
 
 def test_react_runtime_caches_builder_result(monkeypatch) -> None:
-    monkeypatch.setattr(lg_react_runtime, "_react_subgraph", None)
+    monkeypatch.setattr(lg_react, "_react_subgraph", None)
     build_count = {"count": 0}
     built = FakeCompiledSubgraph()
 
@@ -30,8 +29,8 @@ def test_react_runtime_caches_builder_result(monkeypatch) -> None:
         build_count["count"] += 1
         return built
 
-    first = _run(lg_react_runtime.get_react_subgraph(fake_builder))
-    second = _run(lg_react_runtime.get_react_subgraph(fake_builder))
+    first = _run(lg_react.get_react_subgraph(fake_builder))
+    second = _run(lg_react.get_react_subgraph(fake_builder))
 
     assert first is built
     assert second is built

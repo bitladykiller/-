@@ -1,13 +1,12 @@
 import pytest
 
-from app.core.config import (
+import app.shared.core.config_runtime as config_runtime
+from app.shared.core.config import (
+    ServiceType,
+)
+from app.shared.core.config_models import (
     BusinessSettings,
     InfrastructureSettings,
-    ServiceType,
-    Settings,
-    build_database_url,
-    build_milvus_url,
-    build_redis_url,
 )
 
 
@@ -43,25 +42,8 @@ def _build_business_settings() -> BusinessSettings:
     )
 
 
-def test_url_builders_return_expected_strings() -> None:
-    assert build_database_url(
-        host="mysql",
-        port=3306,
-        user="root",
-        password="1234",
-        database="kefu_agent",
-    ) == "mysql+aiomysql://root:1234@mysql:3306/kefu_agent"
-    assert build_redis_url(
-        host="redis",
-        port=6379,
-        db=0,
-        password="",
-    ) == "redis://redis:6379/0"
-    assert build_milvus_url(host="milvus", port=19530) == "milvus:19530"
-
-
 def test_settings_proxies_sub_settings_and_computed_urls() -> None:
-    settings = Settings(
+    settings = type(config_runtime.settings)(
         infra=_build_infrastructure_settings(),
         business=_build_business_settings(),
     )
@@ -73,8 +55,19 @@ def test_settings_proxies_sub_settings_and_computed_urls() -> None:
     assert settings.MILVUS_URL == "milvus:19530"
 
 
+def test_settings_redis_url_without_password_omits_auth_prefix() -> None:
+    settings = type(config_runtime.settings)(
+        infra=_build_infrastructure_settings().model_copy(
+            update={"REDIS_DB": 0, "REDIS_PASSWORD": ""}
+        ),
+        business=_build_business_settings(),
+    )
+
+    assert settings.REDIS_URL == "redis://redis:6379/0"
+
+
 def test_settings_unknown_attribute_raises_attribute_error() -> None:
-    settings = Settings(
+    settings = type(config_runtime.settings)(
         infra=_build_infrastructure_settings(),
         business=_build_business_settings(),
     )

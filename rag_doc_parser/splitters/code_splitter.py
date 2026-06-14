@@ -7,11 +7,7 @@ RAG 文档解析器 — 代码块切分器（按函数/类边界优先）。
 
 from __future__ import annotations
 
-import re
-import logging
-from typing import List, Optional
-
-logger = logging.getLogger(__name__)
+from typing import List
 
 # 各语言的函数/类边界关键词
 _BOUNDARY_KEYWORDS = {
@@ -47,7 +43,7 @@ class CodeSplitter:
         lines = code_block.split("\n")
         lang = language or CodeSplitter._detect_lang(lines)
 
-        code_lines, fence_start = CodeSplitter._strip_fences(lines)
+        code_lines = CodeSplitter._strip_fences(lines)
         n = len(code_lines)
         if n <= self.max_lines_per_chunk:
             return [CodeSplitter._wrap(code_lines, lang)] if code_lines else []
@@ -132,11 +128,11 @@ class CodeSplitter:
         return ""
 
     @staticmethod
-    def _strip_fences(lines: List[str]) -> tuple:
+    def _strip_fences(lines: List[str]) -> List[str]:
         """去除首尾 ``` 标记。"""
         start = 1 if lines and lines[0].strip().startswith("```") else 0
         end = -1 if lines and lines[-1].strip() == "```" else len(lines)
-        return lines[start:end], start
+        return lines[start:end]
 
     @staticmethod
     def _wrap(code_lines: List[str], language: str) -> str:

@@ -7,14 +7,10 @@ RAG 文档解析器 — Markdown 标题解析器。
 
 from __future__ import annotations
 
-import logging
 import re
 from typing import List, Optional
 
-from rag_doc_parser.exceptions import MarkdownParseError
 from rag_doc_parser.models import MarkdownSection, new_uuid
-
-logger = logging.getLogger(__name__)
 
 # 标题正则：匹配 1-4 个 # 开头的行
 _HEADING_RE = re.compile(r"^(#{1,4})\s+(.+)$")
@@ -55,8 +51,6 @@ class HeadingParser:
         Returns:
             MarkdownSection 列表。
 
-        Raises:
-            MarkdownParseError: 解析出错时抛出。
         """
         if not markdown:
             return []

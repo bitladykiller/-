@@ -12,14 +12,11 @@ import json
 import os
 import sys
 
-# 确保项目路径在 sys.path 中
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from rag_doc_parser.config import ParserConfig
 from rag_doc_parser.pipeline import parse_document
 
 
-def main():
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="RAG 文档解析与切分工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -72,7 +69,3 @@ def main():
         json.dump(output_data, f, ensure_ascii=False, indent=2)
 
     print(f"完成: {len(chunks)} 个 chunk → {args.output}")
-
-
-if __name__ == "__main__":
-    main()

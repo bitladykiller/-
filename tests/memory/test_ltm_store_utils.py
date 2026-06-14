@@ -1,9 +1,7 @@
-from app.memory.ltm_store_utils import (
+from app.knowledge.infrastructure.ltm.simple_long_term_memory import (
     build_active_memory_filter,
-    build_memory_id_filter,
     build_memory_record,
     build_partial_update_record,
-    cluster_memory_records,
     has_dedup_match,
     search_results_from_hits,
 )
@@ -55,7 +53,6 @@ def test_build_memory_record_and_partial_update_record_return_stable_payloads() 
         "hit_count": 3,
         "is_deleted": True,
     }
-    assert build_memory_id_filter("mem-1") == 'memory_id == "mem-1"'
 
 
 def test_search_results_from_hits_skips_invalid_entities() -> None:
@@ -85,17 +82,3 @@ def test_has_dedup_match_uses_max_distance_against_threshold() -> None:
     assert has_dedup_match([], 0.9) is False
     assert has_dedup_match([[{"distance": 0.82}, {"distance": 0.95}]], 0.9) is True
     assert has_dedup_match([[{"distance": 0.82}, {"distance": 0.88}]], 0.9) is False
-
-
-def test_cluster_memory_records_groups_similar_records_only() -> None:
-    records = [
-        {"memory_id": "mem-1", "embedding": [1.0, 0.0]},
-        {"memory_id": "mem-2", "embedding": [0.99, 0.01]},
-        {"memory_id": "mem-3", "embedding": [0.0, 1.0]},
-        {"memory_id": "mem-4", "embedding": []},
-    ]
-
-    clusters = cluster_memory_records(records, similarity_threshold=0.95)
-
-    assert len(clusters) == 1
-    assert [record["memory_id"] for record in clusters[0]] == ["mem-1", "mem-2"]

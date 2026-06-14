@@ -1,7 +1,8 @@
 import asyncio
 
-import app.lg_agent.lg_retriever_runtime as retriever_runtime
-import app.lg_agent.lg_retrievers as lg_retrievers
+import app.chat.infrastructure.retrievers.retriever_contracts as retriever_contracts
+import app.chat.infrastructure.retrievers.retriever_implementations as retriever_implementations
+import app.chat.infrastructure.retrievers.retriever_runtime as retriever_runtime
 
 
 class FakeSearcher:
@@ -27,7 +28,7 @@ class FakeT2CAgent:
         return self.payload
 
 
-class FakeRetriever(lg_retrievers.Retriever):
+class FakeRetriever(retriever_contracts.Retriever):
     def __init__(self, payload: dict) -> None:
         self.payload = payload
 
@@ -40,7 +41,9 @@ def _run(awaitable):
 
 
 def test_milvus_doc_retriever_search_truncates_records() -> None:
-    retriever = lg_retrievers.MilvusDocRetriever.__new__(lg_retrievers.MilvusDocRetriever)
+    retriever = retriever_implementations.MilvusDocRetriever.__new__(
+        retriever_implementations.MilvusDocRetriever
+    )
     retriever._searcher = FakeSearcher(
         result=[
             {
@@ -67,11 +70,13 @@ def test_milvus_doc_retriever_search_truncates_records() -> None:
         "rerank_score": 0.0,
     }
     assert result["errors"] == []
-    assert result["steps"] == [lg_retrievers.RAG_SEARCH_STEP]
+    assert result["steps"] == [retriever_contracts.RAG_SEARCH_STEP]
 
 
 def test_milvus_doc_retriever_search_returns_fallback_record_on_error() -> None:
-    retriever = lg_retrievers.MilvusDocRetriever.__new__(lg_retrievers.MilvusDocRetriever)
+    retriever = retriever_implementations.MilvusDocRetriever.__new__(
+        retriever_implementations.MilvusDocRetriever
+    )
     retriever._searcher = FakeSearcher(error=RuntimeError("boom"))
 
     result = _run(retriever.search("保修政策"))
@@ -88,7 +93,7 @@ def test_knowledge_graph_retriever_wraps_text2cypher_output() -> None:
             "steps": ["text2cypher"],
         }
     )
-    retriever = lg_retrievers.KnowledgeGraphRetriever(t2c_agent)
+    retriever = retriever_implementations.KnowledgeGraphRetriever(t2c_agent)
 
     result = _run(retriever.search("查用户"))
 
@@ -102,7 +107,7 @@ def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
     monkeypatch.setattr(
         retriever_runtime,
         "_registry",
-        lg_retrievers.RetrieverRegistry(),
+        retriever_contracts.RetrieverRegistry(),
     )
     monkeypatch.setattr(retriever_runtime, "_cypher_example_retriever", None)
     monkeypatch.setattr(retriever_runtime, "_t2c_agent", None)
@@ -111,18 +116,22 @@ def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
     def fake_register_missing() -> None:
         call_count["register"] += 1
         retriever_runtime._get_registry().register(
-            lg_retrievers.KG_RETRIEVER_NAME,
+            retriever_contracts.KG_RETRIEVER_NAME,
             FakeRetriever({"records": [{"id": 1}]}),
         )
         retriever_runtime._get_registry().register(
-            lg_retrievers.RAG_RETRIEVER_NAME,
+            retriever_contracts.RAG_RETRIEVER_NAME,
             FakeRetriever({"records": [{"id": 2}]}),
         )
 
     monkeypatch.setattr(retriever_runtime, "_register_missing_retrievers", fake_register_missing)
 
-    kg = _run(lg_retrievers.get_retriever(lg_retrievers.KG_RETRIEVER_NAME))
-    rag = _run(lg_retrievers.get_retriever(lg_retrievers.RAG_RETRIEVER_NAME))
+    kg = _run(
+        retriever_runtime.get_retriever(retriever_contracts.KG_RETRIEVER_NAME)
+    )
+    rag = _run(
+        retriever_runtime.get_retriever(retriever_contracts.RAG_RETRIEVER_NAME)
+    )
 
     assert isinstance(kg, FakeRetriever)
     assert isinstance(rag, FakeRetriever)

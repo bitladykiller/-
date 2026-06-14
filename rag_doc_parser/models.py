@@ -150,7 +150,3 @@ class DocumentChunk:
 
 def new_uuid() -> str:
     return uuid.uuid4().hex[:12]
-
-
-def new_doc_id() -> str:
-    return f"doc_{new_uuid()}"

@@ -1,11 +1,12 @@
 import logging
 
-from app.core import database_support
+import app.shared.core.database_support as database_support
 
 
 class FakeLogger:
     def __init__(self) -> None:
         self.level: int | None = None
+        self.name: str | None = None
 
     def setLevel(self, level: int) -> None:
         self.level = level
@@ -18,8 +19,8 @@ def test_build_engine_options_returns_project_defaults() -> None:
         "url": "mysql+aiomysql://user:pwd@db/app",
         "echo": False,
         "pool_pre_ping": True,
-        "pool_size": database_support.POOL_SIZE,
-        "max_overflow": database_support.MAX_OVERFLOW,
+        "pool_size": 5,
+        "max_overflow": 10,
     }
 
 
@@ -28,7 +29,8 @@ def test_configure_sqlalchemy_logging_sets_expected_level(monkeypatch) -> None:
     original_get_logger = database_support.logging.getLogger
 
     def fake_get_logger(name: str | None = None):
-        if name == database_support.SQLALCHEMY_LOGGER_NAME:
+        fake_logger.name = name
+        if name == "sqlalchemy.engine":
             return fake_logger
         return original_get_logger(name)
 
@@ -41,6 +43,7 @@ def test_configure_sqlalchemy_logging_sets_expected_level(monkeypatch) -> None:
     database_support.configure_sqlalchemy_logging()
 
     assert fake_logger.level == logging.WARNING
+    assert fake_logger.name == "sqlalchemy.engine"
 
 
 def test_create_session_factory_respects_expire_on_commit_flag() -> None:

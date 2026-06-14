@@ -1,8 +1,8 @@
 import asyncio
 
-from app.lg_agent.memory_bridge import context as lg_context
-from app.lg_agent.lg_states import AgentState
-from app.memory.schemas import AgentMemoryState
+from app.chat.infrastructure.memory_bridge import context as lg_context
+from app.chat.infrastructure.graph.state import AgentState
+from app.knowledge.domain.schemas import AgentMemoryState
 
 
 class FakeMemoryMiddleware:

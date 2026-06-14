@@ -7,10 +7,7 @@ RAG 文档解析器 — 文本切分器。
 
 from __future__ import annotations
 
-import logging
 from typing import List
-
-logger = logging.getLogger(__name__)
 
 
 class TextSplitter:

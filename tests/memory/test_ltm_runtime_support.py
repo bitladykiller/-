@@ -1,12 +1,10 @@
 import asyncio
 
-from app.memory.ltm_runtime_support import (
+from app.knowledge.infrastructure.ltm.simple_long_term_memory import (
     ensure_collection_ready,
-    load_merge_clusters,
-    search_dense_memories,
     search_hybrid_memories,
-    should_insert_memory,
 )
+import app.knowledge.infrastructure.ltm.simple_long_term_memory as ltm_module
 
 
 class FakeLogger:
@@ -19,23 +17,7 @@ class FakeLogger:
 
 class FakeRetrievalCore:
     def __init__(self) -> None:
-        self.dense_calls: list[dict] = []
         self.hybrid_calls: list[dict] = []
-
-    async def search_dense(self, query: str, **kwargs):
-        self.dense_calls.append({"query": query, **kwargs})
-        return [
-            {
-                "entity": {
-                    "memory_id": "mem-1",
-                    "tenant_id": "tenant-1",
-                    "user_id": "user-1",
-                    "memory_type": "issue_history",
-                    "content": "之前咨询过空调维修",
-                },
-                "score": 0.91,
-            }
-        ]
 
     async def search_hybrid(self, query: str, **kwargs):
         self.hybrid_calls.append({"query": query, **kwargs})
@@ -60,7 +42,7 @@ def _run(awaitable):
 def test_ensure_collection_ready_logs_created_or_existing(monkeypatch) -> None:
     logger = FakeLogger()
     monkeypatch.setattr(
-        "app.memory.ltm_runtime_support.ensure_memory_collection",
+        "app.knowledge.infrastructure.ltm.simple_long_term_memory.ensure_memory_collection",
         lambda *_args, **_kwargs: False,
     )
     ensure_collection_ready(
@@ -70,7 +52,7 @@ def test_ensure_collection_ready_logs_created_or_existing(monkeypatch) -> None:
     )
 
     monkeypatch.setattr(
-        "app.memory.ltm_runtime_support.ensure_memory_collection",
+        "app.knowledge.infrastructure.ltm.simple_long_term_memory.ensure_memory_collection",
         lambda *_args, **_kwargs: True,
     )
     ensure_collection_ready(
@@ -85,19 +67,8 @@ def test_ensure_collection_ready_logs_created_or_existing(monkeypatch) -> None:
     ]
 
 
-def test_search_runtime_helpers_delegate_to_retrieval_core() -> None:
+def test_hybrid_search_runtime_helper_delegates_to_retrieval_core() -> None:
     retrieval_core = FakeRetrievalCore()
-
-    dense_results = _run(
-        search_dense_memories(
-            retrieval_core=retrieval_core,
-            query="怎么修空调",
-            top_k=4,
-            filter_expr='tenant_id == "tenant-1"',
-            output_fields=["content"],
-            score_threshold=0.75,
-        )
-    )
     hybrid_results = _run(
         search_hybrid_memories(
             retrieval_core=retrieval_core,
@@ -110,17 +81,7 @@ def test_search_runtime_helpers_delegate_to_retrieval_core() -> None:
         )
     )
 
-    assert dense_results[0].memory.memory_id == "mem-1"
     assert hybrid_results[0].memory.memory_id == "mem-2"
-    assert retrieval_core.dense_calls == [
-        {
-            "query": "怎么修空调",
-            "limit": 4,
-            "filter_expr": 'tenant_id == "tenant-1"',
-            "output_fields": ["content"],
-            "score_threshold": 0.75,
-        }
-    ]
     assert retrieval_core.hybrid_calls == [
         {
             "query": "路由器经常断网",
@@ -136,7 +97,7 @@ def test_search_runtime_helpers_delegate_to_retrieval_core() -> None:
 def test_should_insert_memory_is_inverse_of_dedup_match(monkeypatch) -> None:
     calls: list[dict] = []
     monkeypatch.setattr(
-        "app.memory.ltm_runtime_support.search_records",
+        "app.knowledge.infrastructure.ltm.simple_long_term_memory.search_records",
         lambda _client, _collection_name, embedding, filter_expr, *, limit, output_fields: (
             calls.append(
                 {
@@ -150,7 +111,7 @@ def test_should_insert_memory_is_inverse_of_dedup_match(monkeypatch) -> None:
         ),
     )
 
-    should_insert = should_insert_memory(
+    should_insert = ltm_module.should_insert_memory(
         milvus_client=object(),
         collection_name="memory_coll",
         embedding=[0.1, 0.2],
@@ -169,25 +130,3 @@ def test_should_insert_memory_is_inverse_of_dedup_match(monkeypatch) -> None:
             "output_fields": ["content"],
         }
     ]
-
-
-def test_load_merge_clusters_filters_small_result_sets_and_clusters(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "app.memory.ltm_runtime_support.query_records",
-        lambda *_args, **_kwargs: [
-            {"memory_id": "mem-1", "embedding": [1.0, 0.0]},
-            {"memory_id": "mem-2", "embedding": [0.99, 0.01]},
-            {"memory_id": "mem-3", "embedding": [0.0, 1.0]},
-        ],
-    )
-
-    clusters = load_merge_clusters(
-        milvus_client=object(),
-        collection_name="memory_coll",
-        filter_expr='tenant_id == "tenant-1"',
-        output_fields=["embedding"],
-        similarity_threshold=0.95,
-    )
-
-    assert len(clusters) == 1
-    assert [record["memory_id"] for record in clusters[0]] == ["mem-1", "mem-2"]

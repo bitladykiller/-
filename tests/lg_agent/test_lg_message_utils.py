@@ -1,13 +1,11 @@
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.lg_agent.lg_message_utils import (
+from app.chat.infrastructure.graph.message_utils import (
     build_progress_response,
     build_safe_messages,
     build_simple_message_response,
     find_last_assistant_message,
     find_last_user_message,
-    message_content,
-    message_role,
 )
 
 
@@ -40,14 +38,6 @@ def test_build_simple_message_response_returns_single_ai_message() -> None:
     payload = build_simple_message_response("仅返回一句")
 
     assert [message.content for message in payload["messages"]] == ["仅返回一句"]
-
-
-def test_message_role_and_content_support_dict_and_langchain_messages() -> None:
-    assert message_role({"role": "user", "content": "你好"}) == "user"
-    assert message_content({"role": "user", "content": "你好"}) == "你好"
-    assert message_role(AIMessage(content="收到")) == "ai"
-    assert message_content(AIMessage(content="收到")) == "收到"
-
 
 def test_find_last_user_message_returns_latest_user_content() -> None:
     messages = [

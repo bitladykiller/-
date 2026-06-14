@@ -1,4 +1,4 @@
-import app.lg_agent.lg_models as lg_models
+import app.chat.infrastructure.modeling.models as lg_models
 
 
 class DummyModel:
@@ -13,7 +13,7 @@ def test_create_chat_model_uses_resolved_factory(monkeypatch) -> None:
 
 
 def test_get_model_caches_instances_by_role(monkeypatch) -> None:
-    lg_models.clear_model_cache()
+    lg_models._models_cache.clear()
     created: list[tuple[str, float]] = []
 
     def fake_create_chat_model(temperature: float):
@@ -27,7 +27,7 @@ def test_get_model_caches_instances_by_role(monkeypatch) -> None:
 
     assert first is second
     assert created == [("created", 0.7)]
-    lg_models.clear_model_cache()
+    lg_models._models_cache.clear()
 
 
 def test_lazy_model_delegates_attribute_access_and_repr(monkeypatch) -> None:

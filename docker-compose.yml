@@ -32,7 +32,6 @@ services:
       - neo4j_data:/data
       - neo4j_logs:/logs
       - neo4j_plugins:/plugins
-      - ./configs/docker/neo4j-import:/var/lib/neo4j/import:ro
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
       interval: 10s
@@ -133,18 +132,18 @@ services:
   app:
     build:
       context: .
-      dockerfile: llm_backend/Dockerfile
+      dockerfile: Dockerfile
     image: deepseek-agent-app:local
     container_name: kefu_app
     restart: unless-stopped
     env_file:
-      - ./llm_backend/.env
+      - ./app/.env
       - ./.env.docker
     command: ["/app/configs/docker/app/start.sh"]
     ports:
       - "8000:8000"
     volumes:
-      - app_uploads:/app/llm_backend/uploads
+      - app_uploads:/app/app/uploads
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
       interval: 15s

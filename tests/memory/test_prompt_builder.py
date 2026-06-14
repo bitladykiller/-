@@ -1,9 +1,9 @@
-from app.memory.prompt_builder import (
+from app.knowledge.domain.prompt_builder import (
     build_compression_prompt,
     build_memory_injection_prompt,
     build_summary_injection_prompt,
 )
-from app.memory.schemas import LongTermMemory, MemorySearchResult, MessageRecord, SessionSummary
+from app.knowledge.domain.schemas import LongTermMemory, MemorySearchResult, MessageRecord, SessionSummary
 
 
 def _build_memory_search_result(

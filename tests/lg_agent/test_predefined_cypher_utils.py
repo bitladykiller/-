@@ -1,20 +1,6 @@
 import numpy as np
 
-from app.lg_agent.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.predefined_cypher_support import (
-    build_default_query_descriptions,
-    build_embed_payload,
-    build_query_texts,
-    extract_embeddings,
-    extract_first_json_object,
-    extract_parameter_names,
-    extract_parameters_with_rules,
-    fallback_embeddings,
-    parse_json_response,
-)
-from app.lg_agent.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.utils import (
-    VectorQueryMatcher,
-    create_vector_query_matcher,
-)
+import app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.utils as predefined_utils
 
 
 class FakeLLM:
@@ -28,23 +14,23 @@ class FakeLLM:
 
 
 def test_embed_payload_and_fallback_embeddings_are_stable() -> None:
-    assert build_embed_payload("bge-m3", ["a", "b"]) == {
+    assert predefined_utils.build_embed_payload("bge-m3", ["a", "b"]) == {
         "model": "bge-m3",
         "input": ["a", "b"],
     }
-    assert fallback_embeddings(2, embedding_dim=3) == [
+    assert predefined_utils.fallback_embeddings(2, embedding_dim=3) == [
         [0.0, 0.0, 0.0],
         [0.0, 0.0, 0.0],
     ]
 
 
 def test_extract_embeddings_and_query_texts_fallback_cleanly() -> None:
-    assert extract_embeddings({"embeddings": [[1.0, 2.0]]}, expected_count=1) == [[1.0, 2.0]]
-    assert extract_embeddings({}, expected_count=2, embedding_dim=2) == [
+    assert predefined_utils.extract_embeddings({"embeddings": [[1.0, 2.0]]}, expected_count=1) == [[1.0, 2.0]]
+    assert predefined_utils.extract_embeddings({}, expected_count=2, embedding_dim=2) == [
         [0.0, 0.0],
         [0.0, 0.0],
     ]
-    assert build_query_texts(
+    assert predefined_utils.build_query_texts(
         {"query_a": "MATCH ...", "query_b": "MATCH ..."},
         {"query_a": "desc a"},
     ) == (
@@ -55,22 +41,24 @@ def test_extract_embeddings_and_query_texts_fallback_cleanly() -> None:
 
 def test_parameter_and_json_helpers_handle_realistic_inputs() -> None:
     template = "MATCH (p) WHERE p.ProductName = $product_name AND o.OrderID = $order_id"
-    assert extract_parameter_names(template) == ["product_name", "order_id"]
-    assert extract_parameters_with_rules("查询 小米门锁 的价格", ["product_name"]) == {
+    assert predefined_utils.extract_parameter_names(template) == ["product_name", "order_id"]
+    assert predefined_utils.extract_parameters_with_rules("查询 小米门锁 的价格", ["product_name"]) == {
         "product_name": "小米门锁"
     }
-    assert extract_parameters_with_rules("订单 10248 的详情", ["order_id"]) == {
+    assert predefined_utils.extract_parameters_with_rules("订单 10248 的详情", ["order_id"]) == {
         "order_id": "10248"
     }
-    payload = extract_first_json_object('说明 {"query_name":"a","value":"x{y}"} 结尾')
+    payload = predefined_utils._extract_first_json_object(
+        '说明 {"query_name":"a","value":"x{y}"} 结尾'
+    )
     assert payload == '{"query_name":"a","value":"x{y}"}'
-    assert parse_json_response('前缀 {"foo":"bar"} 后缀') == {"foo": "bar"}
-    assert parse_json_response("没有 JSON") == {}
+    assert predefined_utils.parse_json_response('前缀 {"foo":"bar"} 后缀') == {"foo": "bar"}
+    assert predefined_utils.parse_json_response("没有 JSON") == {}
 
 
 def test_vector_query_matcher_match_query_filters_by_similarity(monkeypatch) -> None:
-    monkeypatch.setattr(VectorQueryMatcher, "_embed_texts", lambda self, texts: [[1.0, 0.0], [0.0, 1.0]])
-    matcher = VectorQueryMatcher(
+    monkeypatch.setattr(predefined_utils._VectorQueryMatcher, "_embed_texts", lambda self, texts: [[1.0, 0.0], [0.0, 1.0]])
+    matcher = predefined_utils._VectorQueryMatcher(
         predefined_cypher_dict={"query_a": "A", "query_b": "B"},
         query_descriptions={"query_a": "desc a", "query_b": "desc b"},
         similarity_threshold=0.5,
@@ -86,8 +74,8 @@ def test_vector_query_matcher_match_query_filters_by_similarity(monkeypatch) -> 
 
 
 def test_vector_query_matcher_parameter_extraction_and_factory(monkeypatch) -> None:
-    monkeypatch.setattr(VectorQueryMatcher, "_embed_texts", lambda self, texts: [[1.0, 0.0]])
-    matcher = create_vector_query_matcher({"product_price_query": "MATCH (p) WHERE p.ProductName = $product_name"})
+    monkeypatch.setattr(predefined_utils._VectorQueryMatcher, "_embed_texts", lambda self, texts: [[1.0, 0.0]])
+    matcher = predefined_utils.create_vector_query_matcher({"product_price_query": "MATCH (p) WHERE p.ProductName = $product_name"})
 
     assert matcher.query_descriptions == {"product_price_query": "product price query"}
     assert matcher.extract_parameters("查询 小米门锁 的价格", "product_price_query") == {
@@ -104,11 +92,11 @@ def test_vector_query_matcher_parameter_extraction_and_factory(monkeypatch) -> N
 
 def test_compute_query_vectors_uses_query_text_order(monkeypatch) -> None:
     monkeypatch.setattr(
-        VectorQueryMatcher,
+        predefined_utils._VectorQueryMatcher,
         "_embed_texts",
         lambda self, texts: [[float(index), float(index + 1)] for index, _ in enumerate(texts)],
     )
-    matcher = VectorQueryMatcher(
+    matcher = predefined_utils._VectorQueryMatcher(
         predefined_cypher_dict={"query_a": "A", "query_b": "B"},
         query_descriptions={"query_a": "desc a", "query_b": "desc b"},
     )

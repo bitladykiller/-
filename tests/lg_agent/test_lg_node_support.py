@@ -1,14 +1,16 @@
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.lg_agent.lg_node_support import (
-    GUARDRAILS_BLOCK_MESSAGE,
-    build_after_response_payload,
+import app.chat.infrastructure.graph.decision_nodes as decision_nodes
+from app.chat.infrastructure.graph.decision_nodes import (
     build_guardrails_block_response,
     build_memory_augmented_system_prompt,
     build_wrapped_question,
     route_guardrails_action,
     route_query_type,
     route_retrieval_plan,
+)
+from app.chat.infrastructure.graph.lifecycle_nodes import (
+    build_after_response_payload,
 )
 
 
@@ -42,7 +44,7 @@ def test_build_guardrails_block_response_uses_stable_reply() -> None:
 
     assert response["next_action"] == "end"
     assert len(response["messages"]) == 1
-    assert response["messages"][0].content == GUARDRAILS_BLOCK_MESSAGE
+    assert response["messages"][0].content == decision_nodes._GUARDRAILS_BLOCK_MESSAGE
 
 
 def test_build_after_response_payload_uses_latest_complete_message_pair() -> None:

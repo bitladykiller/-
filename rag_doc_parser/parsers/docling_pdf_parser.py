@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import warnings
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from rag_doc_parser.config import ParserConfig
 from rag_doc_parser.exceptions import DoclingParseError

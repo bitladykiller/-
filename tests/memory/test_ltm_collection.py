@@ -1,10 +1,7 @@
-from app.memory.ltm_collection import (
+from app.knowledge.infrastructure.ltm.ltm_collection import (
     MEMORY_OUTPUT_FIELDS,
-    build_memory_index_params,
-    build_memory_schema,
     ensure_memory_collection,
     insert_records,
-    query_records,
     search_records,
     upsert_records,
 )
@@ -36,7 +33,6 @@ class FakeMilvusClient:
         self.created_schema = FakeSchema()
         self.created_index_params = FakeIndexParams()
         self.create_collection_calls: list[dict] = []
-        self.query_calls: list[dict] = []
         self.insert_calls: list[dict] = []
         self.upsert_calls: list[dict] = []
         self.search_calls: list[dict] = []
@@ -55,10 +51,6 @@ class FakeMilvusClient:
     def create_collection(self, **kwargs) -> None:
         self.create_collection_calls.append(kwargs)
 
-    def query(self, **kwargs):
-        self.query_calls.append(kwargs)
-        return [{"memory_id": "mem-1"}]
-
     def insert(self, **kwargs) -> None:
         self.insert_calls.append(kwargs)
 
@@ -70,10 +62,12 @@ class FakeMilvusClient:
         return [[{"distance": 0.91}]]
 
 
-def test_build_memory_schema_registers_expected_fields_and_bm25_function() -> None:
+def test_private_memory_schema_builder_registers_expected_fields_and_bm25_function() -> None:
     client = FakeMilvusClient()
 
-    schema = build_memory_schema(client)
+    from app.knowledge.infrastructure.ltm import ltm_collection as ltm_collection_module
+
+    schema = ltm_collection_module._build_memory_schema(client)
 
     assert schema is client.created_schema
     assert client.create_schema_kwargs == {
@@ -97,10 +91,12 @@ def test_build_memory_schema_registers_expected_fields_and_bm25_function() -> No
     assert len(schema.functions) == 1
 
 
-def test_build_memory_index_params_registers_dense_and_sparse_indexes() -> None:
+def test_private_memory_index_params_builder_registers_dense_and_sparse_indexes() -> None:
     client = FakeMilvusClient()
 
-    index_params = build_memory_index_params(client)
+    from app.knowledge.infrastructure.ltm import ltm_collection as ltm_collection_module
+
+    index_params = ltm_collection_module._build_memory_index_params(client)
 
     assert index_params is client.created_index_params
     assert index_params.indices == [
@@ -144,7 +140,6 @@ def test_query_insert_upsert_and_search_delegate_to_client() -> None:
     client = FakeMilvusClient()
     records = [{"memory_id": "mem-1"}]
 
-    query_result = query_records(client, "memory_coll", 'user_id == "1"', ["memory_id"])
     insert_records(client, "memory_coll", records)
     upsert_records(client, "memory_coll", records)
     search_result = search_records(
@@ -156,14 +151,6 @@ def test_query_insert_upsert_and_search_delegate_to_client() -> None:
         output_fields=MEMORY_OUTPUT_FIELDS,
     )
 
-    assert query_result == [{"memory_id": "mem-1"}]
-    assert client.query_calls == [
-        {
-            "collection_name": "memory_coll",
-            "filter": 'user_id == "1"',
-            "output_fields": ["memory_id"],
-        }
-    ]
     assert client.insert_calls == [
         {"collection_name": "memory_coll", "data": records}
     ]

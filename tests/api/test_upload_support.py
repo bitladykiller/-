@@ -1,7 +1,7 @@
 import pytest
 from fastapi import HTTPException
 
-import app.api.upload_support as upload_support
+import app.api.upload as upload_api
 
 
 class FakeUploadFile:
@@ -22,7 +22,7 @@ class FakeUploadFile:
 
 def test_validate_upload_rejects_unsupported_extension_and_missing_content_type() -> None:
     with pytest.raises(HTTPException) as unsupported_exc:
-        upload_support.validate_upload(
+        upload_api.validate_upload(
             FakeUploadFile(
                 filename="demo.txt",
                 content_type="text/plain",
@@ -33,7 +33,7 @@ def test_validate_upload_rejects_unsupported_extension_and_missing_content_type(
     assert unsupported_exc.value.detail == "不支持的文件类型: .txt"
 
     with pytest.raises(HTTPException) as missing_type_exc:
-        upload_support.validate_upload(
+        upload_api.validate_upload(
             FakeUploadFile(
                 filename="demo.pdf",
                 content_type=None,
@@ -41,7 +41,9 @@ def test_validate_upload_rejects_unsupported_extension_and_missing_content_type(
             )
         )
     assert missing_type_exc.value.status_code == 400
-    assert missing_type_exc.value.detail == upload_support.UNKNOWN_FILE_TYPE_DETAIL
+    assert missing_type_exc.value.detail == "无法识别文件类型"
+
+
 def test_build_upload_accepted_response_returns_stable_shape() -> None:
     file = FakeUploadFile(
         filename="guide.pdf",
@@ -59,8 +61,8 @@ def test_build_upload_accepted_response_returns_stable_shape() -> None:
         "upload_time": "20260102_030405",
         "directory": "uploads/user-uuid/20260102_030405",
     }
-    assert upload_support.build_upload_accepted_response(file_info, "task-1") == {
+    assert upload_api.build_upload_accepted_response(file_info, "task-1") == {
         **file_info,
         "task_id": "task-1",
-        "message": upload_support.UPLOAD_ACCEPTED_MESSAGE,
+        "message": "文件已上传，后台正在解析索引。请通过 task_id 查询进度。",
     }

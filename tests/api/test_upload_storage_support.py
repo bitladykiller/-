@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-import app.api.upload_storage_support as upload_storage_support
+import app.api.upload as upload_api
 
 
 class FakeNow:
@@ -40,21 +40,26 @@ def _run(awaitable):
 
 
 def test_validate_magic_bytes_respects_signature_table() -> None:
-    assert upload_storage_support.validate_magic_bytes("demo.pdf", b"%PDF-1.7") is True
-    assert upload_storage_support.validate_magic_bytes("demo.pdf", b"PK\x03\x04") is False
-    assert upload_storage_support.validate_magic_bytes("demo.unknown", b"whatever") is True
+    assert upload_api._validate_magic_bytes("demo.pdf", b"%PDF-1.7") is True
+    assert upload_api._validate_magic_bytes("demo.pdf", b"PK\x03\x04") is False
+    assert upload_api._validate_magic_bytes("demo.unknown", b"whatever") is True
 
 
-def test_build_upload_target_uses_deterministic_directory_shape(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(upload_storage_support, "UPLOAD_DIR", tmp_path)
-    monkeypatch.setattr(
-        upload_storage_support.uuid,
-        "uuid5",
-        lambda namespace, value: "user-uuid",
+def test_build_upload_target_uses_deterministic_directory_shape(tmp_path: Path) -> None:
+    class FakeUUIDModule:
+        NAMESPACE_DNS = object()
+
+        @staticmethod
+        def uuid5(namespace, value):
+            return "user-uuid"
+
+    target = upload_api.build_upload_target(
+        7,
+        "manual.pdf",
+        upload_dir_root=tmp_path,
+        uuid_module=FakeUUIDModule,
+        clock=FakeDateTime,
     )
-    monkeypatch.setattr(upload_storage_support, "datetime", FakeDateTime)
-
-    target = upload_storage_support.build_upload_target(7, "manual.pdf")
 
     assert target == {
         "user_uuid": "user-uuid",
@@ -71,7 +76,7 @@ def test_build_file_info_returns_stable_shape() -> None:
         content_type="application/pdf",
         content=b"%PDF-1.7",
     )
-    file_info = upload_storage_support.build_file_info(
+    file_info = upload_api.build_file_info(
         file=file,
         user_id=3,
         user_uuid="user-uuid",
@@ -94,55 +99,35 @@ def test_build_file_info_returns_stable_shape() -> None:
     }
 
 
-def test_read_upload_content_rejects_oversize_and_signature_mismatch(monkeypatch) -> None:
-    monkeypatch.setattr(upload_storage_support, "MAX_UPLOAD_SIZE_BYTES", 4)
-
+def test_read_upload_content_rejects_oversize_and_signature_mismatch() -> None:
     with pytest.raises(HTTPException) as oversize_exc:
         _run(
-            upload_storage_support.read_upload_content(
+            upload_api.read_upload_content(
                 FakeUploadFile(
                     filename="demo.pdf",
                     content_type="application/pdf",
                     content=b"12345",
-                )
+                ),
+                max_upload_size_bytes=4,
+                file_size_exceeded_detail="文件大小超过限制 (50MB)",
+                content_extension_mismatch_detail="文件内容与扩展名不匹配: {extension}",
             )
         )
     assert oversize_exc.value.status_code == 400
-    assert oversize_exc.value.detail == upload_storage_support.FILE_SIZE_EXCEEDED_DETAIL
+    assert oversize_exc.value.detail == "文件大小超过限制 (50MB)"
 
     with pytest.raises(HTTPException) as mismatch_exc:
         _run(
-            upload_storage_support.read_upload_content(
+            upload_api.read_upload_content(
                 FakeUploadFile(
                     filename="demo.pdf",
                     content_type="application/pdf",
                     content=b"PK\x03\x04",
-                )
+                ),
+                max_upload_size_bytes=4,
+                file_size_exceeded_detail="文件大小超过限制 (50MB)",
+                content_extension_mismatch_detail="文件内容与扩展名不匹配: {extension}",
             )
         )
     assert mismatch_exc.value.status_code == 400
     assert mismatch_exc.value.detail == "文件内容与扩展名不匹配: .pdf"
-
-
-def test_store_upload_writes_file_and_returns_metadata(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(upload_storage_support, "UPLOAD_DIR", tmp_path)
-    monkeypatch.setattr(
-        upload_storage_support.uuid,
-        "uuid5",
-        lambda namespace, value: "user-uuid",
-    )
-    monkeypatch.setattr(upload_storage_support, "datetime", FakeDateTime)
-
-    file = FakeUploadFile(
-        filename="guide.pdf",
-        content_type="application/pdf",
-        content=b"%PDF-1.7 demo",
-    )
-
-    file_info = _run(upload_storage_support.store_upload(file, 11))
-
-    saved_path = tmp_path / "user-uuid" / "20260102_030405" / "guide_20260102_030405.pdf"
-    assert saved_path.read_bytes() == b"%PDF-1.7 demo"
-    assert file_info["path"] == saved_path.as_posix()
-    assert file_info["directory"] == str(saved_path.parent)
-    assert file_info["size"] == len(b"%PDF-1.7 demo")

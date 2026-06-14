@@ -17,18 +17,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
-from rag_doc_parser.config import ParserConfig
 from rag_doc_parser.pipeline import parse_document
 from rag_doc_parser.retrieval.config import RetrievalConfig
 from rag_doc_parser.retrieval.hybrid_search import HybridSearcher
 
 
-async def cmd_index(args):
+async def _cmd_index(args):
     """索引命令：从 JSON 文件加载 chunks 并写入 Milvus + BM25。"""
     with open(args.file, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -43,7 +38,7 @@ async def cmd_index(args):
     print(f"索引完成: {count} 条记录")
 
 
-async def cmd_search(args):
+async def _cmd_search(args):
     """搜索命令：混合检索。"""
     config = RetrievalConfig()
     searcher = HybridSearcher(config)
@@ -63,7 +58,7 @@ async def cmd_search(args):
             print(f"分数: RRF={rrf:.4f}")
 
 
-async def cmd_full(args):
+async def _cmd_full(args):
     """完整流程：解析 PDF/DOCX → 索引 → 搜索。"""
     print(f"Step 1/3: 解析文档 {args.pdf} ...")
     chunks = parse_document(args.pdf)
@@ -84,7 +79,7 @@ async def cmd_full(args):
         print(f"文本: {r.get('raw_text', '')[:200]}...")
 
 
-def main():
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="RAG 文档检索工具")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -100,9 +95,5 @@ def main():
 
     args = parser.parse_args()
     asyncio.run(
-        {"index": cmd_index, "search": cmd_search, "full": cmd_full}[args.cmd](args)
+        {"index": _cmd_index, "search": _cmd_search, "full": _cmd_full}[args.cmd](args)
     )
-
-
-if __name__ == "__main__":
-    main()

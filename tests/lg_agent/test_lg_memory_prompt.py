@@ -1,8 +1,8 @@
-from app.lg_agent.lg_memory_prompt import (
+from app.chat.infrastructure.memory_bridge.context import (
     build_enriched_question,
     build_memory_context,
 )
-from app.memory.schemas import (
+from app.knowledge.domain.schemas import (
     AgentMemoryState,
     LongTermMemory,
     MemorySearchResult,

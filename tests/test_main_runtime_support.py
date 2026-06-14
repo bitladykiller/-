@@ -1,18 +1,8 @@
 import asyncio
-import importlib.util
 import sys
 import types
-from pathlib import Path
 
-_BACKEND_DIR = Path(__file__).resolve().parents[1] / "llm_backend"
-if str(_BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(_BACKEND_DIR))
-
-_MODULE_PATH = _BACKEND_DIR / "main_runtime_support.py"
-_SPEC = importlib.util.spec_from_file_location("main_runtime_support", _MODULE_PATH)
-assert _SPEC is not None and _SPEC.loader is not None
-main_runtime_support = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(main_runtime_support)
+import app.main_runtime_support as main_runtime_support
 
 
 class FakeLogger:
@@ -31,13 +21,17 @@ def _run(awaitable):
 def test_warm_up_runtime_resources_delegates_to_memory_warmup(monkeypatch) -> None:
     logger = FakeLogger()
     called: list[str] = []
-    fake_module = types.ModuleType("app.lg_agent.memory_bridge.runtime")
+    fake_module = types.ModuleType("app.chat.infrastructure.memory_bridge.runtime")
 
     async def fake_warm_up_memory_middleware() -> None:
         called.append("warm_up_memory")
 
     fake_module.warm_up_memory_middleware = fake_warm_up_memory_middleware
-    monkeypatch.setitem(sys.modules, "app.lg_agent.memory_bridge.runtime", fake_module)
+    monkeypatch.setitem(
+        sys.modules,
+        "app.chat.infrastructure.memory_bridge.runtime",
+        fake_module,
+    )
 
     _run(main_runtime_support.warm_up_runtime_resources(logger))
 
@@ -47,8 +41,8 @@ def test_warm_up_runtime_resources_delegates_to_memory_warmup(monkeypatch) -> No
 
 def test_close_runtime_resources_delegates_to_runtime_closers(monkeypatch) -> None:
     called: list[str] = []
-    fake_lg_context = types.ModuleType("app.lg_agent.memory_bridge.runtime")
-    fake_task_queue = types.ModuleType("app.services.task_queue")
+    fake_lg_context = types.ModuleType("app.chat.infrastructure.memory_bridge.runtime")
+    fake_task_queue = types.ModuleType("app.chat.application.task_queue")
 
     async def fake_close_memory_middleware() -> None:
         called.append("close_memory")
@@ -58,8 +52,12 @@ def test_close_runtime_resources_delegates_to_runtime_closers(monkeypatch) -> No
 
     fake_lg_context.close_memory_middleware = fake_close_memory_middleware
     fake_task_queue.close_task_manager = fake_close_task_manager
-    monkeypatch.setitem(sys.modules, "app.lg_agent.memory_bridge.runtime", fake_lg_context)
-    monkeypatch.setitem(sys.modules, "app.services.task_queue", fake_task_queue)
+    monkeypatch.setitem(
+        sys.modules,
+        "app.chat.infrastructure.memory_bridge.runtime",
+        fake_lg_context,
+    )
+    monkeypatch.setitem(sys.modules, "app.chat.application.task_queue", fake_task_queue)
 
     _run(main_runtime_support.close_runtime_resources())
 

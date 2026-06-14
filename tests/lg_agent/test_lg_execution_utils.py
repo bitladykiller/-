@@ -1,6 +1,6 @@
 import asyncio
 
-from app.lg_agent import lg_execution_utils
+from app.chat.infrastructure.graph import execution_utils as lg_execution_utils
 
 
 class FakeRetriever:
@@ -51,8 +51,8 @@ def _run(awaitable):
     return asyncio.run(awaitable)
 
 
-def test_empty_retriever_result_and_records_from_result() -> None:
-    result = lg_execution_utils.empty_retriever_result("查订单")
+def test_search_retriever_placeholder_and_records_from_result() -> None:
+    result = _run(lg_execution_utils.search_retriever(None, "查订单"))
 
     assert result == {
         "task": "查订单",
@@ -86,13 +86,6 @@ def test_query_builders_add_strategy_context() -> None:
     )
     assert "已知信息" in query
     assert "洗衣机保修多久" in query
-
-
-def test_search_retriever_returns_placeholder_when_missing() -> None:
-    result = _run(lg_execution_utils.search_retriever(None, "查询订单"))
-
-    assert result["task"] == "查询订单"
-    assert result["records"] == []
 
 
 def test_search_retriever_delegates_to_retriever() -> None:
