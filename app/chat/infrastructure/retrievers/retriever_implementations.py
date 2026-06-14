@@ -19,17 +19,6 @@ from app.chat.infrastructure.retrievers.retriever_contracts import (
 )
 
 
-def _coerce_records(records: Any) -> list[dict[str, Any]]:
-    """将检索结果中的 `records` 统一为 `list[dict]`。"""
-    if records is None:
-        return []
-    if isinstance(records, list):
-        return records
-    if isinstance(records, dict):
-        return [records] if records else []
-    return [{"value": records}]
-
-
 class MilvusDocRetriever(Retriever):
     """基于 rag_doc_parser + Milvus 的文档检索器。"""
 
@@ -86,11 +75,28 @@ class KnowledgeGraphRetriever(Retriever):
 
         raw_result = await self._t2c_agent.ainvoke({"task": task})
         if "records" in raw_result:
-            records = _coerce_records(raw_result.get("records"))
+            raw_records = raw_result.get("records")
+            if raw_records is None:
+                records = []
+            elif isinstance(raw_records, list):
+                records = raw_records
+            elif isinstance(raw_records, dict):
+                records = [raw_records] if raw_records else []
+            else:
+                records = [{"value": raw_records}]
         else:
             records: list[dict[str, Any]] = []
             for cypher in raw_result.get("cyphers", []):
-                records.extend(_coerce_records(cypher.get("records")))
+                cypher_records = cypher.get("records")
+                if cypher_records is None:
+                    continue
+                if isinstance(cypher_records, list):
+                    records.extend(cypher_records)
+                elif isinstance(cypher_records, dict):
+                    if cypher_records:
+                        records.append(cypher_records)
+                else:
+                    records.append({"value": cypher_records})
 
         return {
             "task": task,

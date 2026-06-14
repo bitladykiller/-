@@ -360,53 +360,6 @@ class RedisShortTermMemory:
             session_id,
         )
 
-    async def _read_model(
-        self,
-        key: str,
-        model_cls: type[SessionMeta] | type[SessionSummary],
-    ) -> SessionMeta | SessionSummary | None:
-        """从 Redis 读取并解码指定模型。"""
-        return decode_model(await self.redis.get(key), model_cls)
-
-    async def _write_model(
-        self,
-        key: str,
-        model: SessionMeta | SessionSummary,
-    ) -> None:
-        """把 Pydantic 模型序列化后写回 Redis。"""
-        await self.redis.set(
-            key,
-            model.model_dump_json(),
-            ex=self.settings.ttl_seconds,
-        )
-
-    async def _prepare_compression_context(
-        self,
-        tenant_id: str,
-        user_id: str,
-        session_id: str,
-    ) -> CompressionContext | None:
-        """读取压缩所需上下文，并在不满足条件时直接返回 None。"""
-        meta = await self.get_meta(tenant_id, user_id, session_id)
-        msg_count = await self.get_message_count(tenant_id, user_id, session_id)
-
-        keys = self._build_session_keys(tenant_id, user_id, session_id)
-        old_summary = await self.get_summary(tenant_id, user_id, session_id)
-        all_messages = await self.get_recent_messages(
-            tenant_id,
-            user_id,
-            session_id,
-            limit=COMPRESS_FETCH_LIMIT,
-        )
-        return build_compression_context(
-            settings=self.settings,
-            keys=keys,
-            meta=meta,
-            message_count=msg_count,
-            old_summary=old_summary,
-            all_messages=all_messages,
-        )
-
     async def append_message(
         self,
         tenant_id: str,
@@ -464,7 +417,7 @@ class RedisShortTermMemory:
         """读取会话摘要。"""
         try:
             key = self._build_session_keys(tenant_id, user_id, session_id)["summary"]
-            return await self._read_model(key, SessionSummary)
+            return decode_model(await self.redis.get(key), SessionSummary)
         except Exception as exc:
             logger.debug(f"[stm] 读取会话摘要失败: {exc}")
             return None
@@ -479,7 +432,11 @@ class RedisShortTermMemory:
         """保存会话摘要。"""
         try:
             key = self._build_session_keys(tenant_id, user_id, session_id)["summary"]
-            await self._write_model(key, summary)
+            await self.redis.set(
+                key,
+                summary.model_dump_json(),
+                ex=self.settings.ttl_seconds,
+            )
         except Exception as exc:
             logger.debug(f"[stm] 保存会话摘要失败: {exc}")
 
@@ -487,7 +444,7 @@ class RedisShortTermMemory:
         """读取会话元信息,不存在时返回默认对象。"""
         try:
             key = self._build_session_keys(tenant_id, user_id, session_id)["meta"]
-            meta = await self._read_model(key, SessionMeta)
+            meta = decode_model(await self.redis.get(key), SessionMeta)
             if meta:
                 return meta
         except Exception as exc:
@@ -504,7 +461,11 @@ class RedisShortTermMemory:
         """保存会话元信息。"""
         try:
             key = self._build_session_keys(tenant_id, user_id, session_id)["meta"]
-            await self._write_model(key, meta)
+            await self.redis.set(
+                key,
+                meta.model_dump_json(),
+                ex=self.settings.ttl_seconds,
+            )
         except Exception as exc:
             logger.debug(f"[stm] 保存会话元信息失败: {exc}")
 
@@ -531,10 +492,23 @@ class RedisShortTermMemory:
     ) -> bool:
         """压缩旧消息，并保留最近若干轮原始消息。"""
         try:
-            context = await self._prepare_compression_context(
+            meta = await self.get_meta(tenant_id, user_id, session_id)
+            msg_count = await self.get_message_count(tenant_id, user_id, session_id)
+            keys = self._build_session_keys(tenant_id, user_id, session_id)
+            old_summary = await self.get_summary(tenant_id, user_id, session_id)
+            all_messages = await self.get_recent_messages(
                 tenant_id,
                 user_id,
                 session_id,
+                limit=COMPRESS_FETCH_LIMIT,
+            )
+            context = build_compression_context(
+                settings=self.settings,
+                keys=keys,
+                meta=meta,
+                message_count=msg_count,
+                old_summary=old_summary,
+                all_messages=all_messages,
             )
             if context is None:
                 return False
