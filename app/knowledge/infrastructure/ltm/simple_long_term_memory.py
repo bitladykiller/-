@@ -482,7 +482,11 @@ class SimpleLongTermMemory:
         self.collection_name = collection_name or long_term_collection_name()
 
         # 初始化 Collection
-        self._ensure_collection_ready()
+        ensure_collection_ready_or_raise(
+            milvus_client=self.milvus_client,
+            collection_name=self.collection_name,
+            logger=logger,
+        )
         self.retrieval_core = retrieval_core or create_default_retrieval_core(
             milvus_client=self.milvus_client,
             embedding_model=self.embedding_model,
@@ -497,20 +501,6 @@ class SimpleLongTermMemory:
     def _now_ts() -> int:
         """统一生成秒级时间戳。"""
         return int(time.time())
-
-    def _ensure_collection_ready(self) -> None:
-        """
-        创建 Milvus Collection（如果不存在）。
-
-        包含两个索引：
-        - 稠密向量索引（embedding）：用于语义相似度检索
-        - 稀疏向量索引（sparse_vector）：Milvus 内置 BM25 全文检索
-        """
-        ensure_collection_ready_or_raise(
-            milvus_client=self.milvus_client,
-            collection_name=self.collection_name,
-            logger=logger,
-        )
 
     # ------------------------------------------------------------------ #
     # 记忆 CRUD

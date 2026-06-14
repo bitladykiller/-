@@ -13,10 +13,8 @@ from app.chat.application.document_formats import (
     supports_document_indexing,
 )
 from app.knowledge.application.indexing_contracts import (
-    ChunkIndexer,
     DocIDFactory,
     IndexingResult,
-    ParsedChunks,
     PipelineLoader,
     UploadFileInfo,
 )
@@ -55,47 +53,6 @@ class IndexingService:
         self._pipeline_loader = pipeline_loader or load_pipeline_dependencies
         self._doc_id_factory = doc_id_factory or build_doc_id
 
-    async def _index_chunks(
-        self,
-        *,
-        chunks: ParsedChunks,
-        searcher: ChunkIndexer,
-        doc_id: str,
-        path: Path,
-    ) -> IndexingResult:
-        """把解析结果写入检索索引，并构造统一成功响应。"""
-        if not chunks:
-            return {
-                "status": STATUS_SUCCESS,
-                "chunks": 0,
-                "message": _EMPTY_DOCUMENT_MESSAGE,
-            }
-
-        count = await searcher.index(chunks)
-        return {
-            "status": STATUS_SUCCESS,
-            "chunks": count,
-            "doc_id": doc_id,
-            "source_file": str(path),
-        }
-
-    async def _parse_and_index(
-        self,
-        *,
-        path: Path,
-        user_id: int | str,
-    ) -> IndexingResult:
-        """执行“解析文档 -> 写入检索索引”的主流程。"""
-        parse_document, searcher = self._pipeline_loader()
-        doc_id = self._doc_id_factory(user_id)
-        chunks = parse_document(str(path), doc_id=doc_id)
-        return await self._index_chunks(
-            chunks=chunks,
-            searcher=searcher,
-            doc_id=doc_id,
-            path=path,
-        )
-
     async def process_file(self, file_info: UploadFileInfo) -> IndexingResult:
         """处理上传文件并写入检索索引。"""
         raw_path = file_info.get("path")
@@ -122,7 +79,23 @@ class IndexingService:
             return {"status": STATUS_ERROR, "message": f"不支持的文件类型: {ext}"}
 
         try:
-            return await self._parse_and_index(path=path, user_id=user_id)
+            parse_document, searcher = self._pipeline_loader()
+            doc_id = self._doc_id_factory(user_id)
+            chunks = parse_document(str(path), doc_id=doc_id)
+            if not chunks:
+                return {
+                    "status": STATUS_SUCCESS,
+                    "chunks": 0,
+                    "message": _EMPTY_DOCUMENT_MESSAGE,
+                }
+
+            count = await searcher.index(chunks)
+            return {
+                "status": STATUS_SUCCESS,
+                "chunks": count,
+                "doc_id": doc_id,
+                "source_file": str(path),
+            }
         except ImportError:
             return {
                 "status": _STATUS_WARNING,
