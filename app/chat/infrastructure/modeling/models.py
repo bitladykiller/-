@@ -112,18 +112,6 @@ def _resolve_model_factory() -> ModelFactory:
     return _create_ollama_model
 
 
-def _create_chat_model(temperature: float = MODEL_TEMPERATURES["agent"]) -> Any:
-    """根据 AGENT_SERVICE 配置创建运行时 LLM 实例。
-
-    Args:
-        temperature: 采样温度。0.0 = 确定性，1.0 = 最大随机性。
-
-    Returns:
-        ChatDeepSeek 或 ChatOllama 实例。
-    """
-    return _resolve_model_factory()(temperature)
-
-
 # ================================================================== #
 # 懒初始化模型单例 — 首次访问时创建，避免 import 时连接 LLM 服务
 # ================================================================== #
@@ -139,32 +127,33 @@ def _get_model(name: ModelRole, temperature: float) -> Any:
     DeepSeek 还是 Ollama。
     """
     if name not in _models_cache:
-        _models_cache[name] = _create_logged_model(name, temperature)
+        logger.info("初始化 LLM 模型 | name=%s | temperature=%s", name, temperature)
+        _models_cache[name] = _resolve_model_factory()(temperature)
     return _models_cache[name]
-
-
-def _create_logged_model(name: ModelRole, temperature: float) -> Any:
-    """创建模型前统一记录初始化日志。"""
-    logger.info("初始化 LLM 模型 | name=%s | temperature=%s", name, temperature)
-    return _create_chat_model(temperature)
 
 
 # ================================================================== #
 # 模块级模型入口（实际使用的是这些懒加载代理）
 # ================================================================== #
-
-def _lazy_model(name: ModelRole) -> LazyModelProxy:
-    """按角色名创建懒加载代理，统一温度来源。"""
-    return LazyModelProxy(name, MODEL_TEMPERATURES[name], _get_model)
-
-
-agent_model = _lazy_model("agent")
-router_model = _lazy_model("router")
-retrieval_plan_model = _lazy_model("retrieval_plan")
-guardrails_model = _lazy_model("guardrails")
-cypher_model = _lazy_model("cypher")
-react_model = _lazy_model("react")
-react_judge_model = _lazy_model("react_judge")
+agent_model = LazyModelProxy("agent", MODEL_TEMPERATURES["agent"], _get_model)
+router_model = LazyModelProxy("router", MODEL_TEMPERATURES["router"], _get_model)
+retrieval_plan_model = LazyModelProxy(
+    "retrieval_plan",
+    MODEL_TEMPERATURES["retrieval_plan"],
+    _get_model,
+)
+guardrails_model = LazyModelProxy(
+    "guardrails",
+    MODEL_TEMPERATURES["guardrails"],
+    _get_model,
+)
+cypher_model = LazyModelProxy("cypher", MODEL_TEMPERATURES["cypher"], _get_model)
+react_model = LazyModelProxy("react", MODEL_TEMPERATURES["react"], _get_model)
+react_judge_model = LazyModelProxy(
+    "react_judge",
+    MODEL_TEMPERATURES["react_judge"],
+    _get_model,
+)
 
 
 # ================================================================== #
