@@ -79,33 +79,30 @@ class LazyModelProxy:
         return self.__str__()
 
 
-def _create_deepseek_model(temperature: float) -> Any:
-    """创建 DeepSeek ChatModel。"""
-    from langchain_deepseek import ChatDeepSeek
-
-    return ChatDeepSeek(
-        api_key=settings.DEEPSEEK_API_KEY,
-        model_name=settings.DEEPSEEK_MODEL,
-        temperature=temperature,
-    )
-
-
-def _create_ollama_model(temperature: float) -> Any:
-    """创建 Ollama ChatModel。"""
-    from langchain_ollama import ChatOllama
-
-    return ChatOllama(
-        model=settings.OLLAMA_AGENT_MODEL,
-        base_url=settings.OLLAMA_BASE_URL,
-        temperature=temperature,
-    )
-
-
 def _resolve_model_factory() -> ModelFactory:
     """根据 `AGENT_SERVICE` 选择当前运行时要用的模型工厂。"""
     if settings.AGENT_SERVICE == "deepseek":
-        return _create_deepseek_model
-    return _create_ollama_model
+        def create_model(temperature: float) -> Any:
+            from langchain_deepseek import ChatDeepSeek
+
+            return ChatDeepSeek(
+                api_key=settings.DEEPSEEK_API_KEY,
+                model_name=settings.DEEPSEEK_MODEL,
+                temperature=temperature,
+            )
+
+        return create_model
+
+    def create_model(temperature: float) -> Any:
+        from langchain_ollama import ChatOllama
+
+        return ChatOllama(
+            model=settings.OLLAMA_AGENT_MODEL,
+            base_url=settings.OLLAMA_BASE_URL,
+            temperature=temperature,
+        )
+
+    return create_model
 
 
 # ================================================================== #

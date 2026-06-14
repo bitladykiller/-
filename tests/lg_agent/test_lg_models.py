@@ -1,4 +1,6 @@
 import asyncio
+import sys
+from types import SimpleNamespace
 
 import app.chat.infrastructure.modeling.models as lg_models
 
@@ -19,12 +21,53 @@ class AwaitableDummyModel:
         return _resolve().__await__()
 
 
-def test_resolve_model_factory_switches_with_service_name(monkeypatch) -> None:
+def test_resolve_model_factory_uses_provider_specific_client(monkeypatch) -> None:
+    deepseek_calls: list[dict] = []
+    ollama_calls: list[dict] = []
+
+    class FakeDeepSeek:
+        def __init__(self, **kwargs) -> None:
+            deepseek_calls.append(kwargs)
+
+    class FakeOllama:
+        def __init__(self, **kwargs) -> None:
+            ollama_calls.append(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "langchain_deepseek",
+        SimpleNamespace(ChatDeepSeek=FakeDeepSeek),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "langchain_ollama",
+        SimpleNamespace(ChatOllama=FakeOllama),
+    )
+    monkeypatch.setattr(lg_models.settings, "DEEPSEEK_API_KEY", "deepseek-key")
+    monkeypatch.setattr(lg_models.settings, "DEEPSEEK_MODEL", "deepseek-chat")
+    monkeypatch.setattr(lg_models.settings, "OLLAMA_AGENT_MODEL", "qwen3")
+    monkeypatch.setattr(lg_models.settings, "OLLAMA_BASE_URL", "http://ollama.local")
+
     monkeypatch.setattr(lg_models.settings, "AGENT_SERVICE", "deepseek")
-    assert lg_models._resolve_model_factory() is lg_models._create_deepseek_model
+    lg_models._resolve_model_factory()(0.3)
 
     monkeypatch.setattr(lg_models.settings, "AGENT_SERVICE", "ollama")
-    assert lg_models._resolve_model_factory() is lg_models._create_ollama_model
+    lg_models._resolve_model_factory()(0.6)
+
+    assert deepseek_calls == [
+        {
+            "api_key": "deepseek-key",
+            "model_name": "deepseek-chat",
+            "temperature": 0.3,
+        }
+    ]
+    assert ollama_calls == [
+        {
+            "model": "qwen3",
+            "base_url": "http://ollama.local",
+            "temperature": 0.6,
+        }
+    ]
 
 
 def test_get_model_caches_instances_by_role(monkeypatch) -> None:
