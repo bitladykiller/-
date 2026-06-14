@@ -50,17 +50,6 @@ class SessionKeys(TypedDict):
     lock: str
 
 
-def _build_session_key(
-    key_prefix: str,
-    tenant_id: str,
-    user_id: str,
-    session_id: str,
-    suffix: str,
-) -> str:
-    """统一构造某个 session 下的 Redis key。"""
-    return f"{key_prefix}:{tenant_id}:{user_id}:{session_id}:{suffix}"
-
-
 def build_session_keys(
     key_prefix: str,
     tenant_id: str,
@@ -69,34 +58,10 @@ def build_session_keys(
 ) -> SessionKeys:
     """一次性返回当前 session 会用到的所有 key。"""
     return {
-        "messages": _build_session_key(
-            key_prefix,
-            tenant_id,
-            user_id,
-            session_id,
-            "messages",
-        ),
-        "summary": _build_session_key(
-            key_prefix,
-            tenant_id,
-            user_id,
-            session_id,
-            "summary",
-        ),
-        "meta": _build_session_key(
-            key_prefix,
-            tenant_id,
-            user_id,
-            session_id,
-            "meta",
-        ),
-        "lock": _build_session_key(
-            key_prefix,
-            tenant_id,
-            user_id,
-            session_id,
-            "lock",
-        ),
+        "messages": f"{key_prefix}:{tenant_id}:{user_id}:{session_id}:messages",
+        "summary": f"{key_prefix}:{tenant_id}:{user_id}:{session_id}:summary",
+        "meta": f"{key_prefix}:{tenant_id}:{user_id}:{session_id}:meta",
+        "lock": f"{key_prefix}:{tenant_id}:{user_id}:{session_id}:lock",
     }
 
 

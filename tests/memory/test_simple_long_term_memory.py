@@ -59,6 +59,36 @@ def test_constructor_uses_injected_retrieval_core(monkeypatch) -> None:
     assert ltm.retrieval_core is fake_core
 
 
+def test_entity_to_memory_falls_back_for_none_fields() -> None:
+    memory = ltm_module.entity_to_memory(
+        {
+            "memory_id": None,
+            "tenant_id": "tenant-1",
+            "user_id": None,
+            "memory_type": "solution_note",
+            "content": None,
+            "created_at": None,
+            "updated_at": 12,
+            "last_hit_at": None,
+            "hit_count": 3,
+            "is_deleted": None,
+        }
+    )
+
+    assert memory.model_dump() == {
+        "memory_id": "",
+        "tenant_id": "tenant-1",
+        "user_id": "",
+        "memory_type": "solution_note",
+        "content": "",
+        "created_at": 0,
+        "updated_at": 12,
+        "last_hit_at": 0,
+        "hit_count": 3,
+        "is_deleted": False,
+    }
+
+
 def test_ensure_collection_ready_or_raise_logs_created_or_existing(monkeypatch) -> None:
     class FakeLogger:
         def __init__(self) -> None:

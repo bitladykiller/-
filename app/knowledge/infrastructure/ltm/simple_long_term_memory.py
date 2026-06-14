@@ -14,7 +14,7 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, TypeAlias, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, TypeAlias, TypedDict
 
 from pymilvus import MilvusClient
 
@@ -48,33 +48,30 @@ LoggerLike: TypeAlias = Any
 _NowProvider: TypeAlias = Callable[[], int]
 EmbeddingGetter: TypeAlias = Callable[[str], Awaitable[list[float] | None]]
 _MilvusHit: TypeAlias = Mapping[str, Any]
-_FieldValue = TypeVar("_FieldValue")
-
-
-def _entity_value(
-    entity: Mapping[str, Any],
-    key: str,
-    default: _FieldValue,
-) -> Any | _FieldValue:
-    """读取 Milvus 记录字段；缺失或为 None 时回退默认值。"""
-    value = entity.get(key)
-    return default if value is None else value
 
 
 def entity_to_memory(entity: Mapping[str, Any]) -> LongTermMemory:
     """将 Milvus entity 字典转换为 LongTermMemory 对象。"""
-    return LongTermMemory(
-        memory_id=_entity_value(entity, "memory_id", ""),
-        tenant_id=_entity_value(entity, "tenant_id", ""),
-        user_id=_entity_value(entity, "user_id", ""),
-        memory_type=_entity_value(entity, "memory_type", ""),
-        content=_entity_value(entity, "content", ""),
-        created_at=_entity_value(entity, "created_at", 0),
-        updated_at=_entity_value(entity, "updated_at", 0),
-        last_hit_at=_entity_value(entity, "last_hit_at", 0),
-        hit_count=_entity_value(entity, "hit_count", 0),
-        is_deleted=_entity_value(entity, "is_deleted", False),
+    payload: dict[str, Any] = {
+        "memory_id": "",
+        "tenant_id": "",
+        "user_id": "",
+        "memory_type": "",
+        "content": "",
+        "created_at": 0,
+        "updated_at": 0,
+        "last_hit_at": 0,
+        "hit_count": 0,
+        "is_deleted": False,
+    }
+    payload.update(
+        {
+            key: value
+            for key, value in entity.items()
+            if key in payload and value is not None
+        }
     )
+    return LongTermMemory(**payload)
 
 
 def build_active_memory_filter(
