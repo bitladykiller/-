@@ -34,16 +34,10 @@ class MilvusDocRetriever(Retriever):
     """基于 rag_doc_parser + Milvus 的文档检索器。"""
 
     def __init__(self) -> None:
-        self._searcher = self._create_searcher()
-
-    @staticmethod
-    def _create_searcher() -> Any:
-        """创建 HybridSearcher 实例。"""
-
         from rag_doc_parser.retrieval.config import RetrievalConfig
         from rag_doc_parser.retrieval.hybrid_search import HybridSearcher
 
-        return HybridSearcher(RetrievalConfig())
+        self._searcher = HybridSearcher(RetrievalConfig())
 
     async def search(self, task: str) -> dict[str, Any]:
         """检索 Milvus 文档知识库。"""

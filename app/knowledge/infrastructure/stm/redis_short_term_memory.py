@@ -100,20 +100,15 @@ def build_session_keys(
     }
 
 
-def _decode_json_payload(raw: bytes | str | None) -> Any | None:
-    """解码 Redis 中保存的 JSON 文本。"""
-    if not raw:
-        return None
-    text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
-    return json.loads(text)
-
-
 def decode_model(
     raw: bytes | str | None,
     model_cls: type[RedisModel],
 ) -> RedisModel | None:
     """把 Redis JSON 文本解码成指定 Pydantic 模型。"""
-    data = _decode_json_payload(raw)
+    if not raw:
+        return None
+    text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+    data = json.loads(text)
     if not isinstance(data, dict):
         return None
     return model_cls(**data)
