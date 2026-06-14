@@ -105,3 +105,29 @@ def test_get_neo4j_graph_returns_none_when_creation_fails(monkeypatch) -> None:
     assert graph is None
     assert kg_conn._cached_graph is None
     assert logger.errors == [("[neo4j] 连接失败，KG 查询将不可用", True)]
+
+
+def test_get_neo4j_graph_returns_none_when_fresh_connection_fails_health_check(
+    monkeypatch,
+) -> None:
+    logger = FakeLogger()
+    created_graphs: list[FakeGraph] = []
+
+    def fake_neo4j_graph(**kwargs):
+        graph = FakeGraph(fail_on_query=True, **kwargs)
+        created_graphs.append(graph)
+        return graph
+
+    monkeypatch.setattr(kg_conn, "_cached_graph", None)
+    monkeypatch.setattr(kg_conn, "_last_health_check_ts", 0.0)
+    monkeypatch.setattr(kg_conn, "Neo4jGraph", fake_neo4j_graph)
+    monkeypatch.setattr(kg_conn, "logger", logger)
+    monkeypatch.setattr(kg_conn.time, "monotonic", lambda: 100.0)
+
+    graph = kg_conn.get_neo4j_graph()
+
+    assert graph is None
+    assert created_graphs[0].query_calls == ["RETURN 1"]
+    assert kg_conn._cached_graph is None
+    assert logger.warnings == ["[neo4j] 健康检查失败，连接可能已断开"]
+    assert logger.errors == [("[neo4j] 新建连接健康检查失败", False)]
