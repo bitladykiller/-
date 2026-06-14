@@ -79,6 +79,7 @@ def test_extract_summary_from_response_reads_json_block() -> None:
         compressed_at=12,
         compressed_round=4,
     )
+    assert stm_memory.extract_summary_from_response("没有 JSON") is None
 
 
 def test_message_score_uses_existing_millisecond_timestamp() -> None:

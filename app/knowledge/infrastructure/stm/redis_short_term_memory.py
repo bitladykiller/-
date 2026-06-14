@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -21,6 +20,7 @@ from typing import Any, TypeAlias, TypedDict, TypeVar
 import redis.asyncio as redis
 from pydantic import BaseModel
 
+from app.shared.core.json_utils import extract_first_json_object
 from app.shared.core.logger import get_logger
 from app.knowledge.infrastructure.config import (
     ShortTermMemoryConfig,
@@ -88,10 +88,10 @@ def message_score(message: MessageRecord) -> int:
 
 def extract_summary_from_response(response: str) -> SessionSummary | None:
     """从 LLM 压缩结果中提取 SessionSummary JSON。"""
-    match = re.search(r"\{.*\}", response, re.DOTALL)
-    if not match:
+    payload = extract_first_json_object(response)
+    if payload is None:
         return None
-    data = json.loads(match.group())
+    data = json.loads(payload)
     return SessionSummary(**data)
 
 
