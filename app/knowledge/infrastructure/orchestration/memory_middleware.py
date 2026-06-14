@@ -92,11 +92,6 @@ class MemoryMiddleware:
         self.ltm_enabled = self.ltm_config["enabled"]
         self._errors_warned: set[str] = set()
 
-    @property
-    def _profile_cache(self):
-        """统一暴露用户画像服务可复用的 Redis 客户端。"""
-        return getattr(self.redis_stm, "redis", None)
-
     def _warn_once(self, key: str, message: str) -> None:
         """同一类降级警告仅记录一次，避免日志刷屏。"""
         if key in self._errors_warned:
@@ -244,7 +239,11 @@ class MemoryMiddleware:
             uid = coerce_user_id(user_id)
             if uid > 0 and profile and isinstance(profile, dict):
                 try:
-                    await self.profile_writer(uid, profile, self._profile_cache)
+                    await self.profile_writer(
+                        uid,
+                        profile,
+                        getattr(self.redis_stm, "redis", None),
+                    )
                 except Exception as exc:
                     logger.debug(f"[memory] 用户画像更新失败(user_id={user_id}): {exc}")
         except Exception:
@@ -284,7 +283,10 @@ class MemoryMiddleware:
         if uid <= 0:
             return
         try:
-            memory_state.user_profile = await self.profile_reader(uid, self._profile_cache)
+            memory_state.user_profile = await self.profile_reader(
+                uid,
+                getattr(self.redis_stm, "redis", None),
+            )
         except Exception:
             self._warn_once("user_profile", "[memory] 用户画像读取失败，降级为空画像")
             memory_state.user_profile = {}
