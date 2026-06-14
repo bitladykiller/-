@@ -61,12 +61,8 @@ class LazyModelProxy:
         self._temperature = temperature
         self._resolver = resolver
 
-    def _get(self) -> Any:
-        """返回底层模型实例。"""
-        return self._resolver(self._name, self._temperature)
-
     def __getattr__(self, item: str) -> Any:
-        return getattr(self._get(), item)
+        return getattr(self._resolver(self._name, self._temperature), item)
 
     def __bool__(self) -> bool:
         """总是返回 True，避免代理在条件判断里表现反常。"""
@@ -74,7 +70,7 @@ class LazyModelProxy:
 
     def __await__(self):
         """支持 `await lazy_model`，直接代理到底层模型。"""
-        return self._get().__await__()
+        return self._resolver(self._name, self._temperature).__await__()
 
     def __str__(self) -> str:
         return f"_LazyModel(name={self._name}, t={self._temperature})"

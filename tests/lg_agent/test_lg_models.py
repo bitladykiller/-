@@ -1,9 +1,22 @@
+import asyncio
+
 import app.chat.infrastructure.modeling.models as lg_models
 
 
 class DummyModel:
     def __init__(self) -> None:
         self.answer = "ok"
+
+
+class AwaitableDummyModel:
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+    def __await__(self):
+        async def _resolve() -> str:
+            return self.value
+
+        return _resolve().__await__()
 
 
 def test_resolve_model_factory_switches_with_service_name(monkeypatch) -> None:
@@ -43,3 +56,21 @@ def test_lazy_model_proxy_delegates_attribute_access_and_repr(monkeypatch) -> No
     assert lazy_model.answer == "ok"
     assert bool(lazy_model) is True
     assert repr(lazy_model) == "_LazyModel(name=router, t=0.1)"
+
+
+def test_lazy_model_proxy_delegates_await(monkeypatch) -> None:
+    monkeypatch.setattr(
+        lg_models,
+        "_get_model",
+        lambda name, temperature: AwaitableDummyModel("awaited"),
+    )
+    lazy_model = lg_models.LazyModelProxy(
+        "agent",
+        lg_models.MODEL_TEMPERATURES["agent"],
+        lg_models._get_model,
+    )
+
+    async def _await_value() -> str:
+        return await lazy_model
+
+    assert asyncio.run(_await_value()) == "awaited"
