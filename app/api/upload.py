@@ -9,7 +9,6 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import TypedDict
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
@@ -51,6 +50,7 @@ class StoredUploadFileInfo(UploadFileInfo, total=False):
     user_uuid: str
     upload_time: str
     directory: str
+
 
 class UploadAcceptedResponse(StoredUploadFileInfo, total=False):
     """上传接口的成功返回结构。"""

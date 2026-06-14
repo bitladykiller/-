@@ -16,10 +16,8 @@ from app.shared.core.logger import get_logger
 from app.knowledge.domain.prompt_builder import build_compression_prompt
 from app.knowledge.domain.schemas import (
     AgentMemoryState,
-    MemoryExtractorResult,
     MemorySearchResult,
     MessageRecord,
-    SessionSummary,
     UserProfileData,
 )
 from app.knowledge.infrastructure.config import LongTermMemoryConfig, long_term_config
