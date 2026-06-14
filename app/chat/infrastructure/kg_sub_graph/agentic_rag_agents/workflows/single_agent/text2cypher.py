@@ -155,37 +155,6 @@ def _coerce_task_text(task: str | list[str]) -> str:
     return task[0] if isinstance(task, list) else task
 
 
-def _build_predefined_fallback_result(task: str) -> dict[str, Any]:
-    """模板未命中时返回统一状态。"""
-    return {
-        "task": task,
-        "steps": ["predefined_match"],
-        "next_action_cypher": "generate",
-    }
-
-
-def _build_cypher_output_state(
-    state: CypherState,
-    records: list[dict[str, Any]],
-    steps: list[str],
-) -> CypherOutputState:
-    """构造统一的 Cypher 输出结构。"""
-    return CypherOutputState(
-        **{
-            "task": state.get("task", []),
-            "statement": state.get("statement", ""),
-            "parameters": None,
-            "errors": state.get("errors", list()),
-            "records": (
-                records
-                if records
-                else [{"error": "I couldn't find any relevant information in the database."}]
-            ),
-            "steps": steps,
-        }
-    )
-
-
 def _create_text2cypher_generation_node(
     llm: BaseChatModel,
     graph: Neo4jGraph,
@@ -342,7 +311,10 @@ def create_text2cypher_agent(
             normalized_task = str(_coerce_task_text(task))
             matches = matcher.match_query(normalized_task, top_k=1)
             if not matches or matches[0]["similarity"] <= 0.6:
-                return _build_predefined_fallback_result(normalized_task)
+                return {
+                    "steps": ["predefined_match"],
+                    "next_action_cypher": "generate",
+                }
 
             best_match = matches[0]
             try:
@@ -378,7 +350,16 @@ def create_text2cypher_agent(
         records = graph.query(state.get("statement", ""))
         steps = list(state.get("steps", list()))
         steps.append("execute_cypher")
-        output_state = _build_cypher_output_state(state, records, steps)
+        output_state = CypherOutputState(
+            task=state.get("task", []),
+            statement=state.get("statement", ""),
+            parameters=None,
+            errors=state.get("errors", list()),
+            records=records or [
+                {"error": "I couldn't find any relevant information in the database."}
+            ],
+            steps=steps,
+        )
         return {
             "cyphers": [output_state],
             "steps": ["text2cypher"],
