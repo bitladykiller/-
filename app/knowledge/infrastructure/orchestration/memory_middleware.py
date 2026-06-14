@@ -34,7 +34,6 @@ if TYPE_CHECKING:
     )
 
 logger = get_logger(__name__)
-_SummaryCompressor = Callable[[str, list[MessageRecord]], Awaitable[str]]
 ProfileReader: TypeAlias = Callable[[int, Any | None], Awaitable[UserProfileData]]
 ProfileWriter: TypeAlias = Callable[[int, UserProfileData, Any | None], Awaitable[bool]]
 
@@ -108,9 +107,46 @@ class MemoryMiddleware:
     ) -> AgentMemoryState:
         """Agent 执行前：读取短期记忆、画像和长期记忆。"""
         memory_state = AgentMemoryState()
-        await self._load_short_term_memory(memory_state, tenant_id, user_id, session_id)
-        await self._load_user_profile(memory_state, user_id)
-        await self._load_long_term_memory(memory_state, tenant_id, user_id, user_input)
+        try:
+            memory_state.session_summary = await self.redis_stm.get_summary(
+                tenant_id,
+                user_id,
+                session_id,
+            )
+            memory_state.recent_messages = await self.redis_stm.get_recent_messages(
+                tenant_id,
+                user_id,
+                session_id,
+            )
+        except Exception:
+            self._warn_once("redis_stm_read", "[memory] Redis STM 读取失败，短期记忆降级")
+            memory_state.session_summary = None
+            memory_state.recent_messages = []
+
+        uid = coerce_user_id(user_id)
+        if uid > 0:
+            try:
+                memory_state.user_profile = await self.profile_reader(
+                    uid,
+                    getattr(self.redis_stm, "redis", None),
+                )
+            except Exception:
+                self._warn_once("user_profile", "[memory] 用户画像读取失败，降级为空画像")
+                memory_state.user_profile = {}
+
+        if self.ltm_enabled:
+            try:
+                memory_state.long_term_memories = await self.milvus_ltm.hybrid_search(
+                    tenant_id,
+                    user_id,
+                    user_input,
+                )
+            except Exception:
+                self._warn_once(
+                    "milvus_ltm",
+                    "[memory] Milvus LTM 检索失败，长期记忆降级",
+                )
+                memory_state.long_term_memories = []
         return memory_state
 
     async def after_agent(
@@ -138,7 +174,14 @@ class MemoryMiddleware:
             assistant_message,
         )
         if long_term_memories:
-            await self._update_hit_long_term_memories(long_term_memories)
+            try:
+                for result in long_term_memories:
+                    try:
+                        await self.milvus_ltm.update_memory_hit_info(result.memory)
+                    except Exception:
+                        continue
+            except Exception:
+                self._warn_once("ltm_hit_update", "[memory] LTM 命中统计刷新失败")
 
     async def _save_short_term_memory_safely(
         self,
@@ -205,11 +248,24 @@ class MemoryMiddleware:
                 meta.last_compressed_turn,
                 msg_count,
             ):
+                async def summary_compressor(
+                    old_summary_str: str,
+                    old_messages: list[MessageRecord],
+                ) -> str:
+                    prompt = build_compression_prompt(
+                        old_summary=old_summary_str,
+                        old_messages=old_messages,
+                        compressed_round=meta.total_turns,
+                    )
+                    response = await self.memory_extractor.llm_client.ainvoke(prompt)
+                    content = getattr(response, "content", response)
+                    return content if isinstance(content, str) else str(content)
+
                 compressed = await self.redis_stm.compress_session_memory(
                     tenant_id,
                     user_id,
                     session_id,
-                    self._build_summary_compressor(meta.total_turns),
+                    summary_compressor,
                 )
             if not compressed or not self.ltm_enabled:
                 return
@@ -248,96 +304,3 @@ class MemoryMiddleware:
                     logger.debug(f"[memory] 用户画像更新失败(user_id={user_id}): {exc}")
         except Exception:
             self._warn_once("compress", "[memory] 记忆压缩失败")
-
-    async def _load_short_term_memory(
-        self,
-        memory_state: AgentMemoryState,
-        tenant_id: str,
-        user_id: str,
-        session_id: str,
-    ) -> None:
-        """读取 Redis 中的短期摘要和最近消息。"""
-        try:
-            memory_state.session_summary = await self.redis_stm.get_summary(
-                tenant_id,
-                user_id,
-                session_id,
-            )
-            memory_state.recent_messages = await self.redis_stm.get_recent_messages(
-                tenant_id,
-                user_id,
-                session_id,
-            )
-        except Exception:
-            self._warn_once("redis_stm_read", "[memory] Redis STM 读取失败，短期记忆降级")
-            memory_state.session_summary = None
-            memory_state.recent_messages = []
-
-    async def _load_user_profile(
-        self,
-        memory_state: AgentMemoryState,
-        user_id: str,
-    ) -> None:
-        """读取 MySQL 用户画像。"""
-        uid = coerce_user_id(user_id)
-        if uid <= 0:
-            return
-        try:
-            memory_state.user_profile = await self.profile_reader(
-                uid,
-                getattr(self.redis_stm, "redis", None),
-            )
-        except Exception:
-            self._warn_once("user_profile", "[memory] 用户画像读取失败，降级为空画像")
-            memory_state.user_profile = {}
-
-    async def _load_long_term_memory(
-        self,
-        memory_state: AgentMemoryState,
-        tenant_id: str,
-        user_id: str,
-        user_input: str,
-    ) -> None:
-        """从 Milvus 检索长期语义记忆。"""
-        if not self.ltm_enabled:
-            return
-        try:
-            memory_state.long_term_memories = await self.milvus_ltm.hybrid_search(
-                tenant_id,
-                user_id,
-                user_input,
-            )
-        except Exception:
-            self._warn_once("milvus_ltm", "[memory] Milvus LTM 检索失败，长期记忆降级")
-            memory_state.long_term_memories = []
-
-    def _build_summary_compressor(self, compressed_round: int) -> _SummaryCompressor:
-        """构造 Redis STM 压缩阶段需要的 LLM 摘要回调。"""
-        async def llm_compress_func(
-            old_summary_str: str,
-            old_messages: list[MessageRecord],
-        ) -> str:
-            prompt = build_compression_prompt(
-                old_summary=old_summary_str,
-                old_messages=old_messages,
-                compressed_round=compressed_round,
-            )
-            response = await self.memory_extractor.llm_client.ainvoke(prompt)
-            content = getattr(response, "content", response)
-            return content if isinstance(content, str) else str(content)
-
-        return llm_compress_func
-
-    async def _update_hit_long_term_memories(
-        self,
-        long_term_memories: list[MemorySearchResult],
-    ) -> None:
-        """刷新命中长期记忆的访问统计。"""
-        try:
-            for result in long_term_memories:
-                try:
-                    await self.milvus_ltm.update_memory_hit_info(result.memory)
-                except Exception:
-                    continue
-        except Exception:
-            self._warn_once("ltm_hit_update", "[memory] LTM 命中统计刷新失败")
