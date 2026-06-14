@@ -71,50 +71,6 @@ SCOPE_DESCRIPTION = """
 """
 
 
-def build_wrapped_question(question: str) -> str:
-    """对原始问题做 XML 隔离，供结构化判定节点复用。"""
-    safe_question, _ = wrap_user_message(question)
-    return safe_question
-
-
-def route_query_type(route_type: str) -> GeneralRouteName:
-    """把顶层 router 的类型映射成主图下一个节点。"""
-    if route_type == "general":
-        return "respond_to_general_query"
-    return "retrieval_plan_router"
-
-
-def route_guardrails_action(next_action: str | None) -> GuardrailsEdgeName:
-    """把 guardrails 的决策映射成主图下一个节点。"""
-    if next_action == "end":
-        return "after_response"
-    return "retrieval_plan_route"
-
-
-def route_retrieval_plan(plan_name: str | None) -> RetrievalEdgeName:
-    """把 RetrievalPlan 输出映射成执行节点名。"""
-    return _RETRIEVAL_EDGE_MAP.get(plan_name or "AGENT_REACT", "execute_react")
-
-
-def build_guardrails_block_response() -> dict[str, list[BaseMessage] | str]:
-    """构造 guardrails 拒绝继续执行时的固定回复。"""
-    return {
-        "messages": [AIMessage(content=_GUARDRAILS_BLOCK_MESSAGE)],
-        "next_action": "end",
-    }
-
-
-def build_memory_augmented_system_prompt(
-    *,
-    system_prompt: str,
-    memory_context: str,
-) -> str:
-    """把记忆上下文追加到 system prompt。无上下文时保持原样。"""
-    if not memory_context:
-        return system_prompt
-    return system_prompt + memory_context
-
-
 async def build_general_query_system_prompt(
     *,
     state: AgentState,
@@ -134,10 +90,9 @@ async def build_general_query_system_prompt(
         memory_state.long_term_memories,
         memory_state.user_profile,
     )
-    return build_memory_augmented_system_prompt(
-        system_prompt=system_prompt,
-        memory_context=memory_context,
-    )
+    if not memory_context:
+        return system_prompt
+    return system_prompt + memory_context
 
 
 async def analyze_and_route_query(state: AgentState, *, config: RunnableConfig) -> dict:
@@ -152,7 +107,9 @@ async def analyze_and_route_query(state: AgentState, *, config: RunnableConfig) 
 
 def route_query(state: AgentState) -> GeneralRouteName:
     """根据路由结果选择下一个节点。"""
-    return route_query_type(state.router["type"])
+    if state.router["type"] == "general":
+        return "respond_to_general_query"
+    return "retrieval_plan_router"
 
 
 async def respond_to_general_query(
@@ -178,22 +135,28 @@ async def guardrails_node(
 ) -> dict[str, list[BaseMessage] | str]:
     """守卫节点：检查问题是否在业务范围内，拦截恶意输入。"""
     _ = config
+    wrapped_question, _ = wrap_user_message(question_from_state(state))
     guardrails_output = await ainvoke_structured_question_output(
         system_prompt=GUARDRAILS_SYSTEM_PROMPT,
         human_prompt=f"参考此范围描述来决策:\n{SCOPE_DESCRIPTION}\nQuestion: {{question}}",
         model=guardrails_model,
         output_schema=GuardrailsDecision,
-        question=build_wrapped_question(question_from_state(state)),
+        question=wrapped_question,
     )
 
     if guardrails_output.decision == "end":
-        return build_guardrails_block_response()
+        return {
+            "messages": [AIMessage(content=_GUARDRAILS_BLOCK_MESSAGE)],
+            "next_action": "end",
+        }
     return {"next_action": "continue"}
 
 
 def guardrails_edge(state: AgentState) -> GuardrailsEdgeName:
     """守卫后的路由：continue → 检索计划，end → 直接回复。"""
-    return route_guardrails_action(state.next_action)
+    if state.next_action == "end":
+        return "after_response"
+    return "retrieval_plan_route"
 
 
 async def retrieval_plan_route(
@@ -203,12 +166,13 @@ async def retrieval_plan_route(
 ) -> dict:
     """根据问题特征选择最优检索策略。"""
     _ = config
+    wrapped_question, _ = wrap_user_message(question_from_state(state))
     output = await ainvoke_structured_question_output(
         system_prompt=RETRIEVAL_PLAN_ROUTER_PROMPT,
         human_prompt="问题：{question}",
         model=retrieval_plan_model,
         output_schema=RetrievalPlanOutput,
-        question=build_wrapped_question(question_from_state(state)),
+        question=wrapped_question,
     )
 
     plan: RetrievalPlan = {"logic": output.logic, "plan": output.plan}
@@ -217,20 +181,15 @@ async def retrieval_plan_route(
 
 def retrieval_plan_edge(state: AgentState) -> RetrievalEdgeName:
     """根据检索计划路由到对应的执行节点。"""
-    return route_retrieval_plan((state.retrieval_plan or {}).get("plan"))
+    plan_name = (state.retrieval_plan or {}).get("plan")
+    return _RETRIEVAL_EDGE_MAP.get(plan_name or "AGENT_REACT", "execute_react")
 
 
 __all__ = [
     "analyze_and_route_query",
-    "build_guardrails_block_response",
     "build_general_query_system_prompt",
-    "build_memory_augmented_system_prompt",
-    "build_wrapped_question",
     "guardrails_edge",
     "guardrails_node",
-    "route_guardrails_action",
-    "route_query_type",
-    "route_retrieval_plan",
     "respond_to_general_query",
     "retrieval_plan_edge",
     "retrieval_plan_route",

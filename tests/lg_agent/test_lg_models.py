@@ -12,6 +12,14 @@ def test_create_chat_model_uses_resolved_factory(monkeypatch) -> None:
     assert lg_models._create_chat_model(0.3) == ("factory", 0.3)
 
 
+def test_resolve_model_factory_switches_with_service_name(monkeypatch) -> None:
+    monkeypatch.setattr(lg_models.settings, "AGENT_SERVICE", "deepseek")
+    assert lg_models._resolve_model_factory() is lg_models._create_deepseek_model
+
+    monkeypatch.setattr(lg_models.settings, "AGENT_SERVICE", "ollama")
+    assert lg_models._resolve_model_factory() is lg_models._create_ollama_model
+
+
 def test_get_model_caches_instances_by_role(monkeypatch) -> None:
     lg_models._models_cache.clear()
     created: list[tuple[str, float]] = []

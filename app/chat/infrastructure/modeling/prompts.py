@@ -26,31 +26,6 @@ class PromptLogger(Protocol):
     def warning(self, msg: str, *args: object, **kwargs: object) -> object: ...
 
 
-def prompt_yaml_path(module_file: str | Path) -> Path:
-    """根据模块文件路径返回默认 Prompt YAML 路径。"""
-    return Path(module_file).with_suffix(".yaml")
-
-
-def _normalize_prompt_overrides(data: object) -> PromptMapping:
-    """过滤 YAML 结果中的非字符串键值，收口成稳定 prompt 映射。"""
-    if not isinstance(data, dict):
-        return {}
-
-    prompt_overrides: PromptMapping = {}
-    for key, value in data.items():
-        if isinstance(key, str) and isinstance(value, str):
-            prompt_overrides[key] = value
-    return prompt_overrides
-
-
-def _load_yaml_prompt_data(yaml_path: Path) -> object:
-    """从指定 YAML 路径读取原始 Prompt 数据。"""
-    import yaml
-
-    with yaml_path.open("r", encoding="utf-8") as prompt_file:
-        return yaml.safe_load(prompt_file)
-
-
 def load_prompts_from_yaml(
     logger: PromptLogger,
     yaml_path: Path,
@@ -61,7 +36,10 @@ def load_prompts_from_yaml(
         return {}
 
     try:
-        data = _load_yaml_prompt_data(yaml_path)
+        import yaml
+
+        with yaml_path.open("r", encoding="utf-8") as prompt_file:
+            data = yaml.safe_load(prompt_file)
         if data is None:
             logger.info("prompts.yaml 为空，使用内置默认 Prompt")
             return {}
@@ -69,20 +47,16 @@ def load_prompts_from_yaml(
             logger.warning("prompts.yaml 格式错误，使用内置默认 Prompt")
             return {}
 
-        prompt_overrides = _normalize_prompt_overrides(data)
+        prompt_overrides = {
+            key: value
+            for key, value in data.items()
+            if isinstance(key, str) and isinstance(value, str)
+        }
         logger.info("已从 prompts.yaml 加载 Prompt 模板")
         return prompt_overrides
     except Exception:
         logger.warning("prompts.yaml 加载失败，使用内置默认 Prompt", exc_info=True)
         return {}
-
-
-def build_prompt_mapping(
-    default_prompts: PromptMapping,
-    prompt_overrides: PromptMapping,
-) -> PromptMapping:
-    """把 YAML 覆盖值和默认 Prompt 合并成稳定映射。"""
-    return {**default_prompts, **prompt_overrides}
 
 
 _DEFAULT_ROUTER_SYSTEM = """你是一个电商智能客服的路由分类器。
@@ -210,10 +184,10 @@ DEFAULT_PROMPTS: PromptMapping = {
 }
 
 # 模块级加载（import 时执行一次）
-_prompt_mapping = build_prompt_mapping(
-    DEFAULT_PROMPTS,
-    load_prompts_from_yaml(logger, prompt_yaml_path(__file__)),
-)
+_prompt_mapping = {
+    **DEFAULT_PROMPTS,
+    **load_prompts_from_yaml(logger, Path(__file__).with_suffix(".yaml")),
+}
 
 
 # ================================================================== #

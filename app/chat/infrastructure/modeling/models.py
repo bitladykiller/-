@@ -46,34 +46,6 @@ MODEL_TEMPERATURES: dict[ModelRole, float] = {
 }
 
 
-def resolve_model_factory(
-    service_type: str,
-    *,
-    deepseek_factory: ModelFactory,
-    ollama_factory: ModelFactory,
-) -> ModelFactory:
-    """根据 provider 名称选择当前运行时要用的模型工厂。"""
-    if service_type == "deepseek":
-        return deepseek_factory
-    return ollama_factory
-
-
-def get_or_create_cached_model(
-    cache: dict[ModelRole, Any],
-    name: ModelRole,
-    creator: Callable[[], Any],
-) -> Any:
-    """按角色名获取缓存模型，不存在时才执行 creator。"""
-    if name not in cache:
-        cache[name] = creator()
-    return cache[name]
-
-
-def _lazy_model_repr(name: ModelRole, temperature: float) -> str:
-    """构造懒代理的稳定字符串表示。"""
-    return f"_LazyModel(name={name}, t={temperature})"
-
-
 class LazyModelProxy:
     """延迟代理：访问属性/方法时才真正创建模型。"""
 
@@ -105,15 +77,10 @@ class LazyModelProxy:
         return self._get().__await__()
 
     def __str__(self) -> str:
-        return _lazy_model_repr(self._name, self._temperature)
+        return f"_LazyModel(name={self._name}, t={self._temperature})"
 
     def __repr__(self) -> str:
         return self.__str__()
-
-
-def build_lazy_model(name: ModelRole, resolver: ModelResolver) -> LazyModelProxy:
-    """按角色名创建懒加载代理，统一温度来源。"""
-    return LazyModelProxy(name, MODEL_TEMPERATURES[name], resolver)
 
 
 def _create_deepseek_model(temperature: float) -> Any:
@@ -140,11 +107,9 @@ def _create_ollama_model(temperature: float) -> Any:
 
 def _resolve_model_factory() -> ModelFactory:
     """根据 `AGENT_SERVICE` 选择当前运行时要用的模型工厂。"""
-    return resolve_model_factory(
-        settings.AGENT_SERVICE,
-        deepseek_factory=_create_deepseek_model,
-        ollama_factory=_create_ollama_model,
-    )
+    if settings.AGENT_SERVICE == "deepseek":
+        return _create_deepseek_model
+    return _create_ollama_model
 
 
 def _create_chat_model(temperature: float = MODEL_TEMPERATURES["agent"]) -> Any:
@@ -173,11 +138,9 @@ def _get_model(name: ModelRole, temperature: float) -> Any:
     这样调用方只关心“这个节点要什么温度和职责”，不必知道底层是
     DeepSeek 还是 Ollama。
     """
-    return get_or_create_cached_model(
-        _models_cache,
-        name,
-        lambda: _create_logged_model(name, temperature),
-    )
+    if name not in _models_cache:
+        _models_cache[name] = _create_logged_model(name, temperature)
+    return _models_cache[name]
 
 
 def _create_logged_model(name: ModelRole, temperature: float) -> Any:
@@ -192,7 +155,7 @@ def _create_logged_model(name: ModelRole, temperature: float) -> Any:
 
 def _lazy_model(name: ModelRole) -> LazyModelProxy:
     """按角色名创建懒加载代理，统一温度来源。"""
-    return build_lazy_model(name, _get_model)
+    return LazyModelProxy(name, MODEL_TEMPERATURES[name], _get_model)
 
 
 agent_model = _lazy_model("agent")
@@ -243,13 +206,10 @@ __all__ = [
     "ReactAnswerCheckOutput",
     "RetrievalPlanOutput",
     "agent_model",
-    "build_lazy_model",
     "cypher_model",
-    "get_or_create_cached_model",
     "guardrails_model",
     "react_judge_model",
     "react_model",
-    "resolve_model_factory",
     "retrieval_plan_model",
     "router_model",
 ]
