@@ -386,22 +386,16 @@ def create_text2cypher_agent(
         text2cypher_graph_builder.add_edge(START, "generate_cypher")
 
     text2cypher_graph_builder.add_edge("generate_cypher", "validate_cypher")
-    text2cypher_graph_builder.add_conditional_edges("validate_cypher", _validate_cypher_conditional_edge)
+    text2cypher_graph_builder.add_conditional_edges(
+        "validate_cypher",
+        lambda state: (
+            state.get("next_action_cypher")
+            if state.get("next_action_cypher")
+            in {"correct_cypher", "execute_cypher", "__end__"}
+            else "__end__"
+        ),
+    )
     text2cypher_graph_builder.add_edge("correct_cypher", "validate_cypher")
     text2cypher_graph_builder.add_edge("execute_cypher", END)
 
     return text2cypher_graph_builder.compile()
-
-
-def _validate_cypher_conditional_edge(
-    state: CypherState,
-) -> Literal["correct_cypher", "execute_cypher", "__end__"]:
-    match state.get("next_action_cypher"):
-        case "correct_cypher":
-            return "correct_cypher"
-        case "execute_cypher":
-            return "execute_cypher"
-        case "__end__":
-            return "__end__"
-        case _:
-            return "__end__"

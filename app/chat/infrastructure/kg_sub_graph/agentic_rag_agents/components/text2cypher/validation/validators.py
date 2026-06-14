@@ -40,11 +40,9 @@ _WRITE_CLAUSES = {
     "FOREACH",
     "MERGE",
 }
-
-
-def _cypher_query_node_graph_schema() -> str:
-    """匹配以 '- **CypherQuery**' 开始的段落，直到 Relationship properties 或下一节。"""
-    return r"^(- \*\*CypherQuery\*\*[\s\S]+?)(^Relationship properties|- \*)"
+_CYPHER_QUERY_NODE_GRAPH_SCHEMA = (
+    r"^(- \*\*CypherQuery\*\*[\s\S]+?)(^Relationship properties|- \*)"
+)
 
 
 def retrieve_and_parse_schema_from_graph_for_prompts(graph: Neo4jGraph) -> str:
@@ -53,7 +51,7 @@ def retrieve_and_parse_schema_from_graph_for_prompts(graph: Neo4jGraph) -> str:
 
     if "CypherQuery" in schema:
         schema = re.sub(
-            _cypher_query_node_graph_schema(), r"\2", schema, flags=re.MULTILINE
+            _CYPHER_QUERY_NODE_GRAPH_SCHEMA, r"\2", schema, flags=re.MULTILINE
         )
 
     return schema.replace("{", "[").replace("}", "]")
