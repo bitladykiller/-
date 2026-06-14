@@ -249,14 +249,6 @@ class NorthwindCypherRetriever:
 
         return score
 
-    @staticmethod
-    def _format_examples(examples: list[CypherExample]) -> str:
-        """把选中的示例格式化成 Text2Cypher 期望的文本。"""
-        return "\n\n".join(
-            f"Question: {example['question']}\nCypher: {example['cypher']}"
-            for example in examples
-        )
-
     def get_examples(self, query: str, k: int = 5) -> str:
         """根据用户查询返回相关的 Cypher 示例。"""
         examples = list(chain.from_iterable(_EXAMPLES_BY_CATEGORY.values()))
