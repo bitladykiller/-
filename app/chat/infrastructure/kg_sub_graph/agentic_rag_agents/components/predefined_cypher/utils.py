@@ -212,53 +212,33 @@ class _VectorQueryMatcher:
 
         # 使用LLM提取参数（如果提供）
         if llm is not None:
-            return self._extract_parameters_with_llm(
-                user_question,
-                param_names,
-                query_name,
-                llm,
-            )
+            from langchain_core.prompts import ChatPromptTemplate
 
-        # 使用简单规则进行参数提取
-        return extract_parameters_with_rules(user_question, param_names)
-
-    def _extract_parameters_with_llm(
-        self,
-        user_question: str,
-        param_names: list[str],
-        query_name: str,
-        llm: Any,
-    ) -> dict[str, str]:
-        """使用 LLM 从用户问题中提取参数。"""
-        from langchain_core.prompts import ChatPromptTemplate
-
-        # 创建提示模板
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    """你是参数提取专家。你的任务是从用户问题中提取指定参数。
+            prompt = ChatPromptTemplate.from_messages(
+                [
+                    (
+                        "system",
+                        """你是参数提取专家。你的任务是从用户问题中提取指定参数。
             只返回JSON格式的参数值，不要添加任何解释。
             如果无法提取某个参数，则该参数值为空字符串。""",
-                ),
-                (
-                    "human",
-                    f"""
+                    ),
+                    (
+                        "human",
+                        f"""
             用户问题: {user_question}
             查询类型: {query_name}
             需要提取的参数: {', '.join(param_names)}
 
             请提取这些参数并以JSON格式返回，格式如: {{"参数名": "参数值", ...}}
             """,
-                ),
-            ]
-        )
+                    ),
+                ]
+            )
+            response = llm.invoke(prompt)
+            return parse_json_response(getattr(response, "content", ""))
 
-        # 调用LLM
-        response = llm.invoke(prompt)
-
-        # 解析响应
-        return parse_json_response(getattr(response, "content", ""))
+        # 使用简单规则进行参数提取
+        return extract_parameters_with_rules(user_question, param_names)
 
 
 def create_vector_query_matcher(
