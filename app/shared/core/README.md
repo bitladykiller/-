@@ -17,11 +17,8 @@
 - `database.py`
   - 负责创建 SQLAlchemy 异步引擎、会话工厂和声明式 `Base`。
   - 当前统一使用 SQLAlchemy 2 的声明式基类，模型层通过类型注解直接表达字段和关系。
-  - 当前主文件只保留 engine / session / Base 出口；引擎参数和日志样板已下沉到 `database_support.py`。
+  - 当前主文件直接承接 SQLAlchemy 日志级别、异步引擎参数和会话工厂初始化样板。
   - 不承载具体表查询，也不表达业务事务规则。
-- `database_support.py`
-  - 负责 `database.py` 共享的纯 helper。
-  - 当前承接 SQLAlchemy 日志级别配置、异步引擎参数构造和会话工厂样板，便于单测和复用。
 - `logger.py`
   - 负责全局日志初始化入口和幂等状态。
   - 业务模块只应消费 `get_logger()` / `format_log_context()`，不要各自重复拼接日志样板。

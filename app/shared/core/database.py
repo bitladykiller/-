@@ -9,28 +9,34 @@
 """
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
 
 from app.shared.core.config import settings
-from app.shared.core.database_support import (
-    build_engine_options,
-    configure_sqlalchemy_logging,
-    create_session_factory,
-)
 
 
 class Base(DeclarativeBase):
     """项目统一的声明式 ORM 基类。"""
 
 
-configure_sqlalchemy_logging()
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 
 engine = create_async_engine(
-    **build_engine_options(settings.DATABASE_URL),
+    settings.DATABASE_URL,
+    echo=False,
+    pool_pre_ping=True,
+    pool_size=5,
+    max_overflow=10,
 )
-AsyncSessionLocal = create_session_factory(engine)
+AsyncSessionLocal = async_sessionmaker(
+    bind=engine,
+    expire_on_commit=False,
+)
 
 __all__ = ["engine", "AsyncSessionLocal", "Base"]
