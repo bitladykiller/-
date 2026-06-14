@@ -160,41 +160,6 @@ async def upsert_profile_fields_in_db(
     return True
 
 
-async def _fetch_current_fact_version(
-    db: AsyncSession,
-    user_id: int,
-    fact_key: str,
-):
-    """读取某个事实 key 当前激活的版本记录。"""
-    return (
-        await db.execute(
-            _CURRENT_FACT_VERSION_SQL,
-            {"uid": user_id, "key": fact_key},
-        )
-    ).mappings().first()
-
-
-async def _insert_fact_version(
-    db: AsyncSession,
-    *,
-    user_id: int,
-    fact_key: str,
-    fact_value: str,
-    version: int,
-) -> int | None:
-    """插入新版本事实并返回新记录 ID。"""
-    await db.execute(
-        _INSERT_VERSIONED_FACT_SQL,
-        {
-            "uid": user_id,
-            "key": fact_key,
-            "val": fact_value,
-            "ver": version,
-        },
-    )
-    return (await db.execute(_LAST_INSERT_ID_SQL)).scalar()
-
-
 async def _replace_existing_fact(
     db: AsyncSession,
     *,
@@ -206,29 +171,19 @@ async def _replace_existing_fact(
 ) -> None:
     """失活旧事实，插入新版本，并回填 superseded_by。"""
     await db.execute(_DEACTIVATE_FACT_SQL, {"id": old_id})
-    new_id = await _insert_fact_version(
-        db,
-        user_id=user_id,
-        fact_key=fact_key,
-        fact_value=fact_value,
-        version=old_version + 1,
+    await db.execute(
+        _INSERT_VERSIONED_FACT_SQL,
+        {
+            "uid": user_id,
+            "key": fact_key,
+            "val": fact_value,
+            "ver": old_version + 1,
+        },
     )
+    new_id = (await db.execute(_LAST_INSERT_ID_SQL)).scalar()
     await db.execute(
         _LINK_SUPERSEDED_FACT_SQL,
         {"new_id": new_id, "old_id": old_id},
-    )
-
-
-async def _insert_new_fact(
-    db: AsyncSession,
-    user_id: int,
-    fact_key: str,
-    fact_value: str,
-) -> None:
-    """插入首个版本的事实记录。"""
-    await db.execute(
-        _INSERT_FACT_SQL,
-        {"uid": user_id, "key": fact_key, "val": fact_value},
     )
 
 
@@ -240,7 +195,12 @@ async def upsert_fact_in_db(
     fact_value: str,
 ) -> bool:
     """在单个事务内完成事实更新，返回本次是否真的改动了数据。"""
-    row = await _fetch_current_fact_version(db, user_id, fact_key)
+    row = (
+        await db.execute(
+            _CURRENT_FACT_VERSION_SQL,
+            {"uid": user_id, "key": fact_key},
+        )
+    ).mappings().first()
     if row:
         if row["fact_value"] == fact_value:
             return False
@@ -255,7 +215,10 @@ async def upsert_fact_in_db(
         )
         return True
 
-    await _insert_new_fact(db, user_id, fact_key, fact_value)
+    await db.execute(
+        _INSERT_FACT_SQL,
+        {"uid": user_id, "key": fact_key, "val": fact_value},
+    )
     return True
 
 
