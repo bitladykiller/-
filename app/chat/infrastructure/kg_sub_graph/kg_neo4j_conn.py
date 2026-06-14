@@ -50,17 +50,6 @@ def _create_graph() -> Neo4jGraph | None:
         return None
 
 
-def _within_health_window(now: float) -> bool:
-    """判断当前缓存是否仍在健康检查窗口内。"""
-    return (now - _last_health_check_ts) < HEALTH_CHECK_INTERVAL
-
-
-def _clear_cached_graph() -> None:
-    """清空缓存，让下一次调用重新建连。"""
-    global _cached_graph
-    _cached_graph = None
-
-
 def _check_health(graph: Neo4jGraph) -> bool:
     """执行一次 RETURN 1 健康检查，返回是否存活。"""
     try:
@@ -85,7 +74,7 @@ def get_neo4j_graph() -> Neo4jGraph | None:
 
     # --- 有缓存且在健康窗口内：直接返回 --- #
     if _cached_graph is not None:
-        if _within_health_window(now):
+        if (now - _last_health_check_ts) < HEALTH_CHECK_INTERVAL:
             return _cached_graph
         # 超出窗口，执行健康检查
         if _check_health(_cached_graph):
@@ -93,7 +82,7 @@ def get_neo4j_graph() -> Neo4jGraph | None:
             return _cached_graph
         # 健康检查失败，清空缓存，走重连逻辑
         logger.info("[neo4j] 缓存连接失效，尝试重连")
-        _clear_cached_graph()
+        _cached_graph = None
 
     # --- 无缓存：创建新连接 --- #
     _cached_graph = _create_graph()
@@ -104,6 +93,6 @@ def get_neo4j_graph() -> Neo4jGraph | None:
             return _cached_graph
         # 连接创建成功但健康检查失败（罕见）
         logger.error("[neo4j] 新建连接健康检查失败")
-        _clear_cached_graph()
+        _cached_graph = None
 
     return None
