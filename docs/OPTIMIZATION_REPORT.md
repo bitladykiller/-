@@ -32,7 +32,7 @@
 - **目标**：清理冗余导入和循环导入
 - **结果**：修复了 5 个文件的重复导入
 - **修复文件**：
-  - `app/main_runtime_support.py`
+  - `app/main.py`（当时对应的运行时入口逻辑后续已合并回此文件）
   - `app/chat/infrastructure/retrievers/retriever_runtime.py`
   - `app/chat/infrastructure/memory_bridge/runtime.py`
   - `app/knowledge/infrastructure/ltm/ltm_runtime_support.py`
