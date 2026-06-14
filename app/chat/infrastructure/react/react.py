@@ -69,42 +69,6 @@ async def get_react_subgraph(
     return _react_subgraph
 
 
-def build_react_response(answer: str) -> dict[str, list[AIMessage]]:
-    """统一构造 ReAct 节点返回给主图的两段式消息。"""
-    return {
-        "messages": [
-            AIMessage(content=_REACT_PROGRESS_MESSAGE),
-            AIMessage(content=answer),
-        ],
-    }
-
-
-def build_answer_check_messages(
-    *,
-    judge_system_prompt: str,
-    question: str,
-    transcript: str,
-    candidate_answer: str,
-) -> list[dict[str, str]]:
-    """构造 ReAct 裁判模型的输入消息。"""
-    return [
-        {"role": "system", "content": judge_system_prompt},
-        {
-            "role": "user",
-            "content": (
-                f"用户问题：{question}\n\n"
-                f"ReAct 过程记录：\n{transcript}\n\n"
-                f"当前候选答案：{candidate_answer}"
-            ),
-        },
-    ]
-
-
-def needs_more_steps(answer: str) -> bool:
-    """判断 ReAct 是否因为内部步数用尽而终止。"""
-    return _REACT_STEP_EXHAUSTED_MARKER in answer.lower()
-
-
 async def _judge_react_answer(
     question: str,
     result_messages: list[Any],
@@ -117,12 +81,18 @@ async def _judge_react_answer(
         content = getattr(message, "content", "")
         if content:
             transcript_lines.append(f"[{role}] {content}")
-    check_messages = build_answer_check_messages(
-        judge_system_prompt=REACT_ANSWER_CHECK_PROMPT,
-        question=question,
-        transcript="\n".join(transcript_lines),
-        candidate_answer=candidate_answer,
-    )
+    transcript = "\n".join(transcript_lines)
+    check_messages = [
+        {"role": "system", "content": REACT_ANSWER_CHECK_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                f"用户问题：{question}\n\n"
+                f"ReAct 过程记录：\n{transcript}\n\n"
+                f"当前候选答案：{candidate_answer}"
+            ),
+        },
+    ]
     return cast(
         ReactAnswerCheckOutput,
         await react_judge_model.with_structured_output(
@@ -222,12 +192,17 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
             last_content = getattr(result_messages[-1], "content", "")
             last_answer = str(last_content) if last_content else "未能确定回答～"
 
-        if needs_more_steps(last_answer):
+        if _REACT_STEP_EXHAUSTED_MARKER in last_answer.lower():
             insufficiency_reason = REACT_STEP_EXHAUSTED_REASON
         else:
             check = await _judge_react_answer(q, result_messages, last_answer)
             if check.decision == "sufficient":
-                return build_react_response(last_answer)
+                return {
+                    "messages": [
+                        AIMessage(content=_REACT_PROGRESS_MESSAGE),
+                        AIMessage(content=last_answer),
+                    ],
+                }
 
             insufficiency_reason = check.reason or REACT_DEFAULT_INSUFFICIENCY_REASON
 
@@ -238,4 +213,9 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
         ]
 
     # 5 轮用尽仍未充分
-    return build_react_response(REACT_FALLBACK_ANSWER)
+    return {
+        "messages": [
+            AIMessage(content=_REACT_PROGRESS_MESSAGE),
+            AIMessage(content=REACT_FALLBACK_ANSWER),
+        ],
+    }

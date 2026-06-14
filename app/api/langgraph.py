@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import AsyncIterator, Mapping
-from typing import Any, TypeAlias, TypedDict
+from typing import Any, TypeAlias
 
 from fastapi import APIRouter, HTTPException, Form
 from fastapi.responses import StreamingResponse
@@ -27,20 +27,6 @@ from app.chat.infrastructure.graph.state import InputState
 
 router = APIRouter(tags=["langgraph"])
 
-
-class ThreadConfigPayload(TypedDict):
-    """LangGraph `configurable` 配置字段。"""
-
-    thread_id: str
-    user_id: str
-
-
-class ThreadConfig(TypedDict):
-    """LangGraph 调用配置。"""
-
-    configurable: ThreadConfigPayload
-
-
 _ChunkMetadata: TypeAlias = Mapping[str, Any]
 _GraphStreamChunk: TypeAlias = tuple[Any, _ChunkMetadata]
 GraphStream: TypeAlias = AsyncIterator[_GraphStreamChunk]
@@ -49,29 +35,6 @@ _CONVERSATION_ID_HEADER = "X-Conversation-ID"
 _RESEARCH_PLAN_TAG = "research_plan"
 STREAM_MODE_MESSAGES = "messages"
 _SSE_DATA_PREFIX = "data: "
-
-
-def serialize_stream_chunk(chunk: Any, metadata: _ChunkMetadata) -> str | None:
-    """把 LangGraph message chunk 转成可下发的 SSE payload。"""
-    content = getattr(chunk, "content", None)
-    additional_kwargs = getattr(chunk, "additional_kwargs", {}) or {}
-    if not isinstance(additional_kwargs, Mapping):
-        additional_kwargs = {}
-
-    raw_tags = metadata.get("tags", [])
-    tags = [tag for tag in raw_tags if isinstance(tag, str)] if isinstance(raw_tags, list) else []
-    if (
-        not content
-        or additional_kwargs.get("tool_calls")
-        or _RESEARCH_PLAN_TAG in tags
-    ):
-        return None
-    return json.dumps(content, ensure_ascii=False)
-
-
-def build_sse_payload(payload: str) -> str:
-    """把 JSON payload 包装成标准 SSE 数据帧。"""
-    return f"{_SSE_DATA_PREFIX}{payload}\n\n"
 
 
 @router.post("/langgraph/query")
@@ -96,9 +59,24 @@ async def langgraph_query(
 
         async def response_stream():
             async for chunk, metadata in graph_stream:
-                payload = serialize_stream_chunk(chunk, metadata)
-                if payload is not None:
-                    yield build_sse_payload(payload)
+                content = getattr(chunk, "content", None)
+                additional_kwargs = getattr(chunk, "additional_kwargs", {}) or {}
+                if not isinstance(additional_kwargs, Mapping):
+                    additional_kwargs = {}
+
+                raw_tags = metadata.get("tags", [])
+                tags = (
+                    [tag for tag in raw_tags if isinstance(tag, str)]
+                    if isinstance(raw_tags, list)
+                    else []
+                )
+                if (
+                    not content
+                    or additional_kwargs.get("tool_calls")
+                    or _RESEARCH_PLAN_TAG in tags
+                ):
+                    continue
+                yield f"{_SSE_DATA_PREFIX}{json.dumps(content, ensure_ascii=False)}\n\n"
 
         response = StreamingResponse(response_stream(), media_type=_SSE_MEDIA_TYPE)
         response.headers[_CONVERSATION_ID_HEADER] = thread_id

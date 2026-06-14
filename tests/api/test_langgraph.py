@@ -20,6 +20,9 @@ def test_langgraph_query_builds_streaming_response(monkeypatch) -> None:
     async def fake_graph_stream():
         yield FakeChunk("推荐这款"), {}
         yield FakeChunk("忽略", {"tool_calls": [{"id": "1"}]}), {}
+        yield FakeChunk("忽略", {}), {"tags": ["research_plan", 1]}
+        yield FakeChunk("正常输出", ["bad"]), {}
+        yield FakeChunk(""), {}
 
     async def scenario() -> None:
         monkeypatch.setattr(langgraph_api.uuid, "uuid4", lambda: "thread-1")
@@ -44,6 +47,9 @@ def test_langgraph_query_builds_streaming_response(monkeypatch) -> None:
         )
 
         assert response.headers["X-Conversation-ID"] == "thread-1"
-        assert await _collect_response_body(response) == 'data: "推荐这款"\n\n'
+        assert await _collect_response_body(response) == (
+            'data: "推荐这款"\n\n'
+            'data: "正常输出"\n\n'
+        )
 
     asyncio.run(scenario())
