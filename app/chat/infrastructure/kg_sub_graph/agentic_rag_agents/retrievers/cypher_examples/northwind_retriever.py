@@ -1,8 +1,7 @@
 """Northwind Cypher 示例检索器。
 
 这个模块只做一件事：根据用户问题，从预置 Cypher 示例中挑出最相关的几条。
-把示例数据、相关性打分和最终格式化拆开后，`get_examples()` 只保留核心流程，
-更容易阅读，也更容易单测。
+示例数据和相关性打分规则都留在同一处，方便直接阅读和调整。
 """
 from __future__ import annotations
 
@@ -229,11 +228,6 @@ class NorthwindCypherRetriever:
         """把文本切成词集合，供关键词重叠打分使用。"""
         return set(re.findall(r"\w+", text.lower()))
 
-    @staticmethod
-    def _flatten_examples() -> list[CypherExample]:
-        """将按类别组织的示例展开成单列表。"""
-        return list(chain.from_iterable(_EXAMPLES_BY_CATEGORY.values()))
-
     @classmethod
     def _compute_relevance(cls, example: CypherExample, query: str) -> int:
         """根据关键词重叠和类别命中计算相关性分数。"""
@@ -265,11 +259,14 @@ class NorthwindCypherRetriever:
 
     def get_examples(self, query: str, k: int = 5) -> str:
         """根据用户查询返回相关的 Cypher 示例。"""
-        examples = self._flatten_examples()
+        examples = list(chain.from_iterable(_EXAMPLES_BY_CATEGORY.values()))
         scored_examples = [
             (example, self._compute_relevance(example, query))
             for example in examples
         ]
         scored_examples.sort(key=lambda item: item[1], reverse=True)
         selected_examples = [example for example, _ in scored_examples[:k]]
-        return self._format_examples(selected_examples)
+        return "\n\n".join(
+            f"Question: {example['question']}\nCypher: {example['cypher']}"
+            for example in selected_examples
+        )
