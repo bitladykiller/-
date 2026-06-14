@@ -108,58 +108,6 @@ def format_user_profile(user_profile: UserProfileData) -> str:
     return "\n".join(profile_lines)
 
 
-def _build_recent_messages_section(recent_messages: list[MessageRecord]) -> str:
-    """构造 P0 最近对话分段。"""
-    return build_memory_section(
-        _MEMORY_SECTION_TITLES["recent_messages"],
-        format_recent_messages(recent_messages),
-    )
-
-
-def _build_user_profile_section(user_profile: UserProfileData | None) -> str:
-    """构造 P1 用户画像分段。"""
-    if not user_profile:
-        return ""
-    return build_memory_section(
-        _MEMORY_SECTION_TITLES["user_profile"],
-        format_user_profile(user_profile),
-    )
-
-
-def _build_session_summary_section(session_summary: SessionSummary | None) -> str:
-    """构造 P2 会话摘要分段。"""
-    return build_memory_section(
-        _MEMORY_SECTION_TITLES["session_summary"],
-        build_summary_injection_prompt(session_summary),
-    )
-
-
-def _build_long_term_memory_section(
-    long_term_memories: list[MemorySearchResult],
-) -> str:
-    """构造 P3 长期记忆分段。"""
-    return build_memory_section(
-        _MEMORY_SECTION_TITLES["long_term_memory"],
-        build_memory_injection_prompt(long_term_memories),
-    )
-
-
-def _build_memory_sections(
-    session_summary: SessionSummary | None,
-    recent_messages: list[MessageRecord],
-    long_term_memories: list[MemorySearchResult],
-    user_profile: UserProfileData | None,
-) -> list[str]:
-    """按优先级生成所有非空记忆分段。"""
-    sections = [
-        _build_recent_messages_section(recent_messages),
-        _build_user_profile_section(user_profile),
-        _build_session_summary_section(session_summary),
-        _build_long_term_memory_section(long_term_memories),
-    ]
-    return [section for section in sections if section and section.strip()]
-
-
 def build_memory_context(
     session_summary: SessionSummary | None,
     recent_messages: list[MessageRecord],
@@ -167,12 +115,25 @@ def build_memory_context(
     user_profile: UserProfileData | None = None,
 ) -> str:
     """组装带优先级的记忆上下文字符串，用于注入 system prompt。"""
-    parts = _build_memory_sections(
-        session_summary,
-        recent_messages,
-        long_term_memories,
-        user_profile,
-    )
+    parts = [
+        build_memory_section(
+            _MEMORY_SECTION_TITLES["recent_messages"],
+            format_recent_messages(recent_messages),
+        ),
+        build_memory_section(
+            _MEMORY_SECTION_TITLES["user_profile"],
+            format_user_profile(user_profile) if user_profile else "",
+        ),
+        build_memory_section(
+            _MEMORY_SECTION_TITLES["session_summary"],
+            build_summary_injection_prompt(session_summary),
+        ),
+        build_memory_section(
+            _MEMORY_SECTION_TITLES["long_term_memory"],
+            build_memory_injection_prompt(long_term_memories),
+        ),
+    ]
+    parts = [section for section in parts if section and section.strip()]
     if not parts:
         return ""
     return _MEMORY_INSTRUCTIONS + "\n\n" + "\n\n".join(parts)
