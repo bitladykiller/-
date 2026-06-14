@@ -12,12 +12,6 @@ import asyncio
 import importlib
 
 
-def _prepare_db_script_environment() -> None:
-    """导入模型模块，触发 metadata 注册。"""
-    importlib.import_module("app.user.infrastructure.models.user")
-    importlib.import_module("app.user.infrastructure.models.conversation")
-
-
 async def create_all_tables() -> None:
     """创建当前项目实际使用的表结构。"""
     from app.shared.core.database import Base, engine
@@ -26,7 +20,9 @@ async def create_all_tables() -> None:
         await conn.run_sync(Base.metadata.create_all)
 
 
-_prepare_db_script_environment()
+# 导入模型以触发 SQLAlchemy metadata 注册。
+importlib.import_module("app.user.infrastructure.models.user")
+importlib.import_module("app.user.infrastructure.models.conversation")
 
 
 if __name__ == "__main__":

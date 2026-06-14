@@ -224,21 +224,6 @@ def preview_text(text: str, limit: int) -> str:
     return text[:limit]
 
 
-def _resolve_search_params(
-    search_config: dict[str, Any],
-    top_k: int | None,
-    score_threshold: float | None,
-) -> tuple[int, float]:
-    """统一补齐检索入口的默认 top_k 和阈值。"""
-    resolved_top_k = top_k if top_k is not None else search_config["top_k"]
-    resolved_score_threshold = (
-        score_threshold
-        if score_threshold is not None
-        else search_config["score_threshold"]
-    )
-    return resolved_top_k, resolved_score_threshold
-
-
 def resolve_active_search_request(
     search_config: dict[str, Any],
     tenant_id: str,
@@ -247,10 +232,11 @@ def resolve_active_search_request(
     score_threshold: float | None,
 ) -> tuple[str, int, float]:
     """统一补齐活跃记忆过滤条件与检索参数。"""
-    resolved_top_k, resolved_score_threshold = _resolve_search_params(
-        search_config,
-        top_k,
-        score_threshold,
+    resolved_top_k = top_k if top_k is not None else search_config["top_k"]
+    resolved_score_threshold = (
+        score_threshold
+        if score_threshold is not None
+        else search_config["score_threshold"]
     )
     filter_expr = build_active_memory_filter(tenant_id, user_id)
     return filter_expr, resolved_top_k, resolved_score_threshold

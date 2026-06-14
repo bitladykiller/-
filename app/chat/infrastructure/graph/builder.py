@@ -76,86 +76,49 @@ _RETRIEVAL_PLAN_EDGE_MAP = {
 # 所有执行节点的名称，用于统一连接到 after_response
 _EXECUTION_NODE_NAMES = tuple(_RETRIEVAL_PLAN_EDGE_MAP.values())
 
-
-def _register_nodes(builder: StateGraph) -> None:
-    """统一注册主图节点。
-    
-    遍历 _NODE_REGISTRATIONS，将每个节点添加到 StateGraph。
-    支持两种注册方式：
-    - 直接注册：函数名作为节点名
-    - 元组注册：(自定义名称, 函数)
-    """
-    for registration in _NODE_REGISTRATIONS:
-        if isinstance(registration, tuple):
-            node_name, node_handler = registration
-            builder.add_node(node_name, node_handler)
-            continue
-        builder.add_node(registration)
-
-
-def _register_edges(builder: StateGraph) -> None:
-    """统一注册主图的固定边和条件边。
-    
-    主图执行流程：
-    START → analyze_and_route_query → [route_query] → 
-        ├─ respond_to_general_query → after_response → END
-        └─ guardrails_node → [guardrails_edge] →
-            ├─ retrieval_plan_route → [retrieval_plan_edge] →
-            │   ├─ execute_graph_only → after_response → END
-            │   ├─ execute_rag_only → after_response → END
-            │   ├─ execute_parallel → after_response → END
-            │   ├─ execute_then → after_response → END
-            │   └─ execute_react → after_response → END
-            └─ after_response → END
-    """
-    # 起始边：START → 分析路由节点
-    builder.add_edge(START, "analyze_and_route_query")
-    
-    # 条件边：分析路由 → 通用回复 或 Guardrails
-    builder.add_conditional_edges(
-        "analyze_and_route_query",
-        route_query,
-        _ROUTER_EDGE_MAP,
-    )
-    
-    # 固定边：通用回复 → 响应后处理
-    builder.add_edge("respond_to_general_query", "after_response")
-    
-    # 条件边：Guardrails → 检索计划 或 结束
-    builder.add_conditional_edges(
-        "guardrails_node",
-        guardrails_edge,
-        _GUARDRAILS_EDGE_MAP,
-    )
-    
-    # 条件边：检索计划 → 各种执行策略
-    builder.add_conditional_edges(
-        "retrieval_plan_route",
-        retrieval_plan_edge,
-        _RETRIEVAL_PLAN_EDGE_MAP,
-    )
-    
-    # 固定边：所有执行节点 → 响应后处理
-    for node_name in _EXECUTION_NODE_NAMES:
-        builder.add_edge(node_name, "after_response")
-    
-    # 结束边：响应后处理 → END
-    builder.add_edge("after_response", END)
-
-
-def _build_graph():
-    """构造并编译 LangGraph 主图。
-    
-    使用 AgentState 作为运行时状态，InputState 作为输入模式。
-    编译后的图可以同步或异步执行。
-    """
-    builder = StateGraph(AgentState, input_schema=InputState)
-    _register_nodes(builder)
-    _register_edges(builder)
-    return builder.compile()
-
-
 # 编译后的主图实例，供外部使用
-graph = _build_graph()
+_graph_builder = StateGraph(AgentState, input_schema=InputState)
+for registration in _NODE_REGISTRATIONS:
+    if isinstance(registration, tuple):
+        node_name, node_handler = registration
+        _graph_builder.add_node(node_name, node_handler)
+    else:
+        _graph_builder.add_node(registration)
+
+# 起始边：START → 分析路由节点
+_graph_builder.add_edge(START, "analyze_and_route_query")
+
+# 条件边：分析路由 → 通用回复 或 Guardrails
+_graph_builder.add_conditional_edges(
+    "analyze_and_route_query",
+    route_query,
+    _ROUTER_EDGE_MAP,
+)
+
+# 固定边：通用回复 → 响应后处理
+_graph_builder.add_edge("respond_to_general_query", "after_response")
+
+# 条件边：Guardrails → 检索计划 或 结束
+_graph_builder.add_conditional_edges(
+    "guardrails_node",
+    guardrails_edge,
+    _GUARDRAILS_EDGE_MAP,
+)
+
+# 条件边：检索计划 → 各种执行策略
+_graph_builder.add_conditional_edges(
+    "retrieval_plan_route",
+    retrieval_plan_edge,
+    _RETRIEVAL_PLAN_EDGE_MAP,
+)
+
+# 固定边：所有执行节点 → 响应后处理
+for node_name in _EXECUTION_NODE_NAMES:
+    _graph_builder.add_edge(node_name, "after_response")
+
+# 结束边：响应后处理 → END
+_graph_builder.add_edge("after_response", END)
+
+graph = _graph_builder.compile()
 
 __all__ = ["graph"]

@@ -31,7 +31,6 @@ from app.knowledge.domain.schemas import (
     MessageRecord,
     SessionSummary,
     UserProfileData,
-    UserProfileFact,
 )
 
 _DEFAULT_TENANT_ID = "default"
@@ -73,25 +72,6 @@ def format_recent_messages(recent_messages: list[MessageRecord]) -> str:
     return "\n".join(lines)
 
 
-def _format_profile_facts(facts: list[UserProfileFact]) -> list[str]:
-    """格式化用户画像里的 key-value 事实。"""
-    lines: list[str] = []
-    for fact in facts:
-        key = fact.get("key")
-        value = fact.get("value")
-        if isinstance(key, str) and key and isinstance(value, str) and value:
-            lines.append(f"{key}: {value}")
-    return lines
-
-
-def _format_profile_tags(tags: list[str]) -> str | None:
-    """格式化用户画像标签，顺手过滤空字符串和脏值。"""
-    normalized_tags = [tag for tag in tags if isinstance(tag, str) and tag]
-    if not normalized_tags:
-        return None
-    return f"标签: {', '.join(normalized_tags)}"
-
-
 def format_user_profile(user_profile: UserProfileData) -> str:
     """格式化结构化用户画像，供 P1 记忆段落使用。"""
     profile_lines: list[str] = []
@@ -100,11 +80,17 @@ def format_user_profile(user_profile: UserProfileData) -> str:
         if isinstance(value, str) and value:
             profile_lines.append(f"{label}: {value}")
 
-    tags_line = _format_profile_tags(user_profile.get("tags", []))
-    if tags_line is not None:
-        profile_lines.append(tags_line)
+    normalized_tags = [
+        tag for tag in user_profile.get("tags", []) if isinstance(tag, str) and tag
+    ]
+    if normalized_tags:
+        profile_lines.append(f"标签: {', '.join(normalized_tags)}")
 
-    profile_lines.extend(_format_profile_facts(user_profile.get("facts", [])))
+    for fact in user_profile.get("facts", []):
+        key = fact.get("key")
+        value = fact.get("value")
+        if isinstance(key, str) and key and isinstance(value, str) and value:
+            profile_lines.append(f"{key}: {value}")
     return "\n".join(profile_lines)
 
 
@@ -153,23 +139,17 @@ def build_enriched_question(
     return f"{context}\n\n用户当前问题：{question}" if context else question
 
 
-def _get_configurable_value(
-    config: RunnableConfig,
-    key: str,
-    default: str,
-) -> str:
-    """读取 LangGraph `configurable` 中的值，缺失时回退到默认值。"""
-    configurable = config.get("configurable", {})
-    value = configurable.get(key)
-    return value if isinstance(value, str) and value else default
-
-
 def configurable_scope(config: RunnableConfig) -> tuple[str, str, str]:
     """统一读取当前请求的 tenant / user / session 标识。"""
+    raw_configurable = config.get("configurable", {})
+    configurable = raw_configurable if isinstance(raw_configurable, dict) else {}
+    tenant_id = configurable.get("tenant_id")
+    user_id = configurable.get("user_id")
+    thread_id = configurable.get("thread_id")
     return (
-        _get_configurable_value(config, "tenant_id", _DEFAULT_TENANT_ID),
-        _get_configurable_value(config, "user_id", _DEFAULT_USER_ID),
-        _get_configurable_value(config, "thread_id", _DEFAULT_SESSION_ID),
+        tenant_id if isinstance(tenant_id, str) and tenant_id else _DEFAULT_TENANT_ID,
+        user_id if isinstance(user_id, str) and user_id else _DEFAULT_USER_ID,
+        thread_id if isinstance(thread_id, str) and thread_id else _DEFAULT_SESSION_ID,
     )
 
 

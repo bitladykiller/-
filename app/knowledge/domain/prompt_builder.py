@@ -27,20 +27,6 @@ _LONG_TERM_MEMORY_NOTE = "注意：以上长期记忆仅供参考，用户当前
 _COMPRESSION_ASSISTANT_ROLE = "对话摘要助手"
 
 
-def _build_prompt_block(
-    title: str,
-    body: str,
-    *,
-    note: str = "",
-) -> str:
-    """把标题、正文和可选说明拼成统一提示片段。"""
-    if not body:
-        return ""
-
-    block = f"【{title}】\n{body}"
-    return f"{block}\n{note}" if note else block
-
-
 def build_memory_injection_prompt(
     long_term_memories: list[MemorySearchResult] | None,
 ) -> str:
@@ -58,11 +44,8 @@ def build_memory_injection_prompt(
         memory_lines.append(f"{index}. {memory_type_label}：{memory.content}")
 
     memories_text = "\n".join(memory_lines)
-    return _build_prompt_block(
-        _LONG_TERM_MEMORY_TITLE,
-        memories_text,
-        note=_LONG_TERM_MEMORY_NOTE,
-    )
+    block = f"【{_LONG_TERM_MEMORY_TITLE}】\n{memories_text}"
+    return f"{block}\n{_LONG_TERM_MEMORY_NOTE}"
 
 
 def build_summary_injection_prompt(
@@ -71,7 +54,7 @@ def build_summary_injection_prompt(
     """构建会话摘要注入提示。"""
     if not session_summary or not session_summary.content:
         return ""
-    return _build_prompt_block(_SESSION_SUMMARY_TITLE, session_summary.content)
+    return f"【{_SESSION_SUMMARY_TITLE}】\n{session_summary.content}"
 
 
 def build_compression_prompt(
