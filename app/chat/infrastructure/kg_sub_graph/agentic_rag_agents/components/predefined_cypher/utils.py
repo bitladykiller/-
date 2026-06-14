@@ -18,6 +18,7 @@ import requests
 from sklearn.metrics.pairwise import cosine_similarity
 
 from app.shared.core.config import settings
+from app.shared.core.json_utils import extract_first_json_object
 
 _DEFAULT_EMBEDDING_DIM = 1024
 _PARAM_PATTERNS: dict[str, re.Pattern[str]] = {
@@ -95,44 +96,10 @@ def extract_parameters_with_rules(
             params[param_name] = match.group(1).strip()
     return params
 
-
-def _extract_first_json_object(content: str) -> str | None:
-    """提取首个完整 JSON 对象，避免贪婪正则跨越额外文本。"""
-    start = content.find("{")
-    if start < 0:
-        return None
-
-    depth = 0
-    in_string = False
-    escape = False
-    for index in range(start, len(content)):
-        char = content[index]
-
-        if in_string:
-            if escape:
-                escape = False
-            elif char == "\\":
-                escape = True
-            elif char == '"':
-                in_string = False
-            continue
-
-        if char == '"':
-            in_string = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return content[start:index + 1]
-
-    return None
-
-
 def parse_json_response(content: str) -> dict[str, Any]:
     """从模型返回内容中提取 JSON 对象。"""
     try:
-        payload = _extract_first_json_object(content)
+        payload = extract_first_json_object(content)
         if payload is None:
             return {}
         parsed = json.loads(payload)

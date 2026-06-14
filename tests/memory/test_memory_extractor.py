@@ -1,7 +1,6 @@
 import asyncio
 
 from app.knowledge.domain.schemas import SessionSummary
-import app.knowledge.infrastructure.orchestration.memory_extractor as memory_extractor
 from app.knowledge.infrastructure.orchestration.memory_extractor import (
     MemoryExtractor,
     build_semantic_memories,
@@ -47,16 +46,6 @@ def test_extract_response_text_supports_string_and_list_content() -> None:
             ]
         )
     ) == "第一段\n第二段\n第三段"
-
-
-def test_extract_first_json_object_ignores_prefix_and_suffix() -> None:
-    payload = memory_extractor._extract_first_json_object(
-        '前置说明 {"semantic":[{"content":"a { brace } inside string"}],"profile":{}} 后置说明'
-    )
-
-    assert payload == '{"semantic":[{"content":"a { brace } inside string"}],"profile":{}}'
-
-
 def test_parse_llm_response_returns_empty_for_invalid_payload() -> None:
     assert parse_llm_response("没有 JSON") == {}
     assert parse_llm_response('["not-a-dict"]') == {}

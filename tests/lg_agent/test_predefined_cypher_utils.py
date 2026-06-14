@@ -48,10 +48,6 @@ def test_parameter_and_json_helpers_handle_realistic_inputs() -> None:
     assert predefined_utils.extract_parameters_with_rules("订单 10248 的详情", ["order_id"]) == {
         "order_id": "10248"
     }
-    payload = predefined_utils._extract_first_json_object(
-        '说明 {"query_name":"a","value":"x{y}"} 结尾'
-    )
-    assert payload == '{"query_name":"a","value":"x{y}"}'
     assert predefined_utils.parse_json_response('前缀 {"foo":"bar"} 后缀') == {"foo": "bar"}
     assert predefined_utils.parse_json_response("没有 JSON") == {}
 

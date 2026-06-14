@@ -13,6 +13,7 @@ import re
 from typing import Any
 
 from app.shared.core.logger import get_logger
+from app.shared.core.json_utils import extract_first_json_object
 from app.knowledge.infrastructure.config import (
     compiled_sensitive_patterns,
     long_term_memory_type_values,
@@ -77,44 +78,10 @@ def extract_response_text(response: Any) -> str:
         return "\n".join(text_parts)
     return str(content)
 
-
-def _extract_first_json_object(response: str) -> str | None:
-    """提取首个完整 JSON 对象，避免贪婪正则吃掉额外文本。"""
-    start = response.find("{")
-    if start < 0:
-        return None
-
-    depth = 0
-    in_string = False
-    escape = False
-    for index in range(start, len(response)):
-        char = response[index]
-
-        if in_string:
-            if escape:
-                escape = False
-            elif char == "\\":
-                escape = True
-            elif char == '"':
-                in_string = False
-            continue
-
-        if char == '"':
-            in_string = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return response[start : index + 1]
-
-    return None
-
-
 def parse_llm_response(response: str) -> dict[str, Any]:
     """从 LLM 返回文本中提取首个 JSON 对象。"""
     try:
-        payload = _extract_first_json_object(response)
+        payload = extract_first_json_object(response)
         if payload is None:
             return {}
         parsed = json.loads(payload)
