@@ -62,19 +62,22 @@ class FakeMilvusClient:
         return [[{"distance": 0.91}]]
 
 
-def test_private_memory_schema_builder_registers_expected_fields_and_bm25_function() -> None:
-    client = FakeMilvusClient()
+def test_ensure_memory_collection_creates_collection_when_missing() -> None:
+    client = FakeMilvusClient(has_collection_result=False)
 
-    from app.knowledge.infrastructure.ltm import ltm_collection as ltm_collection_module
+    created = ensure_memory_collection(client, "customer_agent_long_memory")
 
-    schema = ltm_collection_module._build_memory_schema(client)
-
-    assert schema is client.created_schema
+    assert created is True
+    assert client.has_collection_name == "customer_agent_long_memory"
+    assert len(client.create_collection_calls) == 1
+    assert client.create_collection_calls[0]["collection_name"] == "customer_agent_long_memory"
+    assert client.create_collection_calls[0]["schema"] is client.created_schema
+    assert client.create_collection_calls[0]["index_params"] is client.created_index_params
     assert client.create_schema_kwargs == {
         "auto_id": False,
         "enable_dynamic_field": True,
     }
-    assert [name for name, _, _ in schema.fields] == [
+    assert [name for name, _, _ in client.created_schema.fields] == [
         "memory_id",
         "tenant_id",
         "user_id",
@@ -88,18 +91,8 @@ def test_private_memory_schema_builder_registers_expected_fields_and_bm25_functi
         "is_deleted",
         "sparse_vector",
     ]
-    assert len(schema.functions) == 1
-
-
-def test_private_memory_index_params_builder_registers_dense_and_sparse_indexes() -> None:
-    client = FakeMilvusClient()
-
-    from app.knowledge.infrastructure.ltm import ltm_collection as ltm_collection_module
-
-    index_params = ltm_collection_module._build_memory_index_params(client)
-
-    assert index_params is client.created_index_params
-    assert index_params.indices == [
+    assert len(client.created_schema.functions) == 1
+    assert client.created_index_params.indices == [
         {
             "field_name": "embedding",
             "index_type": "IVF_FLAT",
@@ -112,19 +105,6 @@ def test_private_memory_index_params_builder_registers_dense_and_sparse_indexes(
             "metric_type": "BM25",
         },
     ]
-
-
-def test_ensure_memory_collection_creates_collection_when_missing() -> None:
-    client = FakeMilvusClient(has_collection_result=False)
-
-    created = ensure_memory_collection(client, "customer_agent_long_memory")
-
-    assert created is True
-    assert client.has_collection_name == "customer_agent_long_memory"
-    assert len(client.create_collection_calls) == 1
-    assert client.create_collection_calls[0]["collection_name"] == "customer_agent_long_memory"
-    assert client.create_collection_calls[0]["schema"] is client.created_schema
-    assert client.create_collection_calls[0]["index_params"] is client.created_index_params
 
 
 def test_ensure_memory_collection_skips_existing_collection() -> None:
