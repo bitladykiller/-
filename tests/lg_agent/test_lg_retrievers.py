@@ -73,6 +73,37 @@ def test_milvus_doc_retriever_search_truncates_records() -> None:
     assert result["steps"] == [retriever_contracts.RAG_SEARCH_STEP]
 
 
+def test_milvus_doc_retriever_search_keeps_stable_record_shape() -> None:
+    retriever = retriever_implementations.MilvusDocRetriever.__new__(
+        retriever_implementations.MilvusDocRetriever
+    )
+    retriever._searcher = FakeSearcher(
+        result=[
+            {
+                "chunk_type": "text",
+                "section_path": "章节-1",
+                "source_file": "doc-1.md",
+                "raw_text": "内容-1",
+                "rrf_score": 0.1,
+                "rerank_score": 0.2,
+            }
+        ]
+    )
+
+    result = _run(retriever.search("保修政策"))
+
+    assert result["records"] == [
+        {
+            "chunk_type": "text",
+            "section_path": "章节-1",
+            "source_file": "doc-1.md",
+            "raw_text": "内容-1",
+            "rrf_score": 0.1,
+            "rerank_score": 0.2,
+        }
+    ]
+
+
 def test_milvus_doc_retriever_search_returns_fallback_record_on_error() -> None:
     retriever = retriever_implementations.MilvusDocRetriever.__new__(
         retriever_implementations.MilvusDocRetriever
@@ -101,6 +132,44 @@ def test_knowledge_graph_retriever_wraps_text2cypher_output() -> None:
     assert result["task"] == "查用户"
     assert result["records"] == [{"name": "Alice"}]
     assert result["steps"] == ["text2cypher"]
+
+
+def test_knowledge_graph_retriever_normalizes_records_and_cyphers() -> None:
+    retriever = retriever_implementations.KnowledgeGraphRetriever(
+        FakeT2CAgent(
+            {
+                "records": {"name": "alice"},
+                "errors": ["warn"],
+                "steps": ["kg"],
+            }
+        )
+    )
+    cypher_retriever = retriever_implementations.KnowledgeGraphRetriever(
+        FakeT2CAgent(
+            {
+                "cyphers": [
+                    {"records": [{"id": 1}]},
+                    {"records": {"id": 2}},
+                ]
+            }
+        )
+    )
+
+    record_payload = _run(retriever.search("查用户"))
+    cypher_payload = _run(cypher_retriever.search("查订单"))
+
+    assert record_payload == {
+        "task": "查用户",
+        "records": [{"name": "alice"}],
+        "errors": ["warn"],
+        "steps": ["kg"],
+        "raw": {
+            "records": {"name": "alice"},
+            "errors": ["warn"],
+            "steps": ["kg"],
+        },
+    }
+    assert cypher_payload["records"] == [{"id": 1}, {"id": 2}]
 
 
 def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:

@@ -30,45 +30,6 @@ def _coerce_records(records: Any) -> list[dict[str, Any]]:
     return [{"value": records}]
 
 
-def normalize_retriever_result(
-    payload: dict[str, Any],
-    *,
-    task: str,
-) -> dict[str, Any]:
-    """将不同后端的原始结果归一化为统一结构。"""
-    if "records" in payload:
-        records = _coerce_records(payload.get("records"))
-    else:
-        records: list[dict[str, Any]] = []
-        for cypher in payload.get("cyphers", []):
-            records.extend(_coerce_records(cypher.get("records")))
-
-    return {
-        "task": task,
-        "records": records,
-        "errors": payload.get("errors", []),
-        "steps": payload.get("steps", []),
-        "raw": payload,
-    }
-
-
-def build_milvus_doc_record(result: dict[str, Any]) -> dict[str, Any]:
-    """提取 Agent 真正消费的文档片段字段。"""
-    return {
-        "chunk_type": result.get("chunk_type", "text"),
-        "section_path": result.get("section_path", ""),
-        "source_file": result.get("source_file", ""),
-        "raw_text": result.get("raw_text", ""),
-        "rrf_score": result.get("rrf_score"),
-        "rerank_score": result.get("rerank_score"),
-    }
-
-
-def build_milvus_doc_fallback_record(message: str) -> list[dict[str, str]]:
-    """统一构造检索失败时的降级记录。"""
-    return [{"message": message}]
-
-
 class MilvusDocRetriever(Retriever):
     """基于 rag_doc_parser + Milvus 的文档检索器。"""
 
@@ -91,17 +52,25 @@ class MilvusDocRetriever(Retriever):
         try:
             results = await self._searcher.search(task)
             records = (
-                [build_milvus_doc_record(result) for result in results[:5]]
+                [
+                    {
+                        "chunk_type": result.get("chunk_type", "text"),
+                        "section_path": result.get("section_path", ""),
+                        "source_file": result.get("source_file", ""),
+                        "raw_text": result.get("raw_text", ""),
+                        "rrf_score": result.get("rrf_score"),
+                        "rerank_score": result.get("rerank_score"),
+                    }
+                    for result in results[:5]
+                ]
                 if results
                 else []
             )
         except ImportError:
-            records = build_milvus_doc_fallback_record(
-                "文档检索模块未安装。请先上传文档建立知识库。"
-            )
+            records = [{"message": "文档检索模块未安装。请先上传文档建立知识库。"}]
             errors.append("rag_doc_parser 模块未安装")
         except Exception as exc:
-            records = build_milvus_doc_fallback_record("文档检索暂时不可用。")
+            records = [{"message": "文档检索暂时不可用。"}]
             errors.append(str(exc))
 
         return {
@@ -122,13 +91,23 @@ class KnowledgeGraphRetriever(Retriever):
         """查询 Neo4j 知识图谱。"""
 
         raw_result = await self._t2c_agent.ainvoke({"task": task})
-        return normalize_retriever_result(raw_result, task=task)
+        if "records" in raw_result:
+            records = _coerce_records(raw_result.get("records"))
+        else:
+            records: list[dict[str, Any]] = []
+            for cypher in raw_result.get("cyphers", []):
+                records.extend(_coerce_records(cypher.get("records")))
+
+        return {
+            "task": task,
+            "records": records,
+            "errors": raw_result.get("errors", []),
+            "steps": raw_result.get("steps", []),
+            "raw": raw_result,
+        }
 
 
 __all__ = [
     "KnowledgeGraphRetriever",
     "MilvusDocRetriever",
-    "build_milvus_doc_fallback_record",
-    "build_milvus_doc_record",
-    "normalize_retriever_result",
 ]
