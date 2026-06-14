@@ -30,6 +30,8 @@ def get_variable_operator_property_pattern(variable: str) -> re.Pattern:
         re.escape(variable)
         + r"\.(?P<property_name>[^\s]*)\s(?P<operator>contains|CONTAINS|[><=]{0,2}|starts with|STARTS WITH|ends with|ENDS WITH)\s\"?\'?(?P<property_value>[\w\s]+\"|[\d]+)\"?\'?"
     )
+
+
 def extract_entities_for_validation(
     cypher_statement: str,
 ) -> Dict[str, List[CypherValidationTask]]:
@@ -62,10 +64,10 @@ def _extract_nodes_and_properties_from_cypher_statement(
     # find all variable assignments and process match clauses
     for n in nodes:
         variables = re.findall(_NODE_VARIABLE_PATTERN, n)
-        labels = _find_all_node_labels(n)
+        labels = [label.strip() for label in re.findall(_NODE_LABEL_PATTERN, n)]
 
         k = _parse_element_from_regex_result(regex_result=variables)
-        label = labels[0].strip() if len(labels) > 0 else None
+        label = labels[0] if len(labels) > 0 else None
         match_props = re.findall(_PROPERTY_PATTERN, n)
         match_props = _parse_element_from_regex_result(regex_result=match_props)
         # process ids in the MATCH clause
@@ -118,9 +120,12 @@ def _extract_relationships_and_properties_from_cypher_statement(
     # find all variable assignments and process match clauses
     for n in rels:
         variables = re.findall(_RELATIONSHIP_VARIABLE_PATTERN, n)
-        rel_types = _find_all_relationship_types(n)
+        rel_types = [
+            relationship_type.strip()
+            for relationship_type in re.findall(_RELATIONSHIP_TYPE_PATTERN, n)
+        ]
 
-        rel_type = rel_types[0].strip() if len(rel_types) > 0 else None
+        rel_type = rel_types[0] if len(rel_types) > 0 else None
         k = _parse_element_from_regex_result(regex_result=variables)
 
         match_props = re.findall(_PROPERTY_PATTERN, n)
@@ -196,16 +201,6 @@ def _find_all_filters(variable: str, cypher_statement: str) -> List[Dict[str, An
         }
         for n in res
     ]
-
-
-def _find_all_node_labels(node: str) -> List[str]:
-    return [n.strip() for n in re.findall(_NODE_LABEL_PATTERN, node)]
-
-
-def _find_all_relationship_types(relationship: str) -> List[str]:
-    return [r.strip() for r in re.findall(_RELATIONSHIP_TYPE_PATTERN, relationship)]
-
-
 def _parse_element_from_regex_result(regex_result: List[str]) -> Optional[str]:
     """The `regex_result` should be a single element list."""
 

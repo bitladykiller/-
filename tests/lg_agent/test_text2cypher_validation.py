@@ -3,6 +3,9 @@ from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.text2cyp
     Neo4jStructuredSchema,
     Neo4jStructuredSchemaPropertyNumber,
 )
+from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.text2cypher.validation.utils.cypher_extractors import (
+    extract_entities_for_validation,
+)
 from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.text2cypher.validation.schema_validation_rules import (
     build_validation_task_groups,
     validate_property_names_with_enum,
@@ -162,4 +165,47 @@ def test_validate_property_values_with_range_reports_out_of_range() -> None:
 
     assert errors == [
         "Relationship PURCHASED has property quantity = 99 which is out of range 1.0 to 10.0 in graph database."
+    ]
+
+
+def test_extract_entities_for_validation_reads_node_and_relationship_properties() -> None:
+    parsed = extract_entities_for_validation(
+        """
+        MATCH (u:User {name: "Alice"})-[r:PURCHASED {channel: "web"}]->(p:Product)
+        WHERE p.price > 99 AND r.quantity = 2
+        RETURN p
+        """
+    )
+
+    assert [task.model_dump() for task in parsed["nodes"]] == [
+        {
+            "labels_or_types": "User",
+            "operator": "=",
+            "property_name": "name",
+            "property_value": "Alice",
+            "property_type": None,
+        },
+        {
+            "labels_or_types": "Product",
+            "operator": ">",
+            "property_name": "price",
+            "property_value": "99",
+            "property_type": None,
+        },
+    ]
+    assert [task.model_dump() for task in parsed["relationships"]] == [
+        {
+            "labels_or_types": "PURCHASED",
+            "operator": "=",
+            "property_name": "channel",
+            "property_value": "web",
+            "property_type": None,
+        },
+        {
+            "labels_or_types": "PURCHASED",
+            "operator": "=",
+            "property_name": "quantity",
+            "property_value": "2",
+            "property_type": None,
+        },
     ]
