@@ -71,14 +71,6 @@ def validate_upload(file: UploadFile) -> None:
         raise HTTPException(status_code=400, detail=_UNKNOWN_FILE_TYPE_DETAIL)
 
 
-def _validate_magic_bytes(filename: str, content: bytes) -> bool:
-    """通过魔数签名验证文件内容是否与扩展名匹配。"""
-    signatures = document_magic_signatures(get_document_extension(filename))
-    if not signatures:
-        return True
-    return any(content.startswith(signature) for signature in signatures)
-
-
 async def read_upload_content(
     file: UploadFile,
     *,
@@ -91,12 +83,12 @@ async def read_upload_content(
     if len(content) > max_upload_size_bytes:
         raise HTTPException(status_code=400, detail=file_size_exceeded_detail)
 
-    if not _validate_magic_bytes(file.filename or "", content):
+    extension = get_document_extension(file.filename)
+    signatures = document_magic_signatures(extension)
+    if signatures and not any(content.startswith(signature) for signature in signatures):
         raise HTTPException(
             status_code=400,
-            detail=content_extension_mismatch_detail.format(
-                extension=get_document_extension(file.filename),
-            ),
+            detail=content_extension_mismatch_detail.format(extension=extension),
         )
     return content
 

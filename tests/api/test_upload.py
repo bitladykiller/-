@@ -78,10 +78,33 @@ def test_validate_upload_rejects_unsupported_extension_and_missing_content_type(
     assert missing_type_exc.value.detail == "无法识别文件类型"
 
 
-def test_validate_magic_bytes_respects_signature_table() -> None:
-    assert upload_api._validate_magic_bytes("demo.pdf", b"%PDF-1.7") is True
-    assert upload_api._validate_magic_bytes("demo.pdf", b"PK\x03\x04") is False
-    assert upload_api._validate_magic_bytes("demo.unknown", b"whatever") is True
+def test_read_upload_content_accepts_matching_signature_and_unknown_extension() -> None:
+    assert (
+        _run(
+            upload_api.read_upload_content(
+                FakeUploadFile(filename="demo.pdf", content=b"%PDF-1.7"),
+                max_upload_size_bytes=10,
+                file_size_exceeded_detail="文件大小超过限制 (50MB)",
+                content_extension_mismatch_detail="文件内容与扩展名不匹配: {extension}",
+            )
+        )
+        == b"%PDF-1.7"
+    )
+    assert (
+        _run(
+            upload_api.read_upload_content(
+                FakeUploadFile(
+                    filename="demo.unknown",
+                    content_type="application/octet-stream",
+                    content=b"whatever",
+                ),
+                max_upload_size_bytes=10,
+                file_size_exceeded_detail="文件大小超过限制 (50MB)",
+                content_extension_mismatch_detail="文件内容与扩展名不匹配: {extension}",
+            )
+        )
+        == b"whatever"
+    )
 
 
 def test_read_upload_content_rejects_oversize_and_signature_mismatch() -> None:
