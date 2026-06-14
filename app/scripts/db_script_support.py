@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import importlib
 from collections.abc import Awaitable, Callable
-from typing import Literal
 
 AsyncEntrypoint = Callable[[], Awaitable[None]]
 
@@ -27,31 +26,19 @@ def run_async_entrypoint(entrypoint: AsyncEntrypoint) -> None:
 
 async def create_all_tables() -> None:
     """创建当前项目实际使用的表结构。"""
-    await _run_metadata_operation("create_all")
+    from app.shared.core.database import Base, engine
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
 
 async def reset_all_tables() -> None:
     """删除并重建当前项目实际使用的表结构。"""
-    await _run_metadata_operation("drop_and_create_all")
-
-
-async def _run_metadata_operation(
-    operation_name: Literal["create_all", "drop_and_create_all"],
-) -> None:
-    """统一执行 metadata 级别的建表/删表操作。"""
     from app.shared.core.database import Base, engine
 
     async with engine.begin() as conn:
-        if operation_name == "create_all":
-            await conn.run_sync(Base.metadata.create_all)
-            return
-
-        if operation_name == "drop_and_create_all":
-            await conn.run_sync(Base.metadata.drop_all)
-            await conn.run_sync(Base.metadata.create_all)
-            return
-
-        raise ValueError(f"Unsupported metadata operation: {operation_name}")
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
 
 
 __all__ = [

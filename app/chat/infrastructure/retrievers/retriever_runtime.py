@@ -94,15 +94,6 @@ def _register_rag_retriever() -> None:
     _get_registry().register(RAG_RETRIEVER_NAME, MilvusDocRetriever())
 
 
-def _register_missing_retrievers() -> None:
-    """只补注册缺失的检索器，避免重复创建已就绪实例。"""
-    registry = _get_registry()
-    if KG_RETRIEVER_NAME not in registry:
-        _register_kg_retriever()
-    if RAG_RETRIEVER_NAME not in registry:
-        _register_rag_retriever()
-
-
 async def _ensure_registry() -> None:
     """懒初始化检索器注册表。首次调用时补齐缺失的 Retriever 实例。"""
     registry = _get_registry()
@@ -113,7 +104,10 @@ async def _ensure_registry() -> None:
         registry = _get_registry()
         if KG_RETRIEVER_NAME in registry and RAG_RETRIEVER_NAME in registry:
             return
-        _register_missing_retrievers()
+        if KG_RETRIEVER_NAME not in registry:
+            _register_kg_retriever()
+        if RAG_RETRIEVER_NAME not in registry:
+            _register_rag_retriever()
 
 
 async def get_retriever(name: str):

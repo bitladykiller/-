@@ -180,20 +180,24 @@ def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
     )
     monkeypatch.setattr(retriever_runtime, "_cypher_example_retriever", None)
     monkeypatch.setattr(retriever_runtime, "_t2c_agent", None)
-    call_count = {"register": 0}
+    call_count = {"kg": 0, "rag": 0}
 
-    def fake_register_missing() -> None:
-        call_count["register"] += 1
+    def fake_register_kg() -> None:
+        call_count["kg"] += 1
         retriever_runtime._get_registry().register(
             retriever_contracts.KG_RETRIEVER_NAME,
             FakeRetriever({"records": [{"id": 1}]}),
         )
+
+    def fake_register_rag() -> None:
+        call_count["rag"] += 1
         retriever_runtime._get_registry().register(
             retriever_contracts.RAG_RETRIEVER_NAME,
             FakeRetriever({"records": [{"id": 2}]}),
         )
 
-    monkeypatch.setattr(retriever_runtime, "_register_missing_retrievers", fake_register_missing)
+    monkeypatch.setattr(retriever_runtime, "_register_kg_retriever", fake_register_kg)
+    monkeypatch.setattr(retriever_runtime, "_register_rag_retriever", fake_register_rag)
 
     kg = _run(
         retriever_runtime.get_retriever(retriever_contracts.KG_RETRIEVER_NAME)
@@ -204,4 +208,4 @@ def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
 
     assert isinstance(kg, FakeRetriever)
     assert isinstance(rag, FakeRetriever)
-    assert call_count["register"] == 1
+    assert call_count == {"kg": 1, "rag": 1}
