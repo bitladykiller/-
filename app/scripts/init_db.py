@@ -6,14 +6,27 @@
 """
 from __future__ import annotations
 
-from .db_script_support import (
-    prepare_db_script_environment,
-    reset_all_tables,
-    run_async_entrypoint,
-)
+import asyncio
+import importlib
 
-prepare_db_script_environment()
+
+def _prepare_db_script_environment() -> None:
+    """导入模型模块，触发 metadata 注册。"""
+    importlib.import_module("app.user.infrastructure.models.user")
+    importlib.import_module("app.user.infrastructure.models.conversation")
+
+
+async def reset_all_tables() -> None:
+    """删除并重建当前项目实际使用的表结构。"""
+    from app.shared.core.database import Base, engine
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+
+
+_prepare_db_script_environment()
 
 
 if __name__ == "__main__":
-    run_async_entrypoint(reset_all_tables)
+    asyncio.run(reset_all_tables())

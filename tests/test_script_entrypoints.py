@@ -1,9 +1,7 @@
 import importlib
 import sys
 import types
-
-import app.scripts.db_script_support as db_script_support
-
+import asyncio
 
 def _import_fresh(module_name: str):
     sys.modules.pop(module_name, None)
@@ -11,41 +9,49 @@ def _import_fresh(module_name: str):
 
 
 def test_bootstrap_compose_db_import_prepares_environment(monkeypatch) -> None:
-    calls: list[str] = []
+    imported_modules: list[str] = []
+    original_import_module = importlib.import_module
 
-    monkeypatch.setattr(
-        db_script_support,
-        "prepare_db_script_environment",
-        lambda: calls.append("prepare"),
-    )
-    monkeypatch.setattr(
-        db_script_support,
-        "run_async_entrypoint",
-        lambda entrypoint: calls.append("run"),
-    )
+    def fake_import_module(name: str, package: str | None = None):
+        if name in {
+            "app.user.infrastructure.models.user",
+            "app.user.infrastructure.models.conversation",
+        }:
+            imported_modules.append(name)
+            return types.ModuleType(name)
+        return original_import_module(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import_module)
 
     _import_fresh("app.scripts.bootstrap_compose_db")
 
-    assert calls == ["prepare"]
+    assert imported_modules == [
+        "app.user.infrastructure.models.user",
+        "app.user.infrastructure.models.conversation",
+    ]
 
 
 def test_init_db_import_prepares_environment(monkeypatch) -> None:
-    calls: list[str] = []
+    imported_modules: list[str] = []
+    original_import_module = importlib.import_module
 
-    monkeypatch.setattr(
-        db_script_support,
-        "prepare_db_script_environment",
-        lambda: calls.append("prepare"),
-    )
-    monkeypatch.setattr(
-        db_script_support,
-        "run_async_entrypoint",
-        lambda entrypoint: calls.append("run"),
-    )
+    def fake_import_module(name: str, package: str | None = None):
+        if name in {
+            "app.user.infrastructure.models.user",
+            "app.user.infrastructure.models.conversation",
+        }:
+            imported_modules.append(name)
+            return types.ModuleType(name)
+        return original_import_module(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import_module)
 
     _import_fresh("app.scripts.init_db")
 
-    assert calls == ["prepare"]
+    assert imported_modules == [
+        "app.user.infrastructure.models.user",
+        "app.user.infrastructure.models.conversation",
+    ]
 
 
 def test_create_all_tables_runs_create_all(monkeypatch) -> None:
@@ -76,8 +82,16 @@ def test_create_all_tables_runs_create_all(monkeypatch) -> None:
     fake_module.Base = fake_base
     fake_module.engine = FakeEngine()
     monkeypatch.setitem(sys.modules, "app.shared.core.database", fake_module)
+    monkeypatch.setattr(
+        importlib,
+        "import_module",
+        lambda name, package=None: types.ModuleType(name)
+        if name.startswith("app.user.infrastructure.models.")
+        else importlib.__import__(name, fromlist=["*"]),
+    )
 
-    db_script_support.run_async_entrypoint(db_script_support.create_all_tables)
+    module = _import_fresh("app.scripts.bootstrap_compose_db")
+    asyncio.run(module.create_all_tables())
 
     assert calls == [fake_base.metadata.create_all]
 
@@ -110,7 +124,15 @@ def test_reset_all_tables_runs_drop_then_create(monkeypatch) -> None:
     fake_module.Base = fake_base
     fake_module.engine = FakeEngine()
     monkeypatch.setitem(sys.modules, "app.shared.core.database", fake_module)
+    monkeypatch.setattr(
+        importlib,
+        "import_module",
+        lambda name, package=None: types.ModuleType(name)
+        if name.startswith("app.user.infrastructure.models.")
+        else importlib.__import__(name, fromlist=["*"]),
+    )
 
-    db_script_support.run_async_entrypoint(db_script_support.reset_all_tables)
+    module = _import_fresh("app.scripts.init_db")
+    asyncio.run(module.reset_all_tables())
 
     assert calls == [fake_base.metadata.drop_all, fake_base.metadata.create_all]
