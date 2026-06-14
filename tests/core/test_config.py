@@ -1,6 +1,6 @@
 import pytest
 
-import app.shared.core.config_runtime as config_runtime
+import app.shared.core.config as config_module
 from app.shared.core.config import (
     ServiceType,
 )
@@ -43,7 +43,7 @@ def _build_business_settings() -> BusinessSettings:
 
 
 def test_settings_proxies_sub_settings_and_computed_urls() -> None:
-    settings = type(config_runtime.settings)(
+    settings = type(config_module.settings)(
         infra=_build_infrastructure_settings(),
         business=_build_business_settings(),
     )
@@ -56,7 +56,7 @@ def test_settings_proxies_sub_settings_and_computed_urls() -> None:
 
 
 def test_settings_redis_url_without_password_omits_auth_prefix() -> None:
-    settings = type(config_runtime.settings)(
+    settings = type(config_module.settings)(
         infra=_build_infrastructure_settings().model_copy(
             update={"REDIS_DB": 0, "REDIS_PASSWORD": ""}
         ),
@@ -67,7 +67,7 @@ def test_settings_redis_url_without_password_omits_auth_prefix() -> None:
 
 
 def test_settings_unknown_attribute_raises_attribute_error() -> None:
-    settings = type(config_runtime.settings)(
+    settings = type(config_module.settings)(
         infra=_build_infrastructure_settings(),
         business=_build_business_settings(),
     )

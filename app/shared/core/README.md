@@ -10,10 +10,7 @@
 - `config.py`
   - 负责读取环境变量并组合成统一 `settings` 对象。
   - 按“基础设施配置 / 业务配置”拆分，减少单个 settings 类过度膨胀。
-  - 当前主文件聚焦稳定导出；运行时字段解析和数据库 / Redis / Milvus URL 构造已经收口到 `config_runtime.py`。
-- `config_runtime.py`
-  - 负责组合基础设施与业务配置。
-  - 负责多子配置对象之间的字段解析与数据库 / Redis / Milvus 连接地址拼装。
+  - 当前主文件同时承接运行时字段解析，以及数据库 / Redis / Milvus URL 构造逻辑。
 - `database.py`
   - 负责创建 SQLAlchemy 异步引擎、会话工厂和声明式 `Base`。
   - 当前统一使用 SQLAlchemy 2 的声明式基类，模型层通过类型注解直接表达字段和关系。
