@@ -160,33 +160,6 @@ async def upsert_profile_fields_in_db(
     return True
 
 
-async def _replace_existing_fact(
-    db: AsyncSession,
-    *,
-    old_id: int,
-    old_version: int,
-    user_id: int,
-    fact_key: str,
-    fact_value: str,
-) -> None:
-    """失活旧事实，插入新版本，并回填 superseded_by。"""
-    await db.execute(_DEACTIVATE_FACT_SQL, {"id": old_id})
-    await db.execute(
-        _INSERT_VERSIONED_FACT_SQL,
-        {
-            "uid": user_id,
-            "key": fact_key,
-            "val": fact_value,
-            "ver": old_version + 1,
-        },
-    )
-    new_id = (await db.execute(_LAST_INSERT_ID_SQL)).scalar()
-    await db.execute(
-        _LINK_SUPERSEDED_FACT_SQL,
-        {"new_id": new_id, "old_id": old_id},
-    )
-
-
 async def upsert_fact_in_db(
     db: AsyncSession,
     *,
@@ -205,13 +178,20 @@ async def upsert_fact_in_db(
         if row["fact_value"] == fact_value:
             return False
 
-        await _replace_existing_fact(
-            db,
-            old_id=row["id"],
-            old_version=row["version"],
-            user_id=user_id,
-            fact_key=fact_key,
-            fact_value=fact_value,
+        await db.execute(_DEACTIVATE_FACT_SQL, {"id": row["id"]})
+        await db.execute(
+            _INSERT_VERSIONED_FACT_SQL,
+            {
+                "uid": user_id,
+                "key": fact_key,
+                "val": fact_value,
+                "ver": row["version"] + 1,
+            },
+        )
+        new_id = (await db.execute(_LAST_INSERT_ID_SQL)).scalar()
+        await db.execute(
+            _LINK_SUPERSEDED_FACT_SQL,
+            {"new_id": new_id, "old_id": row["id"]},
         )
         return True
 
