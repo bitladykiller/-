@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import regex as re
 
@@ -66,10 +66,10 @@ def _extract_nodes_and_properties_from_cypher_statement(
         variables = re.findall(_NODE_VARIABLE_PATTERN, n)
         labels = [label.strip() for label in re.findall(_NODE_LABEL_PATTERN, n)]
 
-        k = _parse_element_from_regex_result(regex_result=variables)
+        k = variables[0] if variables and variables[0] else None
         label = labels[0] if len(labels) > 0 else None
         match_props = re.findall(_PROPERTY_PATTERN, n)
-        match_props = _parse_element_from_regex_result(regex_result=match_props)
+        match_props = match_props[0] if match_props and match_props[0] else None
         # process ids in the MATCH clause
         if match_props is not None:
             match_props_parsed: List[Dict[str, Any]] = (
@@ -126,10 +126,10 @@ def _extract_relationships_and_properties_from_cypher_statement(
         ]
 
         rel_type = rel_types[0] if len(rel_types) > 0 else None
-        k = _parse_element_from_regex_result(regex_result=variables)
+        k = variables[0] if variables and variables[0] else None
 
         match_props = re.findall(_PROPERTY_PATTERN, n)
-        match_props = _parse_element_from_regex_result(regex_result=match_props)
+        match_props = match_props[0] if match_props and match_props[0] else None
         # process ids in the MATCH clause
         if match_props is not None:
             match_props_parsed: List[Dict[str, Any]] = (
@@ -169,23 +169,11 @@ def _process_match_clause_property_ids(
             continue
         result.append(
             {
-                "property_name": _process_prop_key(k),
-                "property_value": _process_prop_val(v),
+                "property_name": k.strip().strip("{"),
+                "property_value": v.strip().strip("}").replace('"', "").replace("'", ""),
             }
         )
     return result
-
-
-def _process_prop_key(prop: str) -> str:
-    prop = prop.strip()
-    return prop.strip("{")
-
-
-def _process_prop_val(prop: str) -> str:
-    prop = prop.strip()
-    prop = prop.strip("}")
-    prop = prop.replace('"', "")
-    return prop.replace("'", "")
 
 
 def _find_all_filters(variable: str, cypher_statement: str) -> List[Dict[str, Any]]:
@@ -195,17 +183,9 @@ def _find_all_filters(variable: str, cypher_statement: str) -> List[Dict[str, An
 
     return [
         {
-            "property_name": _process_prop_key(n[0]),
+            "property_name": n[0].strip().strip("{"),
             "operator": n[1].strip(),
-            "property_value": _process_prop_val(n[2]),
+            "property_value": n[2].strip().strip("}").replace('"', "").replace("'", ""),
         }
         for n in res
     ]
-def _parse_element_from_regex_result(regex_result: List[str]) -> Optional[str]:
-    """The `regex_result` should be a single element list."""
-
-    parsed = regex_result[0] if len(regex_result) > 0 else None
-    if not parsed:
-        return None
-    else:
-        return parsed
