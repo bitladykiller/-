@@ -159,39 +159,6 @@ class MemoryMiddleware:
         long_term_memories: list[MemorySearchResult] | None = None,
     ) -> None:
         """Agent 回复后：写入短期记忆，必要时压缩并抽取长期记忆。"""
-        await self._save_short_term_memory_safely(
-            tenant_id,
-            user_id,
-            session_id,
-            user_message,
-            assistant_message,
-        )
-        await self._compress_and_extract_long_term_memory(
-            tenant_id,
-            user_id,
-            session_id,
-            user_message,
-            assistant_message,
-        )
-        if long_term_memories:
-            try:
-                for result in long_term_memories:
-                    try:
-                        await self.milvus_ltm.update_memory_hit_info(result.memory)
-                    except Exception:
-                        continue
-            except Exception:
-                self._warn_once("ltm_hit_update", "[memory] LTM 命中统计刷新失败")
-
-    async def _save_short_term_memory_safely(
-        self,
-        tenant_id: str,
-        user_id: str,
-        session_id: str,
-        user_message: str,
-        assistant_message: str,
-    ) -> None:
-        """写入短期记忆；失败时只做单次降级告警。"""
         now_ts = int(time.time())
         try:
             meta = await self.redis_stm.get_meta(tenant_id, user_id, session_id)
@@ -226,15 +193,6 @@ class MemoryMiddleware:
         except Exception:
             self._warn_once("redis_stm_write", "[memory] Redis STM 写入失败")
 
-    async def _compress_and_extract_long_term_memory(
-        self,
-        tenant_id: str,
-        user_id: str,
-        session_id: str,
-        user_message: str,
-        assistant_message: str,
-    ) -> None:
-        """在压缩成功后触发长期记忆抽取。"""
         try:
             meta = await self.redis_stm.get_meta(tenant_id, user_id, session_id)
             msg_count = await self.redis_stm.get_message_count(
@@ -267,40 +225,48 @@ class MemoryMiddleware:
                     session_id,
                     summary_compressor,
                 )
-            if not compressed or not self.ltm_enabled:
-                return
-
-            new_summary = await self.redis_stm.get_summary(tenant_id, user_id, session_id)
-            semantic_memories, profile = await self.memory_extractor.extract(
-                user_message,
-                assistant_message,
-                new_summary,
-            )
-            for memory in semantic_memories:
-                should_save_memory = await self.milvus_ltm.deduplicate_memory(
-                    tenant_id,
-                    user_id,
-                    memory.memory_type,
-                    memory.content,
+            if compressed and self.ltm_enabled:
+                new_summary = await self.redis_stm.get_summary(tenant_id, user_id, session_id)
+                semantic_memories, profile = await self.memory_extractor.extract(
+                    user_message,
+                    assistant_message,
+                    new_summary,
                 )
-                if not should_save_memory:
-                    continue
-                await self.milvus_ltm.save_memory(
-                    tenant_id,
-                    user_id,
-                    memory.memory_type,
-                    memory.content,
-                )
-
-            uid = coerce_user_id(user_id)
-            if uid > 0 and profile and isinstance(profile, dict):
-                try:
-                    await self.profile_writer(
-                        uid,
-                        profile,
-                        getattr(self.redis_stm, "redis", None),
+                for memory in semantic_memories:
+                    should_save_memory = await self.milvus_ltm.deduplicate_memory(
+                        tenant_id,
+                        user_id,
+                        memory.memory_type,
+                        memory.content,
                     )
-                except Exception as exc:
-                    logger.debug(f"[memory] 用户画像更新失败(user_id={user_id}): {exc}")
+                    if not should_save_memory:
+                        continue
+                    await self.milvus_ltm.save_memory(
+                        tenant_id,
+                        user_id,
+                        memory.memory_type,
+                        memory.content,
+                    )
+
+                uid = coerce_user_id(user_id)
+                if uid > 0 and profile and isinstance(profile, dict):
+                    try:
+                        await self.profile_writer(
+                            uid,
+                            profile,
+                            getattr(self.redis_stm, "redis", None),
+                        )
+                    except Exception as exc:
+                        logger.debug(f"[memory] 用户画像更新失败(user_id={user_id}): {exc}")
         except Exception:
             self._warn_once("compress", "[memory] 记忆压缩失败")
+
+        if long_term_memories:
+            try:
+                for result in long_term_memories:
+                    try:
+                        await self.milvus_ltm.update_memory_hit_info(result.memory)
+                    except Exception:
+                        continue
+            except Exception:
+                self._warn_once("ltm_hit_update", "[memory] LTM 命中统计刷新失败")
