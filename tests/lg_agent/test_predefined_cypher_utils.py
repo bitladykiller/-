@@ -86,7 +86,7 @@ def test_vector_query_matcher_parameter_extraction_and_factory(monkeypatch) -> N
     ) == {"product_name": "智能门锁Pro"}
 
 
-def test_compute_query_vectors_uses_query_text_order(monkeypatch) -> None:
+def test_vector_query_initialization_uses_query_text_order(monkeypatch) -> None:
     monkeypatch.setattr(
         predefined_utils._VectorQueryMatcher,
         "_embed_texts",

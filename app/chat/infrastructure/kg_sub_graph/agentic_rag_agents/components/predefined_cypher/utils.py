@@ -95,6 +95,7 @@ def extract_parameters_with_rules(
             params[param_name] = match.group(1).strip()
     return params
 
+
 def parse_json_response(content: str) -> dict[str, Any]:
     """从模型返回内容中提取 JSON 对象。"""
     try:
@@ -131,7 +132,18 @@ class _VectorQueryMatcher:
         self.ollama_api_url = f"{self.ollama_base_url}/api/embed"
 
         # 预计算查询向量
-        self.query_vectors = self._compute_query_vectors()
+        if not self.predefined_cypher_dict:
+            self.query_vectors = {}
+        else:
+            query_keys, query_texts = build_query_texts(
+                self.predefined_cypher_dict,
+                self.query_descriptions,
+            )
+            vectors = self._embed_texts(query_texts)
+            self.query_vectors = {
+                key: np.array(vector)
+                for key, vector in zip(query_keys, vectors)
+            }
 
     def _embed_texts(self, texts: list[str]) -> list[list[float]]:
         """使用 Ollama embedding API 将文本转换为向量。"""
@@ -145,22 +157,6 @@ class _VectorQueryMatcher:
             return extract_embeddings(response.json(), expected_count=len(texts))
         except Exception:
             return fallback_embeddings(len(texts))
-
-    def _compute_query_vectors(self) -> dict[str, np.ndarray]:
-        """预计算所有预定义查询的向量表示。"""
-        if not self.predefined_cypher_dict:
-            return {}
-
-        query_keys, query_texts = build_query_texts(
-            self.predefined_cypher_dict,
-            self.query_descriptions,
-        )
-
-        # 计算向量表示
-        vectors = self._embed_texts(query_texts)
-
-        # 创建查询名到向量的映射
-        return {key: np.array(vector) for key, vector in zip(query_keys, vectors)}
 
     def match_query(self, user_question: str, top_k: int = 3) -> list[dict[str, Any]]:
         """将用户问题匹配到最相似的预定义查询。"""
