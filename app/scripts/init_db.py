@@ -7,21 +7,16 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
+
+from app.scripts.db_script_support import prepare_db_models, run_metadata_operations
 
 
 async def reset_all_tables() -> None:
     """删除并重建当前项目实际使用的表结构。"""
-    from app.shared.core.database import Base, engine
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
+    await run_metadata_operations("drop_all", "create_all")
 
 
-# 导入模型以触发 SQLAlchemy metadata 注册。
-importlib.import_module("app.user.infrastructure.models.user")
-importlib.import_module("app.user.infrastructure.models.conversation")
+prepare_db_models()
 
 
 if __name__ == "__main__":
