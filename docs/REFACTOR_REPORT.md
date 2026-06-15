@@ -73,16 +73,16 @@ app/
 
 | 脚本 | 状态 | 说明 |
 |------|------|------|
-| scripts/verify_migration.py | ✓ 已创建 | 迁移验证脚本 |
+| tests/core/test_lazy_package_imports.py | ✓ 已存在 | 迁移后轻量导入与结构收口验证 |
 
 ---
 
 ## 验证结果
 
-运行 `python scripts/verify_migration.py` 结果：
+当前结构收口由 `pytest tests/core/test_lazy_package_imports.py` 覆盖：
 
 ```
-✓ 迁移成功！所有目录结构正确，旧导入路径已清除。
+3 passed
 ```
 
 ---
@@ -132,9 +132,9 @@ app/
    docker compose up -d --build
    ```
 
-3. **运行验证脚本**
+3. **运行轻量结构验证**
    ```bash
-   python scripts/verify_migration.py
+   pytest tests/core/test_lazy_package_imports.py
    ```
 
 ### 渐进迁移

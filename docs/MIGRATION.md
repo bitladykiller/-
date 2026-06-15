@@ -58,10 +58,10 @@ from app.services import ...
 
 ## 4. 检查建议
 
-结构整理后建议运行：
+结构整理后建议直接运行现有测试与静态检查：
 
 ```bash
-python scripts/verify_migration.py
+pytest tests/core/test_lazy_package_imports.py
 pytest
 ruff check app scripts tests
 ```

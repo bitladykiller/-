@@ -64,7 +64,7 @@
 - ✅ docs/VERIFICATION_REPORT.md
 
 ### 6. 工具脚本 ✅
-- ✅ scripts/verify_migration.py
+- ✅ `tests/core/test_lazy_package_imports.py`
 
 ---
 
@@ -111,8 +111,8 @@ docker compose up -d
 
 ### 运行测试
 ```bash
-# 结构验证
-python scripts/verify_migration.py
+# 轻量结构验证
+pytest tests/core/test_lazy_package_imports.py
 ```
 
 ---

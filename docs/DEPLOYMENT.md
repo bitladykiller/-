@@ -73,7 +73,7 @@ curl http://localhost:8000/health
 ### 5.2 结构与测试
 
 ```bash
-python scripts/verify_migration.py
+pytest tests/core/test_lazy_package_imports.py
 pytest
 ```
 

@@ -59,7 +59,7 @@
 - ✅ docs/REFACTOR_REPORT.md
 
 ### 工具脚本
-- ✅ scripts/verify_migration.py
+- ✅ `tests/core/test_lazy_package_imports.py`
 
 ---
 
