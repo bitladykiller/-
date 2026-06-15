@@ -21,24 +21,14 @@ async def process_file(
     """处理上传文件并写入检索索引。
 
     当前只接受上传路由生成的 `file_info` 契约：
-    - `path`: 非空字符串
+    - `path`: 已落盘的文件路径
     - `user_id`: `int`
     """
-    raw_path = file_info.get("path")
-    if not isinstance(raw_path, str) or not raw_path:
+    path = Path(file_info["path"])
+    user_id = file_info["user_id"]
+
+    if not path.is_file():
         return {"status": "error", "message": "文件不存在"}
-    path = Path(raw_path)
-
-    user_id = file_info.get("user_id")
-    if not isinstance(user_id, int) or isinstance(user_id, bool):
-        return {"status": "error", "message": "非法用户标识"}
-
-    if not path.exists():
-        return {"status": "error", "message": "文件不存在"}
-
-    ext = path.suffix.lower()
-    if ext not in INDEXABLE_DOCUMENT_EXTENSIONS:
-        return {"status": "error", "message": f"不支持的文件类型: {ext}"}
 
     try:
         from rag_doc_parser.pipeline import parse_document
@@ -61,12 +51,6 @@ async def process_file(
             "chunks": count,
             "doc_id": doc_id,
             "source_file": str(path),
-        }
-    except ImportError:
-        return {
-            "status": "warning",
-            "message": "rag_doc_parser 模块未安装，文档已保存但未索引",
-            "file_info": file_info,
         }
     except Exception as exc:
         return {"status": "error", "message": str(exc)}

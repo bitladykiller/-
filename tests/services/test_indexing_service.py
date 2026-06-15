@@ -1,5 +1,4 @@
 import asyncio
-import builtins
 import sys
 import types
 from pathlib import Path
@@ -60,50 +59,9 @@ def _install_fake_pipeline(
 
 
 def test_process_file_returns_error_for_missing_source() -> None:
-    result = _run(process_file({"path": "", "user_id": 1}))
+    result = _run(process_file({"path": "/tmp/missing.pdf", "user_id": 1}))
 
     assert result == {"status": "error", "message": "文件不存在"}
-
-
-def test_process_file_rejects_invalid_user_id() -> None:
-    result = _run(process_file({"path": "/tmp/demo.pdf", "user_id": "1"}))
-
-    assert result == {"status": "error", "message": "非法用户标识"}
-
-
-def test_process_file_returns_error_for_unsupported_extension(tmp_path: Path) -> None:
-    file_path = tmp_path / "demo.txt"
-    file_path.write_text("hello", encoding="utf-8")
-
-    result = _run(process_file({"path": str(file_path), "user_id": 1}))
-
-    assert result == {"status": "error", "message": "不支持的文件类型: .txt"}
-
-
-def test_process_file_returns_warning_when_dependency_missing(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    file_path = tmp_path / "demo.pdf"
-    file_path.write_bytes(b"%PDF-1.7")
-
-    original_import = builtins.__import__
-
-    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
-        if name.startswith("rag_doc_parser"):
-            raise ImportError("rag_doc_parser missing")
-        return original_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-
-    file_info = {"path": str(file_path), "user_id": 3}
-    result = _run(process_file(file_info))
-
-    assert result == {
-        "status": "warning",
-        "message": "rag_doc_parser 模块未安装，文档已保存但未索引",
-        "file_info": file_info,
-    }
 
 
 def test_process_file_returns_empty_document_result(monkeypatch, tmp_path: Path) -> None:
@@ -129,8 +87,8 @@ def test_process_file_returns_empty_document_result(monkeypatch, tmp_path: Path)
 
 
 def test_process_file_indexes_parsed_chunks(monkeypatch, tmp_path: Path) -> None:
-    file_path = tmp_path / "demo.docx"
-    file_path.write_bytes(b"PK\x03\x04demo")
+    file_path = tmp_path / "demo.pdf"
+    file_path.write_bytes(b"%PDF-1.7")
 
     chunks = [{"content": "chunk-1"}, {"content": "chunk-2"}]
     indexer = FakeChunkIndexer(result_count=2)
@@ -182,3 +140,27 @@ def test_process_file_generates_doc_id_from_upload_metadata(monkeypatch, tmp_pat
         "doc_id": captured_doc_ids[0],
         "source_file": str(file_path),
     }
+
+
+def test_process_file_surfaces_runtime_errors_from_parser_pipeline(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    file_path = tmp_path / "demo.pdf"
+    file_path.write_bytes(b"%PDF-1.7")
+
+    indexer = FakeChunkIndexer(result_count=0)
+
+    def fail_parse_document(_path: str, *, doc_id: str):
+        _ = doc_id
+        raise RuntimeError("parse failed")
+
+    _install_fake_pipeline(
+        monkeypatch,
+        parse_document=fail_parse_document,
+        indexer=indexer,
+    )
+
+    result = _run(process_file({"path": str(file_path), "user_id": 6}))
+
+    assert result == {"status": "error", "message": "parse failed"}
