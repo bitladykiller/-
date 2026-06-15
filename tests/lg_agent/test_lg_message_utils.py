@@ -1,9 +1,7 @@
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.chat.infrastructure.graph.message_utils import (
-    build_progress_response,
     build_safe_messages,
-    build_simple_message_response,
     find_last_assistant_message,
     find_last_user_message,
 )
@@ -24,20 +22,6 @@ def test_build_safe_messages_wraps_user_messages_only() -> None:
     assert safe_messages[3]["role"] == "human"
     assert safe_messages[3]["content"] == "再查一下订单"
 
-
-def test_build_progress_response_returns_two_ai_messages() -> None:
-    payload = build_progress_response("正在查询...", "这是最终答案")
-
-    assert [message.content for message in payload["messages"]] == [
-        "正在查询...",
-        "这是最终答案",
-    ]
-
-
-def test_build_simple_message_response_returns_single_ai_message() -> None:
-    payload = build_simple_message_response("仅返回一句")
-
-    assert [message.content for message in payload["messages"]] == ["仅返回一句"]
 
 def test_find_last_user_message_returns_latest_user_content() -> None:
     messages = [

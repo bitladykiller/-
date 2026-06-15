@@ -49,24 +49,6 @@ def build_safe_messages(
     return safe
 
 
-def build_progress_response(
-    progress_message: str,
-    summary: str,
-) -> dict[str, list[AIMessage]]:
-    """统一构造“进度提示 + 最终摘要”的两段式回复。"""
-    return {
-        "messages": [
-            AIMessage(content=progress_message),
-            AIMessage(content=summary),
-        ]
-    }
-
-
-def build_simple_message_response(message: str) -> dict[str, list[AIMessage]]:
-    """统一构造单条助手消息响应。"""
-    return {"messages": [AIMessage(content=message)]}
-
-
 def find_last_user_message(messages: list[Any]) -> str:
     """返回最后一条用户消息内容。"""
     for message in reversed(messages):
@@ -97,9 +79,7 @@ def find_last_assistant_message(messages: list[Any]) -> str:
 
 
 __all__ = [
-    "build_progress_response",
     "build_safe_messages",
-    "build_simple_message_response",
     "find_last_assistant_message",
     "find_last_user_message",
 ]

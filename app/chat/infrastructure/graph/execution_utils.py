@@ -17,9 +17,6 @@ from langchain_core.messages import AIMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
-from app.chat.infrastructure.graph.message_utils import build_progress_response
-from app.chat.infrastructure.retrievers.retriever_contracts import Retriever
-
 _summarize_chain = None
 
 _SUMMARIZE_PROMPT = ChatPromptTemplate.from_messages(
@@ -52,35 +49,6 @@ _SUMMARIZE_PROMPT = ChatPromptTemplate.from_messages(
 )
 
 
-def records_from_result(result: dict[str, Any]) -> list[dict[str, Any]]:
-    """从统一 Retriever 结果中安全提取 records 列表。"""
-    records = result.get("records", [])
-    return records if isinstance(records, list) else []
-
-
-def merge_retriever_records(*results: dict[str, Any]) -> list[dict[str, Any]]:
-    """按顺序合并多个检索结果中的 records。"""
-    merged_records: list[dict[str, Any]] = []
-    for result in results:
-        merged_records.extend(records_from_result(result))
-    return merged_records
-
-
-async def search_retriever(
-    retriever: Retriever | None,
-    query: str,
-) -> dict[str, Any]:
-    """执行检索；检索器缺失时返回空结果占位。"""
-    if retriever is None:
-        return {
-            "task": query,
-            "records": [],
-            "errors": [],
-            "steps": [],
-        }
-    return await retriever.search(query)
-
-
 async def ainvoke_structured_question_output(
     *,
     system_prompt: str,
@@ -107,7 +75,12 @@ async def summarize_and_build_response(
 ) -> dict[str, list[AIMessage]]:
     """统一执行摘要生成，并返回“两段式”进度响应。"""
     if not records:
-        return build_progress_response(progress_message, fallback)
+        return {
+            "messages": [
+                AIMessage(content=progress_message),
+                AIMessage(content=fallback),
+            ]
+        }
 
     global _summarize_chain
     if _summarize_chain is None:
@@ -119,4 +92,9 @@ async def summarize_and_build_response(
         "question": query,
         "results": [records],
     })
-    return build_progress_response(progress_message, summary or fallback)
+    return {
+        "messages": [
+            AIMessage(content=progress_message),
+            AIMessage(content=summary or fallback),
+        ]
+    }

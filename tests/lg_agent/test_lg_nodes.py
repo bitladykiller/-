@@ -35,8 +35,14 @@ class FakeMemoryMiddleware:
 
 
 class FakeRetriever:
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, result: dict | None = None) -> None:
         self.name = name
+        self.result = result or {"records": []}
+        self.queries: list[str] = []
+
+    async def search(self, query: str) -> dict:
+        self.queries.append(query)
+        return self.result
 
 
 def _run(awaitable):
@@ -232,25 +238,23 @@ def test_after_response_skips_when_missing_complete_message_pair(monkeypatch) ->
 
 
 def test_execute_parallel_adds_strategy_specific_queries(monkeypatch) -> None:
-    queries: dict[str, str] = {}
+    retrievers = {
+        "kg": FakeRetriever("kg", {"records": [{"source": "kg"}]}),
+        "rag": FakeRetriever("rag", {"records": [{"source": "rag"}]}),
+    }
 
     async def fake_get_retriever(name: str):
-        return FakeRetriever(name)
+        return retrievers[name]
 
     async def fake_enrich_question(_state, _config, user_message: str) -> str:
         assert user_message == "查一下空调"
         return "查一下空调"
-
-    async def fake_search_retriever(retriever: FakeRetriever, query: str) -> dict:
-        queries[retriever.name] = query
-        return {"records": [{"source": retriever.name}]}
 
     async def fake_summarize_and_build_response(query, records, **kwargs) -> dict:
         return {"query": query, "records": records, **kwargs}
 
     monkeypatch.setattr(lg_retrieval_nodes, "get_retriever", fake_get_retriever)
     monkeypatch.setattr(lg_retrieval_nodes, "enrich_question", fake_enrich_question)
-    monkeypatch.setattr(lg_retrieval_nodes, "search_retriever", fake_search_retriever)
     monkeypatch.setattr(
         lg_retrieval_nodes,
         "summarize_and_build_response",
@@ -264,10 +268,8 @@ def test_execute_parallel_adds_strategy_specific_queries(monkeypatch) -> None:
         )
     )
 
-    assert queries == {
-        "kg": "查一下空调（仅查询结构化数据：价格、库存、订单等）",
-        "rag": "查一下空调（仅查询文档知识：售后政策、保修条款等）",
-    }
+    assert retrievers["kg"].queries == ["查一下空调（仅查询结构化数据：价格、库存、订单等）"]
+    assert retrievers["rag"].queries == ["查一下空调（仅查询文档知识：售后政策、保修条款等）"]
     assert result == {
         "query": "查一下空调",
         "records": [{"source": "kg"}, {"source": "rag"}],
@@ -276,27 +278,23 @@ def test_execute_parallel_adds_strategy_specific_queries(monkeypatch) -> None:
 
 
 def test_execute_then_injects_graph_records_into_rag_query(monkeypatch) -> None:
-    queries: dict[str, str] = {}
+    retrievers = {
+        "kg": FakeRetriever("kg", {"records": [{"product": "X1"}]}),
+        "rag": FakeRetriever("rag", {"records": [{"doc": "warranty"}]}),
+    }
 
     async def fake_get_retriever(name: str):
-        return FakeRetriever(name)
+        return retrievers[name]
 
     async def fake_enrich_question(_state, _config, user_message: str) -> str:
         assert user_message == "保修多久"
         return "保修多久"
-
-    async def fake_search_retriever(retriever: FakeRetriever, query: str) -> dict:
-        queries[retriever.name] = query
-        if retriever.name == "kg":
-            return {"records": [{"product": "X1"}]}
-        return {"records": [{"doc": "warranty"}]}
 
     async def fake_summarize_and_build_response(query, records, **kwargs) -> dict:
         return {"query": query, "records": records, **kwargs}
 
     monkeypatch.setattr(lg_retrieval_nodes, "get_retriever", fake_get_retriever)
     monkeypatch.setattr(lg_retrieval_nodes, "enrich_question", fake_enrich_question)
-    monkeypatch.setattr(lg_retrieval_nodes, "search_retriever", fake_search_retriever)
     monkeypatch.setattr(
         lg_retrieval_nodes,
         "summarize_and_build_response",
@@ -310,12 +308,26 @@ def test_execute_then_injects_graph_records_into_rag_query(monkeypatch) -> None:
         )
     )
 
-    assert queries == {
-        "kg": "保修多久",
-        "rag": "已知信息：[{'product': 'X1'}]\n\n查询：保修多久",
-    }
+    assert retrievers["kg"].queries == ["保修多久"]
+    assert retrievers["rag"].queries == ["已知信息：[{'product': 'X1'}]\n\n查询：保修多久"]
     assert result == {
         "query": "保修多久",
         "records": [{"product": "X1"}, {"doc": "warranty"}],
         "progress_message": "正在先查数据库，再查文档...",
     }
+
+
+def test_execute_rag_only_returns_unavailable_message_when_retriever_missing(monkeypatch) -> None:
+    async def fake_get_retriever(_name: str):
+        return None
+
+    monkeypatch.setattr(lg_retrieval_nodes, "get_retriever", fake_get_retriever)
+
+    result = _run(
+        lg_retrieval_nodes.execute_rag_only(
+            AgentState(messages=[HumanMessage(content="查售后政策")]),
+            config={},
+        )
+    )
+
+    assert [message.content for message in result["messages"]] == ["文档检索服务暂不可用。"]

@@ -2,17 +2,6 @@ import asyncio
 
 from app.chat.infrastructure.graph import execution_utils as lg_execution_utils
 
-
-class FakeRetriever:
-    def __init__(self, result: dict) -> None:
-        self.result = result
-        self.queries: list[str] = []
-
-    async def search(self, task: str) -> dict:
-        self.queries.append(task)
-        return self.result
-
-
 class FakeChain:
     def __init__(self, result: object) -> None:
         self.result = result
@@ -49,41 +38,6 @@ class FakeSchema:
 
 def _run(awaitable):
     return asyncio.run(awaitable)
-
-
-def test_search_retriever_placeholder_and_records_from_result() -> None:
-    result = _run(lg_execution_utils.search_retriever(None, "查订单"))
-
-    assert result == {
-        "task": "查订单",
-        "records": [],
-        "errors": [],
-        "steps": [],
-    }
-    assert lg_execution_utils.records_from_result(result) == []
-    assert lg_execution_utils.records_from_result({"records": "bad"}) == []
-
-
-def test_merge_retriever_records_preserves_order() -> None:
-    merged = lg_execution_utils.merge_retriever_records(
-        {"records": [{"source": "kg"}]},
-        {"records": [{"source": "rag-1"}, {"source": "rag-2"}]},
-    )
-
-    assert merged == [
-        {"source": "kg"},
-        {"source": "rag-1"},
-        {"source": "rag-2"},
-    ]
-
-
-def test_search_retriever_delegates_to_retriever() -> None:
-    retriever = FakeRetriever({"records": [{"id": 1}]})
-
-    result = _run(lg_execution_utils.search_retriever(retriever, "订单状态"))
-
-    assert result == {"records": [{"id": 1}]}
-    assert retriever.queries == ["订单状态"]
 
 
 def test_summarize_and_build_response_uses_summary_result(monkeypatch) -> None:
