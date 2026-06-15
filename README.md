@@ -122,7 +122,7 @@ deepseek_agent/
 │   ├── knowledge/               # 记忆 / 检索 / 画像域
 │   ├── user/                    # 用户与会话模型域
 │   ├── shared/                  # 共享基础设施
-│   └── scripts/                 # 应用内维护脚本
+│   └── scripts/                 # Compose 启动链路内部辅助脚本
 ├── docs/                        # 架构、部署、迁移文档
 ├── scripts/                     # 仓库级辅助脚本
 ├── tests/                       # 测试目录
@@ -147,7 +147,7 @@ deepseek_agent/
 - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — Docker Compose 部署方式
 - [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) — 开发规范
 - [rag_doc_parser/README.md](rag_doc_parser/README.md) — RAG 文档解析模块
-- [app/scripts/README.md](app/scripts/README.md) — 应用内维护脚本说明
+- [app/scripts/README.md](app/scripts/README.md) — Compose 启动链路内部辅助脚本说明
 - [app/shared/core/README.md](app/shared/core/README.md) — 共享基础设施说明
 - [app/shared/security/README.md](app/shared/security/README.md) — Prompt 防护说明
 - [app/user/infrastructure/models/README.md](app/user/infrastructure/models/README.md) — 持久化模型说明

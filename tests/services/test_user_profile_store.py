@@ -107,6 +107,34 @@ def test_query_profile_from_db_reads_rows_and_normalizes_payload(monkeypatch) ->
     assert "FROM user_facts" in session.calls[1][0]
 
 
+def test_query_profile_from_db_falls_back_to_empty_tags_when_json_invalid(monkeypatch) -> None:
+    session = FakeSession(
+        [
+            FakeResult(
+                first={
+                    "preferred_brand": " 海尔 ",
+                    "budget_range": None,
+                    "preferred_category": None,
+                    "tags": "not-json",
+                }
+            ),
+            FakeResult(all_rows=[]),
+        ]
+    )
+    monkeypatch.setattr(profile_store, "AsyncSessionLocal", FakeSessionFactory(session))
+
+    result = _run(profile_store.query_profile_from_db(7))
+
+    assert result == {
+        "user_id": 7,
+        "preferred_brand": "海尔",
+        "budget_range": None,
+        "preferred_category": None,
+        "tags": [],
+        "facts": [],
+    }
+
+
 def test_upsert_profile_data_in_db_orchestrates_profile_fields_and_facts(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
     fake_session = object()
@@ -319,4 +347,28 @@ def test_upsert_profile_fields_in_db_executes_generated_upsert_sql() -> None:
         "preferred_brand": "海尔",
         "preferred_category": "冰箱",
         "tags": '["家电"]',
+    }
+
+
+def test_upsert_profile_fields_in_db_keeps_explicit_empty_tags() -> None:
+    session = FakeSession([FakeResult()])
+
+    changed = _run(
+        profile_store.upsert_profile_fields_in_db(
+            session,
+            user_id=4,
+            preferred_brand="  小米 ",
+            budget_range=None,
+            preferred_category="",
+            tags=[],
+        )
+    )
+
+    assert changed is True
+    assert len(session.calls) == 1
+    _sql_text, params = session.calls[0]
+    assert params == {
+        "uid": 4,
+        "preferred_brand": "小米",
+        "tags": "[]",
     }

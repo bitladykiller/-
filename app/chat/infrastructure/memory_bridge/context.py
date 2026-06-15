@@ -115,19 +115,6 @@ def build_memory_context(
         return ""
     return _MEMORY_INSTRUCTIONS + "\n\n" + "\n\n".join(parts)
 
-def configurable_scope(config: RunnableConfig) -> tuple[str, str, str]:
-    """统一读取当前请求的 tenant / user / session 标识。"""
-    raw_configurable = config.get("configurable", {})
-    configurable = raw_configurable if isinstance(raw_configurable, dict) else {}
-    tenant_id = configurable.get("tenant_id")
-    user_id = configurable.get("user_id")
-    thread_id = configurable.get("thread_id")
-    return (
-        tenant_id if isinstance(tenant_id, str) and tenant_id else _DEFAULT_TENANT_ID,
-        user_id if isinstance(user_id, str) and user_id else _DEFAULT_USER_ID,
-        thread_id if isinstance(thread_id, str) and thread_id else _DEFAULT_SESSION_ID,
-    )
-
 
 async def load_memory_state(
     state: AgentState,
@@ -143,11 +130,15 @@ async def load_memory_state(
         return None
 
     try:
-        tenant_id, user_id, session_id = configurable_scope(config)
+        raw_configurable = config.get("configurable", {})
+        configurable = raw_configurable if isinstance(raw_configurable, dict) else {}
+        tenant_id = configurable.get("tenant_id")
+        user_id = configurable.get("user_id")
+        thread_id = configurable.get("thread_id")
         memory_state = await middleware.before_agent(
-            tenant_id=tenant_id,
-            user_id=user_id,
-            session_id=session_id,
+            tenant_id=tenant_id if isinstance(tenant_id, str) and tenant_id else _DEFAULT_TENANT_ID,
+            user_id=user_id if isinstance(user_id, str) and user_id else _DEFAULT_USER_ID,
+            session_id=thread_id if isinstance(thread_id, str) and thread_id else _DEFAULT_SESSION_ID,
             user_input=user_input,
         )
     except Exception:
@@ -178,7 +169,6 @@ async def enrich_question(
 
 __all__ = [
     "build_memory_context",
-    "configurable_scope",
     "enrich_question",
     "get_memory_middleware",
     "load_memory_state",

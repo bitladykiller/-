@@ -59,40 +59,6 @@ class TaskStore(Protocol):
     async def get(self, key: str) -> str | None: ...
 
     async def close(self) -> Any: ...
-
-
-def load_task_status_payload(raw: str | None) -> TaskStatusPayload | None:
-    """从 Redis 原始值解析任务状态。"""
-    if raw is None:
-        return None
-    try:
-        raw_payload = json.loads(raw)
-    except (TypeError, ValueError):
-        return None
-
-    if not isinstance(raw_payload, dict):
-        return None
-
-    task_id = raw_payload.get("task_id")
-    status = raw_payload.get("status")
-    updated_at = raw_payload.get("updated_at")
-    if not all(isinstance(value, str) for value in (task_id, status, updated_at)):
-        return None
-
-    payload: TaskStatusPayload = {
-        "task_id": task_id,
-        "status": status,
-        "updated_at": updated_at,
-    }
-    if "result" in raw_payload:
-        payload["result"] = raw_payload["result"]
-
-    error = raw_payload.get("error")
-    if isinstance(error, str):
-        payload["error"] = error
-    return payload
-
-
 async def write_task_status(
     redis_client: TaskStore,
     task_id: str,
@@ -188,7 +154,37 @@ class _TaskManager:
     async def get_status(self, task_id: str) -> TaskStatusPayload | None:
         """读取任务状态，不存在时返回 None。"""
         raw = await self._redis.get(f"{_TASK_KEY_PREFIX}{task_id}")
-        return load_task_status_payload(raw)
+        if raw is None:
+            return None
+        try:
+            raw_payload = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+
+        if not isinstance(raw_payload, dict):
+            return None
+
+        current_task_id = raw_payload.get("task_id")
+        status = raw_payload.get("status")
+        updated_at = raw_payload.get("updated_at")
+        if not all(
+            isinstance(value, str)
+            for value in (current_task_id, status, updated_at)
+        ):
+            return None
+
+        payload: TaskStatusPayload = {
+            "task_id": current_task_id,
+            "status": status,
+            "updated_at": updated_at,
+        }
+        if "result" in raw_payload:
+            payload["result"] = raw_payload["result"]
+
+        error = raw_payload.get("error")
+        if isinstance(error, str):
+            payload["error"] = error
+        return payload
 
     async def close(self) -> None:
         """关闭底层 Redis 连接。
@@ -237,7 +233,6 @@ __all__ = [
     "TaskStatusPayload",
     "close_task_manager",
     "get_task_manager",
-    "load_task_status_payload",
     "run_task_with_status_updates",
     "write_task_status",
 ]

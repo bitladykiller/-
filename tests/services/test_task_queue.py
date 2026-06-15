@@ -5,7 +5,6 @@ import types
 import app.chat.application.task_queue as task_queue_module
 from app.chat.application.task_queue import (
     TaskStatus,
-    load_task_status_payload,
     run_task_with_status_updates,
     write_task_status,
 )
@@ -42,32 +41,44 @@ class FakeLogger:
 
 
 def test_task_status_payload_round_trip() -> None:
-    payload = {
-        "task_id": "task-1",
-        "status": TaskStatus.COMPLETED.value,
-        "updated_at": "2026-01-02T03:04:05",
-        "result": {"ok": True},
-    }
+    async def scenario() -> None:
+        store = FakeTaskStore()
+        manager = task_queue_module._TaskManager(store)
+        store.values["task:doc_parse:task-1"] = (
+            '{"task_id": "task-1", "status": "completed", '
+            '"updated_at": "2026-01-02T03:04:05", "result": {"ok": true}}'
+        )
 
-    loaded = load_task_status_payload(
-        '{"task_id": "task-1", "status": "completed", "updated_at": "2026-01-02T03:04:05", "result": {"ok": true}}'
-    )
+        loaded = await manager.get_status("task-1")
 
-    assert loaded is not None
-    assert loaded["task_id"] == "task-1"
-    assert loaded["status"] == "completed"
-    assert loaded["result"] == {"ok": True}
+        assert loaded is not None
+        assert loaded["task_id"] == "task-1"
+        assert loaded["status"] == "completed"
+        assert loaded["result"] == {"ok": True}
+
+    asyncio.run(scenario())
 
 
-def test_load_task_status_payload_rejects_invalid_input() -> None:
-    assert load_task_status_payload(None) is None
-    assert load_task_status_payload("not-json") is None
-    assert load_task_status_payload('{"task_id": 1}') is None
+def test_task_manager_get_status_rejects_invalid_input() -> None:
+    async def scenario() -> None:
+        store = FakeTaskStore()
+        manager = task_queue_module._TaskManager(store)
+
+        assert await manager.get_status("missing") is None
+
+        store.values["task:doc_parse:bad-json"] = "not-json"
+        assert await manager.get_status("bad-json") is None
+
+        store.values["task:doc_parse:bad-schema"] = '{"task_id": 1}'
+        assert await manager.get_status("bad-schema") is None
+
+    asyncio.run(scenario())
 
 
 def test_write_and_read_task_status_round_trip() -> None:
     async def scenario() -> None:
         store = FakeTaskStore()
+        manager = task_queue_module._TaskManager(store)
 
         await write_task_status(
             store,
@@ -75,9 +86,7 @@ def test_write_and_read_task_status_round_trip() -> None:
             TaskStatus.RUNNING,
         )
 
-        raw = await store.get("task:doc_parse:task-2")
-        assert raw is not None
-        payload = load_task_status_payload(raw)
+        payload = await manager.get_status("task-2")
         assert payload is not None
         assert payload["task_id"] == "task-2"
         assert payload["status"] == "running"

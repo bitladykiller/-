@@ -3,10 +3,6 @@ import asyncio
 from app.knowledge.domain.schemas import SessionSummary
 from app.knowledge.infrastructure.orchestration.memory_extractor import (
     MemoryExtractor,
-    build_semantic_memories,
-    extract_response_text,
-    extract_summary_text,
-    parse_llm_response,
 )
 
 
@@ -34,72 +30,72 @@ def _run(awaitable):
     return asyncio.run(awaitable)
 
 
-def test_extract_response_text_supports_string_and_list_content() -> None:
-    assert extract_response_text("plain text") == "plain text"
-    assert extract_response_text(
-        FakeResponseObject(
-            [
-                {"text": "第一段"},
-                "第二段",
-                FakeTextPart("第三段"),
-                {"other": "ignored"},
-            ]
+def test_memory_extractor_extract_supports_list_content_response() -> None:
+    extractor = MemoryExtractor(
+        FakeLLMClient(
+            FakeResponseObject(
+                [
+                    {"text": "前置说明"},
+                    '{"semantic":[{"memory_type":"issue_history","content":"用户手机号13812345678反馈门铃总是掉线","reason":"含长期问题"}],',
+                    FakeTextPart('"profile":{"preferred_brand":"  apple "}}'),
+                    {"text": "}"},
+                    {"other": "ignored"},
+                ]
+            )
         )
-    ) == "第一段\n第二段\n第三段"
-def test_parse_llm_response_returns_empty_for_invalid_payload() -> None:
-    assert parse_llm_response("没有 JSON") == {}
-    assert parse_llm_response('["not-a-dict"]') == {}
-    assert parse_llm_response('前置 {"semantic": [}') == {}
-
-
-def test_build_semantic_memories_masks_and_filters_items() -> None:
-    extractor = MemoryExtractor(FakeLLMClient("{}"))
-    parsed = {
-        "semantic": [
-            {
-                "memory_type": "issue_history",
-                "content": "用户手机号13812345678反馈门铃总是掉线",
-                "reason": "含长期问题",
-            },
-            {
-                "memory_type": "solution_note",
-                "content": "谢谢",
-            },
-            {
-                "memory_type": "invalid_type",
-                "content": "这条类型无效但内容很长很长",
-            },
-        ]
-    }
-
-    semantic = build_semantic_memories(
-        parsed,
-        sensitive_patterns=extractor.sensitive_patterns,
     )
 
-    assert len(semantic) == 1
-    assert semantic[0].memory_type == "issue_history"
-    assert semantic[0].content == "用户手机号138****5678反馈门铃总是掉线"
-    assert semantic[0].reason == "含长期问题"
+    semantic, profile = _run(
+        extractor.extract(
+            "门铃总是掉线",
+            "我来帮你排查",
+            "  直接摘要 ",
+        )
+    )
+
+    assert "当前会话摘要：直接摘要" in extractor.llm_client.prompts[0]
+    assert [item.model_dump() for item in semantic] == [
+        {
+            "memory_type": "issue_history",
+            "content": "用户手机号138****5678反馈门铃总是掉线",
+            "reason": "含长期问题",
+        }
+    ]
+    assert profile == {"preferred_brand": "apple"}
 
 
-def test_build_semantic_memories_masks_multiple_sensitive_patterns() -> None:
-    extractor = MemoryExtractor(FakeLLMClient("{}"))
-    parsed = {
-        "semantic": [
-            {
-                "memory_type": "issue_history",
-                "content": (
-                    "用户手机号13812345678，身份证100000000000000000，"
-                    "银行卡6222021234567890，邮箱abc@example.com"
-                ),
-            }
-        ]
-    }
+def test_memory_extractor_extract_returns_empty_for_invalid_payload() -> None:
+    extractor = MemoryExtractor(FakeLLMClient("没有 JSON"))
 
-    semantic = build_semantic_memories(
-        parsed,
-        sensitive_patterns=extractor.sensitive_patterns,
+    semantic, profile = _run(
+        extractor.extract(
+            "门铃还是断线",
+            "我来继续帮你排查",
+        )
+    )
+
+    assert semantic == []
+    assert profile == {}
+
+
+def test_memory_extractor_extract_masks_and_filters_semantic_items() -> None:
+    extractor = MemoryExtractor(
+        FakeLLMClient(
+            FakeResponseObject(
+                '{"semantic":['
+                '{"memory_type":"issue_history","content":"用户手机号13812345678，身份证100000000000000000，银行卡6222021234567890，邮箱abc@example.com"},'
+                '{"memory_type":"solution_note","content":"谢谢"},'
+                '{"memory_type":"invalid_type","content":"这条类型无效但内容很长很长"}'
+                '],"profile":{}}'
+            )
+        )
+    )
+
+    semantic, profile = _run(
+        extractor.extract(
+            "我留下了联系方式",
+            "好的",
+        )
     )
 
     assert [item.model_dump() for item in semantic] == [
@@ -112,6 +108,7 @@ def test_build_semantic_memories_masks_multiple_sensitive_patterns() -> None:
             "reason": None,
         }
     ]
+    assert profile == {}
 
 
 def test_memory_extractor_extract_returns_semantic_and_normalized_profile() -> None:
@@ -162,9 +159,3 @@ def test_memory_extractor_extract_returns_empty_when_llm_invoke_fails() -> None:
 
     assert semantic == []
     assert profile == {}
-
-
-def test_extract_summary_text_supports_model_and_string() -> None:
-    assert extract_summary_text(SessionSummary(content=" 历史摘要 ")) == "历史摘要"
-    assert extract_summary_text("  直接摘要 ") == "直接摘要"
-    assert extract_summary_text(None) == ""

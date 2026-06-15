@@ -193,13 +193,18 @@ def test_after_response_writes_latest_user_and_final_assistant_message(monkeypat
         return middleware
 
     monkeypatch.setattr(lg_nodes, "get_memory_middleware", fake_get_memory_middleware)
-    monkeypatch.setattr(
-        lg_nodes,
-        "configurable_scope",
-        lambda config: ("tenant-1", "user-2", "thread-3"),
+    result = _run(
+        lg_nodes.after_response(
+            state,
+            config={
+                "configurable": {
+                    "tenant_id": "tenant-1",
+                    "user_id": "user-2",
+                    "thread_id": "thread-3",
+                }
+            },
+        )
     )
-
-    result = _run(lg_nodes.after_response(state, config={}))
 
     assert result == {}
     assert middleware.calls == [
@@ -220,11 +225,6 @@ def test_after_response_skips_when_missing_complete_message_pair(monkeypatch) ->
         return middleware
 
     monkeypatch.setattr(lg_nodes, "get_memory_middleware", fake_get_memory_middleware)
-    monkeypatch.setattr(
-        lg_nodes,
-        "configurable_scope",
-        lambda config: ("tenant-1", "user-2", "thread-3"),
-    )
 
     result = _run(
         lg_nodes.after_response(
@@ -235,6 +235,34 @@ def test_after_response_skips_when_missing_complete_message_pair(monkeypatch) ->
 
     assert result == {}
     assert middleware.calls == []
+
+
+def test_after_response_uses_default_scope_when_config_missing(monkeypatch) -> None:
+    middleware = FakeMemoryMiddleware()
+    state = AgentState(
+        messages=[
+            HumanMessage(content="帮我查一下订单"),
+            AIMessage(content="订单已经发货"),
+        ]
+    )
+
+    async def fake_get_memory_middleware():
+        return middleware
+
+    monkeypatch.setattr(lg_nodes, "get_memory_middleware", fake_get_memory_middleware)
+
+    result = _run(lg_nodes.after_response(state, config={}))
+
+    assert result == {}
+    assert middleware.calls == [
+        {
+            "tenant_id": "default",
+            "user_id": "anonymous",
+            "session_id": "default",
+            "user_message": "帮我查一下订单",
+            "assistant_message": "订单已经发货",
+        }
+    ]
 
 
 def test_execute_parallel_adds_strategy_specific_queries(monkeypatch) -> None:

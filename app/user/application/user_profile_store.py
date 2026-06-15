@@ -15,8 +15,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping
-from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -62,58 +60,6 @@ _LINK_SUPERSEDED_FACT_SQL = text(
 _LAST_INSERT_ID_SQL = text("SELECT LAST_INSERT_ID()")
 
 
-def decode_profile_tags_json(raw_value: str | None) -> list[str]:
-    """把数据库中的 tags JSON 安全解码为标签列表。"""
-    if not raw_value:
-        return []
-    try:
-        decoded = json.loads(raw_value)
-    except (TypeError, ValueError):
-        return []
-    return normalize_profile_tags(decoded)
-
-
-def build_user_profile_facts(
-    rows: Iterable[Mapping[str, Any]],
-) -> list[UserProfileFact]:
-    """把数据库 facts 行转换为统一的 `{key, value}` 数组。"""
-    facts: list[UserProfileFact] = []
-    for row in rows:
-        key = normalize_optional_text(row.get("fact_key"))
-        value = normalize_optional_text(row.get("fact_value"))
-        if not key or not value:
-            continue
-        facts.append({"key": key, "value": value})
-    return facts
-
-
-def build_profile_field_values(
-    *,
-    preferred_brand: str | None,
-    budget_range: str | None,
-    preferred_category: str | None,
-    tags: list[str] | None,
-) -> dict[str, str]:
-    """构造 `user_profiles` 可直接写库的规范化字段值映射。"""
-    field_values: dict[str, str] = {}
-    normalized_tags = normalize_profile_tags(tags) if tags is not None else None
-
-    text_fields = {
-        "preferred_brand": preferred_brand,
-        "budget_range": budget_range,
-        "preferred_category": preferred_category,
-    }
-    for field_name, raw_value in text_fields.items():
-        normalized_value = normalize_optional_text(raw_value)
-        if normalized_value is not None:
-            field_values[field_name] = normalized_value
-
-    if normalized_tags is not None:
-        field_values["tags"] = json.dumps(normalized_tags, ensure_ascii=False)
-
-    return field_values
-
-
 def empty_user_profile(user_id: int) -> UserProfilePayload:
     """返回默认空画像结构。"""
     return {
@@ -136,12 +82,22 @@ async def upsert_profile_fields_in_db(
     tags: list[str] | None,
 ) -> bool:
     """根据传入画像字段执行 upsert。无有效字段时返回 False。"""
-    field_values = build_profile_field_values(
-        preferred_brand=preferred_brand,
-        budget_range=budget_range,
-        preferred_category=preferred_category,
-        tags=tags,
-    )
+    field_values: dict[str, str] = {}
+    text_fields = {
+        "preferred_brand": preferred_brand,
+        "budget_range": budget_range,
+        "preferred_category": preferred_category,
+    }
+    for field_name, raw_value in text_fields.items():
+        normalized_value = normalize_optional_text(raw_value)
+        if normalized_value is not None:
+            field_values[field_name] = normalized_value
+
+    if tags is not None:
+        field_values["tags"] = json.dumps(
+            normalize_profile_tags(tags),
+            ensure_ascii=False,
+        )
     if not field_values:
         return False
 
@@ -220,12 +176,24 @@ async def query_profile_from_db(user_id: int) -> UserProfilePayload:
             profile["preferred_category"] = normalize_optional_text(
                 profile_row.get("preferred_category")
             )
-            profile["tags"] = decode_profile_tags_json(profile_row.get("tags"))
+            raw_tags = profile_row.get("tags")
+            if raw_tags:
+                try:
+                    profile["tags"] = normalize_profile_tags(json.loads(raw_tags))
+                except (TypeError, ValueError):
+                    profile["tags"] = []
 
         fact_rows = (
             await db.execute(_ACTIVE_FACTS_QUERY_SQL, {"uid": user_id})
         ).mappings().all()
-        profile["facts"] = build_user_profile_facts(fact_rows)
+        facts: list[UserProfileFact] = []
+        for row in fact_rows:
+            key = normalize_optional_text(row.get("fact_key"))
+            value = normalize_optional_text(row.get("fact_value"))
+            if not key or not value:
+                continue
+            facts.append({"key": key, "value": value})
+        profile["facts"] = facts
 
     return profile
 
@@ -274,9 +242,6 @@ async def upsert_profile_data_in_db(
 
 
 __all__ = [
-    "build_profile_field_values",
-    "build_user_profile_facts",
-    "decode_profile_tags_json",
     "empty_user_profile",
     "query_profile_from_db",
     "upsert_fact_in_db",

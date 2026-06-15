@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import re
-from typing import Any
 
 from app.shared.core.logger import get_logger
 from app.shared.core.json_utils import parse_first_json_object
@@ -47,98 +46,6 @@ _BANK_CARD_PATTERN = re.compile(r"\d{16,19}")
 _EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 
 
-def extract_summary_text(session_summary: str | SessionSummary | None) -> str:
-    """把摘要对象统一转换为纯文本，避免把模型对象 repr 塞进 prompt。"""
-    if isinstance(session_summary, SessionSummary):
-        return session_summary.content.strip()
-    if isinstance(session_summary, str):
-        return session_summary.strip()
-    return ""
-
-
-def extract_response_text(response: Any) -> str:
-    """兼容字符串、AIMessage.content 列表等不同 LLM 返回形态。"""
-    content = getattr(response, "content", response)
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        text_parts: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                part = item
-            elif isinstance(item, dict):
-                text = item.get("text")
-                part = text if isinstance(text, str) else ""
-            else:
-                text = getattr(item, "text", None)
-                part = text if isinstance(text, str) else ""
-            if part:
-                text_parts.append(part)
-        return "\n".join(text_parts)
-    return str(content)
-
-def parse_llm_response(response: str) -> dict[str, Any]:
-    """从 LLM 返回文本中提取首个 JSON 对象。"""
-    try:
-        parsed = parse_first_json_object(response)
-        return parsed or {}
-    except Exception as exc:
-        logger.debug("[memory] JSON 解析失败: %s", exc)
-        return {}
-
-
-def build_semantic_memories(
-    parsed: dict[str, Any],
-    *,
-    sensitive_patterns: tuple[re.Pattern[str], ...],
-) -> list[MemoryExtractorResult]:
-    """把 LLM 输出中的 semantic 数组转换为强类型结果。"""
-    semantic_memories: list[MemoryExtractorResult] = []
-    for item in parsed.get("semantic", []):
-        if not isinstance(item, dict):
-            continue
-
-        content = str(item.get("content", "") or "")
-        content = _PHONE_PATTERN.sub(
-            lambda match: match.group()[:3] + "****" + match.group()[-4:],
-            content,
-        )
-        content = _ID_CARD_PATTERN.sub(
-            lambda match: match.group()[:4] + "**********" + match.group()[-4:],
-            content,
-        )
-        content = _BANK_CARD_PATTERN.sub(
-            lambda match: match.group()[:4] + " **** **** " + match.group()[-4:],
-            content,
-        )
-        content = _EMAIL_PATTERN.sub(
-            lambda match: (
-                match.group().partition("@")[0][:3]
-                + "***@"
-                + match.group().partition("@")[2]
-            ),
-            content,
-        )
-        memory_type = item.get("memory_type", "")
-        if not content or len(content) < 10:
-            continue
-        if any(pattern.search(content) for pattern in sensitive_patterns):
-            continue
-        if content.strip() in _GREETING_MESSAGES:
-            continue
-        if memory_type not in _SAVEABLE_MEMORY_TYPES:
-            continue
-
-        semantic_memories.append(
-            MemoryExtractorResult(
-                memory_type=memory_type,
-                content=content,
-                reason=item.get("reason"),
-            )
-        )
-    return semantic_memories
-
-
 class MemoryExtractor:
     """长期记忆抽取编排层。"""
 
@@ -159,7 +66,12 @@ class MemoryExtractor:
         - profile_data: 存入 MySQL（preferred_brand, budget_range, preferred_category, tags, facts）
         """
         try:
-            summary_text = extract_summary_text(session_summary)
+            if isinstance(session_summary, SessionSummary):
+                summary_text = session_summary.content.strip()
+            elif isinstance(session_summary, str):
+                summary_text = session_summary.strip()
+            else:
+                summary_text = ""
             summary_block = f"\n当前会话摘要：{summary_text}" if summary_text else ""
 
             prompt = f"""你是长期记忆抽取助手。从客服对话中判断是否有值得写入长期记忆的信息。
@@ -199,12 +111,75 @@ class MemoryExtractor:
 }}
 只输出JSON，不要其他内容。"""
             response = await self.llm_client.ainvoke(prompt)
-            raw = extract_response_text(response)
-            parsed = parse_llm_response(raw)
-            semantic = build_semantic_memories(
-                parsed,
-                sensitive_patterns=self.sensitive_patterns,
-            )
+            content = getattr(response, "content", response)
+            if isinstance(content, str):
+                raw = content
+            elif isinstance(content, list):
+                text_parts: list[str] = []
+                for item in content:
+                    if isinstance(item, str):
+                        part = item
+                    elif isinstance(item, dict):
+                        text = item.get("text")
+                        part = text if isinstance(text, str) else ""
+                    else:
+                        text = getattr(item, "text", None)
+                        part = text if isinstance(text, str) else ""
+                    if part:
+                        text_parts.append(part)
+                raw = "\n".join(text_parts)
+            else:
+                raw = str(content)
+
+            try:
+                parsed = parse_first_json_object(raw) or {}
+            except Exception as exc:
+                logger.debug("[memory] JSON 解析失败: %s", exc)
+                parsed = {}
+
+            semantic: list[MemoryExtractorResult] = []
+            for item in parsed.get("semantic", []):
+                if not isinstance(item, dict):
+                    continue
+
+                masked_content = str(item.get("content", "") or "")
+                masked_content = _PHONE_PATTERN.sub(
+                    lambda match: match.group()[:3] + "****" + match.group()[-4:],
+                    masked_content,
+                )
+                masked_content = _ID_CARD_PATTERN.sub(
+                    lambda match: match.group()[:4] + "**********" + match.group()[-4:],
+                    masked_content,
+                )
+                masked_content = _BANK_CARD_PATTERN.sub(
+                    lambda match: match.group()[:4] + " **** **** " + match.group()[-4:],
+                    masked_content,
+                )
+                masked_content = _EMAIL_PATTERN.sub(
+                    lambda match: (
+                        match.group().partition("@")[0][:3]
+                        + "***@"
+                        + match.group().partition("@")[2]
+                    ),
+                    masked_content,
+                )
+                memory_type = item.get("memory_type", "")
+                if not masked_content or len(masked_content) < 10:
+                    continue
+                if any(pattern.search(masked_content) for pattern in self.sensitive_patterns):
+                    continue
+                if masked_content.strip() in _GREETING_MESSAGES:
+                    continue
+                if memory_type not in _SAVEABLE_MEMORY_TYPES:
+                    continue
+
+                semantic.append(
+                    MemoryExtractorResult(
+                        memory_type=memory_type,
+                        content=masked_content,
+                        reason=item.get("reason"),
+                    )
+                )
             profile = normalize_profile_data(parsed.get("profile"))
             return semantic, profile
         except Exception as exc:

@@ -58,7 +58,6 @@ deepseek_agent/
 ### 2.6 `app/scripts`
 
 - 建表
-- 重置表
 - Compose 启动链路内部辅助脚本
 
 ## 3. 依赖方向

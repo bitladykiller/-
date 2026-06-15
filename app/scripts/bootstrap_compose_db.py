@@ -1,10 +1,6 @@
 """Docker Compose 启动时的数据库建表脚本。
 
-和 `init_db.py` 的差异：
-- 这里只执行 `create_all`
-- 不执行 `drop_all`
-
-这样容器重启时不会把 MySQL 里的会话和画像数据清空。
+只执行 `create_all`，不会删除已有表结构或数据。
 这个模块只供 Docker Compose 启动链路内部调用，不保留独立脚本入口。
 """
 from __future__ import annotations

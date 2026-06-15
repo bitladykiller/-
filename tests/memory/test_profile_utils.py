@@ -6,7 +6,6 @@ from app.knowledge.infrastructure.profile.profile_payload_support import (
     normalize_profile_tags,
     PROFILE_FIELD_NAMES,
 )
-import app.user.application.user_profile_store as profile_store
 
 
 def test_coerce_user_profile_payload_returns_stable_defaults() -> None:
@@ -63,56 +62,4 @@ def test_profile_normalization_filters_text_tags_and_facts() -> None:
         "preferred_brand": "小米",
         "tags": ["智能家居"],
         "facts": [{"key": "city", "value": "上海"}],
-    }
-
-
-def test_decode_profile_tags_json_filters_invalid_values() -> None:
-    assert profile_store.decode_profile_tags_json('["空调", "空调", "", "高端"]') == ["空调", "高端"]
-    assert profile_store.decode_profile_tags_json("not-json") == []
-
-
-def test_build_user_profile_facts_filters_invalid_rows() -> None:
-    facts = profile_store.build_user_profile_facts(
-        [
-            {"fact_key": "workspace", "fact_value": "阿里"},
-            {"fact_key": "workspace", "fact_value": ""},
-            {"fact_key": None, "fact_value": "ignored"},
-        ]
-    )
-
-    assert facts == [{"key": "workspace", "value": "阿里"}]
-
-
-def test_build_profile_field_values_keeps_explicit_empty_tags() -> None:
-    field_values = profile_store.build_profile_field_values(
-        preferred_brand="  小米 ",
-        budget_range=None,
-        preferred_category="",
-        tags=[],
-    )
-
-    assert field_values == {
-        "preferred_brand": "小米",
-        "tags": "[]",
-    }
-
-
-def test_profile_store_helpers_handle_db_rows_and_write_fields() -> None:
-    assert profile_store.decode_profile_tags_json('["高端", "", "高端"]') == ["高端"]
-    assert profile_store.decode_profile_tags_json(None) == []
-    assert profile_store.build_user_profile_facts(
-        [
-            {"fact_key": "workspace", "fact_value": "阿里"},
-            {"fact_key": None, "fact_value": "ignored"},
-        ]
-    ) == [{"key": "workspace", "value": "阿里"}]
-    assert profile_store.build_profile_field_values(
-        preferred_brand="  华为 ",
-        budget_range=" 3000-5000 ",
-        preferred_category=None,
-        tags=["门铃", "门铃", ""],
-    ) == {
-        "preferred_brand": "华为",
-        "budget_range": "3000-5000",
-        "tags": '["门铃"]',
     }

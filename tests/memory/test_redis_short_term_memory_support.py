@@ -1,18 +1,10 @@
 import asyncio
 
 import app.knowledge.infrastructure.stm.redis_short_term_memory as stm_memory
-from app.knowledge.infrastructure.config import (
-    short_term_compression_config,
-    short_term_config,
-    short_term_redis_config,
-    short_term_window_config,
-)
 from app.knowledge.domain.schemas import MessageRecord, SessionMeta, SessionSummary
 from app.knowledge.infrastructure.stm.redis_short_term_memory import (
     run_compression_pipeline,
     CompressionContext,
-    build_compression_context,
-    build_runtime_settings,
     should_compress_session,
 )
 
@@ -52,13 +44,12 @@ def _run(awaitable):
     return asyncio.run(awaitable)
 
 
-def test_build_runtime_settings_collects_nested_config() -> None:
-    settings = build_runtime_settings(
-        config=short_term_config(),
-        redis_config=short_term_redis_config(),
-        window_config=short_term_window_config(),
-        compression_config=short_term_compression_config(),
-    )
+def _build_settings() -> stm_memory.ShortTermMemoryRuntimeSettings:
+    return stm_memory.RedisShortTermMemory(redis_client=object()).settings
+
+
+def test_constructor_collects_nested_runtime_settings() -> None:
+    settings = _build_settings()
 
     assert settings.key_prefix == "agent:stm"
     assert settings.ttl_seconds == 86400
@@ -69,12 +60,7 @@ def test_build_runtime_settings_collects_nested_config() -> None:
 
 
 def test_should_compress_session_respects_disable_and_thresholds() -> None:
-    settings = build_runtime_settings(
-        config=short_term_config(),
-        redis_config=short_term_redis_config(),
-        window_config=short_term_window_config(),
-        compression_config=short_term_compression_config(),
-    )
+    settings = _build_settings()
 
     assert should_compress_session(
         settings,
@@ -97,29 +83,62 @@ def test_should_compress_session_respects_disable_and_thresholds() -> None:
     ) is False
 
 
-def test_build_compression_context_splits_messages_and_carries_summary() -> None:
-    settings = build_runtime_settings(
-        config=short_term_config(),
-        redis_config=short_term_redis_config(),
-        window_config=short_term_window_config(),
-        compression_config=short_term_compression_config(),
-    )
-    keys = stm_memory.build_session_keys("agent:stm", "tenant-1", "user-1", "session-1")
+def test_compress_session_memory_builds_pipeline_context() -> None:
+    redis_client = object()
+    stm = stm_memory.RedisShortTermMemory(redis_client=redis_client)
     meta = SessionMeta(total_turns=8, last_updated_at=0, last_compressed_turn=1)
     summary = SessionSummary(content="旧摘要", compressed_at=12, compressed_round=4)
     messages = [_build_message(message_id=f"msg-{index}", turn_index=index) for index in range(1, 11)]
+    captured: dict[str, object] = {}
 
-    context = build_compression_context(
-        settings=settings,
-        keys=keys,
-        meta=meta,
-        message_count=len(messages),
-        old_summary=summary,
-        all_messages=messages,
+    async def fake_get_meta(*_args) -> SessionMeta:
+        return meta
+
+    async def fake_get_message_count(*_args) -> int:
+        return len(messages)
+
+    async def fake_get_summary(*_args) -> SessionSummary:
+        return summary
+
+    async def fake_get_recent_messages(*_args, **_kwargs) -> list[MessageRecord]:
+        return messages
+
+    async def fake_llm_compress(_summary: str, _messages: list[MessageRecord]) -> str:
+        raise AssertionError("should not be called in this test")
+
+    async def fake_run_compression_pipeline(**kwargs) -> bool:
+        captured.update(kwargs)
+        return True
+
+    stm.get_meta = fake_get_meta  # type: ignore[method-assign]
+    stm.get_message_count = fake_get_message_count  # type: ignore[method-assign]
+    stm.get_summary = fake_get_summary  # type: ignore[method-assign]
+    stm.get_recent_messages = fake_get_recent_messages  # type: ignore[method-assign]
+    original_run_pipeline = stm_memory.run_compression_pipeline
+    stm_memory.run_compression_pipeline = fake_run_compression_pipeline
+    try:
+        compressed = _run(
+            stm.compress_session_memory(
+                "tenant-1",
+                "user-1",
+                "session-1",
+                fake_llm_compress,
+            )
+        )
+    finally:
+        stm_memory.run_compression_pipeline = original_run_pipeline
+
+    assert compressed is True
+    assert captured["redis_client"] is redis_client
+    assert captured["lock_ttl_seconds"] == stm.settings.lock_ttl_seconds
+    context = captured["context"]
+    assert isinstance(context, CompressionContext)
+    assert context.keys == stm_memory.build_session_keys(
+        "agent:stm",
+        "tenant-1",
+        "user-1",
+        "session-1",
     )
-
-    assert context is not None
-    assert context.keys == keys
     assert context.old_summary_str == summary.model_dump_json()
     assert [message.message_id for message in context.messages_to_compress] == ["msg-1", "msg-2"]
     assert [message.message_id for message in context.messages_to_keep] == [
@@ -132,6 +151,48 @@ def test_build_compression_context_splits_messages_and_carries_summary() -> None
         "msg-9",
         "msg-10",
     ]
+
+
+def test_compress_session_memory_returns_false_when_threshold_not_met() -> None:
+    stm = stm_memory.RedisShortTermMemory(redis_client=object())
+
+    async def fake_get_meta(*_args) -> SessionMeta:
+        return SessionMeta(total_turns=2, last_updated_at=0, last_compressed_turn=1)
+
+    async def fake_get_message_count(*_args) -> int:
+        return 1
+
+    async def fake_get_summary(*_args):
+        return None
+
+    async def fake_get_recent_messages(*_args, **_kwargs) -> list[MessageRecord]:
+        return []
+
+    async def fake_llm_compress(_summary: str, _messages: list[MessageRecord]) -> str:
+        raise AssertionError("should not be called in this test")
+
+    async def fake_run_compression_pipeline(**_kwargs) -> bool:
+        raise AssertionError("should not be called in this test")
+
+    stm.get_meta = fake_get_meta  # type: ignore[method-assign]
+    stm.get_message_count = fake_get_message_count  # type: ignore[method-assign]
+    stm.get_summary = fake_get_summary  # type: ignore[method-assign]
+    stm.get_recent_messages = fake_get_recent_messages  # type: ignore[method-assign]
+    original_run_pipeline = stm_memory.run_compression_pipeline
+    stm_memory.run_compression_pipeline = fake_run_compression_pipeline
+    try:
+        compressed = _run(
+            stm.compress_session_memory(
+                "tenant-1",
+                "user-1",
+                "session-1",
+                fake_llm_compress,
+            )
+        )
+    finally:
+        stm_memory.run_compression_pipeline = original_run_pipeline
+
+    assert compressed is False
 
 
 def test_run_compression_pipeline_updates_meta_and_releases_lock() -> None:

@@ -24,8 +24,8 @@ make install-dev
 ### 3. 配置环境变量
 
 ```bash
-cp .env.example llm_backend/.env
-# 编辑 llm_backend/.env 配置必要的环境变量
+cp .env.example app/.env
+# 编辑 app/.env 配置必要的环境变量
 ```
 
 ## 代码规范

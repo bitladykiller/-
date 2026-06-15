@@ -42,7 +42,7 @@ def _run(awaitable):
 
 
 def _build_ltm(monkeypatch, *, retrieval_core: FakeRetrievalCore | None = None):
-    monkeypatch.setattr(ltm_module, "ensure_collection_ready_or_raise", lambda **_kwargs: None)
+    monkeypatch.setattr(ltm_module, "ensure_memory_collection", lambda *_args, **_kwargs: False)
     embedding_model = FakeEmbeddingModel()
     return ltm_module.SimpleLongTermMemory(
         milvus_client=object(),
@@ -89,38 +89,9 @@ def test_entity_to_memory_falls_back_for_none_fields() -> None:
     }
 
 
-def test_ensure_collection_ready_or_raise_logs_created_or_existing(monkeypatch) -> None:
-    class FakeLogger:
-        def __init__(self) -> None:
-            self.info_messages: list[str] = []
-
-        def info(self, message: str) -> None:
-            self.info_messages.append(message)
-
-    logger = FakeLogger()
-    monkeypatch.setattr(ltm_module, "ensure_memory_collection", lambda *_args, **_kwargs: False)
-    ltm_module.ensure_collection_ready_or_raise(
-        milvus_client=object(),
-        collection_name="memory_coll",
-        logger=logger,
-    )
-
-    monkeypatch.setattr(ltm_module, "ensure_memory_collection", lambda *_args, **_kwargs: True)
-    ltm_module.ensure_collection_ready_or_raise(
-        milvus_client=object(),
-        collection_name="memory_coll",
-        logger=logger,
-    )
-
-    assert logger.info_messages == [
-        "Collection memory_coll 已存在",
-        "Collection memory_coll 创建成功（含 BM25 全文索引）",
-    ]
-
-
 def test_save_memory_inserts_record_built_from_embedding(monkeypatch) -> None:
     inserted_records: list[list[dict]] = []
-    monkeypatch.setattr(ltm_module, "ensure_collection_ready_or_raise", lambda **_kwargs: None)
+    monkeypatch.setattr(ltm_module, "ensure_memory_collection", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(
         ltm_module,
         "insert_records",
@@ -192,9 +163,65 @@ def test_hybrid_search_uses_multiplier_for_search_limit(monkeypatch) -> None:
     ]
 
 
+def test_hybrid_search_uses_default_search_config_when_overrides_missing(monkeypatch) -> None:
+    fake_core = FakeRetrievalCore()
+    ltm, _embedding_model = _build_ltm(monkeypatch, retrieval_core=fake_core)
+    ltm.search_config = {"top_k": 5, "score_threshold": 0.72}
+
+    _run(
+        ltm.hybrid_search(
+            "tenant-1",
+            "user-1",
+            "路由器经常断网",
+        )
+    )
+
+    assert fake_core.hybrid_calls == [
+        {
+            "query": "路由器经常断网",
+            "limit": 5,
+            "filter_expr": 'tenant_id == "tenant-1" and user_id == "user-1" and is_deleted == false',
+            "output_fields": ltm_module.MEMORY_OUTPUT_FIELDS,
+            "score_threshold": 0.72,
+            "search_limit": 10,
+        }
+    ]
+
+
+def test_hybrid_search_skips_hits_without_entity_dict(monkeypatch) -> None:
+    fake_core = FakeRetrievalCore()
+    fake_core.hybrid_hits = [
+        {"entity": None, "score": 0.5},
+        {
+            "entity": {
+                "memory_id": "mem-3",
+                "tenant_id": "tenant-1",
+                "user_id": "user-1",
+                "memory_type": "issue_history",
+                "content": "之前问过洗衣机问题",
+            },
+            "score": 0.93,
+        },
+    ]
+    ltm, _embedding_model = _build_ltm(monkeypatch, retrieval_core=fake_core)
+
+    results = _run(
+        ltm.hybrid_search(
+            "tenant-1",
+            "user-1",
+            "洗衣机一直异响",
+        )
+    )
+
+    assert len(results) == 1
+    assert results[0].memory.memory_id == "mem-3"
+    assert results[0].memory.memory_type == "issue_history"
+    assert results[0].score == 0.93
+
+
 def test_deduplicate_memory_returns_false_when_hit_threshold_reached(monkeypatch) -> None:
     search_calls: list[dict] = []
-    monkeypatch.setattr(ltm_module, "ensure_collection_ready_or_raise", lambda **_kwargs: None)
+    monkeypatch.setattr(ltm_module, "ensure_memory_collection", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(
         ltm_module,
         "search_records",
@@ -238,6 +265,34 @@ def test_deduplicate_memory_returns_false_when_hit_threshold_reached(monkeypatch
             "output_fields": ltm_module.DEDUP_OUTPUT_FIELDS,
         }
     ]
+
+
+def test_deduplicate_memory_returns_true_when_hits_below_threshold(monkeypatch) -> None:
+    monkeypatch.setattr(ltm_module, "ensure_memory_collection", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        ltm_module,
+        "search_records",
+        lambda *_args, **_kwargs: [[{"distance": 0.82}, {"distance": 0.88}]],
+    )
+
+    ltm = ltm_module.SimpleLongTermMemory(
+        milvus_client=object(),
+        embedding_model=FakeEmbeddingModel([0.5, 0.6]),
+        collection_name="memory_coll",
+        retrieval_core=FakeRetrievalCore(),
+    )
+    ltm.deduplication_config = {"top_k": 2, "similarity_threshold": 0.9}
+
+    should_save = _run(
+        ltm.deduplicate_memory(
+            "tenant-1",
+            "user-1",
+            "issue_history",
+            "空调一直滴水",
+        )
+    )
+
+    assert should_save is True
 
 
 def test_update_memory_hit_info_updates_memory_and_upserts_partial_record(monkeypatch) -> None:

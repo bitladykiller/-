@@ -163,25 +163,6 @@ def install_fake_runtime_dependencies(
     monkeypatch.setattr(lg_memory_runtime.settings._infra, "MILVUS_PORT", 19531)
 
     return calls
-
-
-def test_configurable_scope_reads_values_and_defaults() -> None:
-    assert memory_context.configurable_scope(
-        {
-            "configurable": {
-                "tenant_id": "tenant-1",
-                "user_id": "user-2",
-                "thread_id": "thread-3",
-            }
-        }
-    ) == ("tenant-1", "user-2", "thread-3")
-    assert memory_context.configurable_scope({}) == (
-        "default",
-        "anonymous",
-        "default",
-    )
-
-
 def test_get_memory_middleware_caches_created_instance(monkeypatch) -> None:
     calls = install_fake_runtime_dependencies(monkeypatch)
     monkeypatch.setattr(lg_memory_runtime, "_memory_middleware_instance", None)
