@@ -2,7 +2,6 @@ from app.chat.infrastructure.memory_bridge.context import (
     build_memory_context,
 )
 from app.knowledge.domain.schemas import (
-    AgentMemoryState,
     LongTermMemory,
     MemorySearchResult,
     MessageRecord,
@@ -15,18 +14,14 @@ def test_build_memory_context_orders_sections_by_priority() -> None:
         session_summary=SessionSummary(content="用户在比较不同门铃方案"),
         recent_messages=[
             MessageRecord(
-                message_id="msg-1",
                 role="user",
                 content="我这次更想买华为的",
                 created_at=1,
-                turn_index=1,
             ),
             MessageRecord(
-                message_id="msg-2",
                 role="assistant",
                 content="可以重点看续航和安装方式",
                 created_at=2,
-                turn_index=1,
             ),
         ],
         long_term_memories=[
@@ -38,7 +33,6 @@ def test_build_memory_context_orders_sections_by_priority() -> None:
                     memory_type="issue_history",
                     content="之前咨询过智能门铃断网问题",
                 ),
-                score=0.92,
             )
         ],
         user_profile={

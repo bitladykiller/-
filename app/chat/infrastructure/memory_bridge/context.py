@@ -13,18 +13,8 @@
 - 运行时依赖初始化和单例生命周期
 """
 
-from __future__ import annotations
-
-from langchain_core.runnables import RunnableConfig
-
 from app.chat.infrastructure.graph.state import AgentState
-from app.chat.infrastructure.memory_bridge.runtime import (
-    get_memory_middleware,
-)
-from app.knowledge.domain.prompt_builder import (
-    build_memory_injection_prompt,
-    build_summary_injection_prompt,
-)
+from app.chat.infrastructure.memory_bridge.runtime import get_memory_middleware
 from app.knowledge.domain.schemas import (
     AgentMemoryState,
     MemorySearchResult,
@@ -32,6 +22,7 @@ from app.knowledge.domain.schemas import (
     SessionSummary,
     UserProfileData,
 )
+from langchain_core.runnables import RunnableConfig
 
 _DEFAULT_TENANT_ID = "default"
 _DEFAULT_USER_ID = "anonymous"
@@ -47,13 +38,16 @@ _USER_PROFILE_TEXT_LABELS = {
     "budget_range": "预算范围",
     "preferred_category": "偏好品类",
 }
+_MEMORY_TYPE_LABELS = {
+    "issue_history": "历史问题",
+    "solution_note": "有效方案",
+}
 _MEMORY_SECTION_TITLES = {
     "recent_messages": "P0 — 最近对话（权威性最高，冲突时以此为准）",
     "user_profile": "P1 — 用户画像（多次对话提炼，冲突时次于 P0）",
     "session_summary": "P2 — 会话摘要（压缩的旧对话，冲突时次于 P1）",
     "long_term_memory": "P3 — 长期记忆（历史跨会话，冲突时优先级最低）",
 }
-_MEMORY_INSTRUCTIONS = "【记忆说明】当以下信息来源存在矛盾时，优先信任 P0 > P1 > P2 > P3。"
 
 
 def build_memory_context(
@@ -63,12 +57,6 @@ def build_memory_context(
     user_profile: UserProfileData | None = None,
 ) -> str:
     """组装带优先级的记忆上下文字符串，用于注入 system prompt。"""
-    def build_memory_section(title: str, body: str) -> str:
-        """把段落标题和正文拼成统一分段格式。"""
-        if not body:
-            return ""
-        return f"[{title}]\n{body}"
-
     recent_message_lines: list[str] = []
     for message in recent_messages:
         role = _RECENT_MESSAGE_ROLE_LABELS.get(message.role, message.role)
@@ -95,25 +83,45 @@ def build_memory_context(
                 profile_lines.append(f"{key}: {value}")
         user_profile_text = "\n".join(profile_lines)
 
-    parts = [
-        build_memory_section(
+    long_term_memory_text = ""
+    if long_term_memories:
+        memory_lines: list[str] = []
+        for index, search_result in enumerate(long_term_memories, 1):
+            memory = search_result.memory
+            memory_type_label = _MEMORY_TYPE_LABELS.get(
+                memory.memory_type,
+                memory.memory_type,
+            )
+            memory_lines.append(f"{index}. {memory_type_label}：{memory.content}")
+        if memory_lines:
+            joined_memory_lines = "\n".join(memory_lines)
+            long_term_memory_text = (
+                "【长期记忆参考】\n"
+                f"{joined_memory_lines}\n"
+                "注意：以上长期记忆仅供参考，用户当前表达优先级更高。"
+            )
+
+    parts: list[str] = []
+    for title, body in (
+        (
             _MEMORY_SECTION_TITLES["recent_messages"],
             "\n".join(recent_message_lines),
         ),
-        build_memory_section(_MEMORY_SECTION_TITLES["user_profile"], user_profile_text),
-        build_memory_section(
+        (_MEMORY_SECTION_TITLES["user_profile"], user_profile_text),
+        (
             _MEMORY_SECTION_TITLES["session_summary"],
-            build_summary_injection_prompt(session_summary),
+            f"【会话上下文】\n{session_summary.content}"
+            if session_summary and session_summary.content
+            else "",
         ),
-        build_memory_section(
-            _MEMORY_SECTION_TITLES["long_term_memory"],
-            build_memory_injection_prompt(long_term_memories),
-        ),
-    ]
+        (_MEMORY_SECTION_TITLES["long_term_memory"], long_term_memory_text),
+    ):
+        if body:
+            parts.append(f"[{title}]\n{body}")
     parts = [section for section in parts if section.strip()]
     if not parts:
         return ""
-    return _MEMORY_INSTRUCTIONS + "\n\n" + "\n\n".join(parts)
+    return "【记忆说明】当以下信息来源存在矛盾时，优先信任 P0 > P1 > P2 > P3。" + "\n\n" + "\n\n".join(parts)
 
 
 async def load_memory_state(
@@ -165,11 +173,3 @@ async def enrich_question(
         mem.user_profile,
     )
     return f"{context}\n\n用户当前问题：{question}" if context else question
-
-
-__all__ = [
-    "build_memory_context",
-    "enrich_question",
-    "get_memory_middleware",
-    "load_memory_state",
-]

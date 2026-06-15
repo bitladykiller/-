@@ -37,17 +37,9 @@ class ValidateCypherOutput(BaseModel):
     )
 
 
-class BaseNeo4jStructuredSchemaProperty(BaseModel):
+class _Neo4jStructuredSchemaPropertyString(BaseModel):
     property: str = Field(description="The property name.")
     type: str = Field(description="The Neo4j type of the property.")
-
-    @builtin_property
-    def is_enum(self) -> bool:
-        """默认情况下属性不表示枚举值。"""
-        return False
-
-
-class _Neo4jStructuredSchemaPropertyString(BaseNeo4jStructuredSchemaProperty):
     values: List[str] = Field(
         description="A list of example values directly from the database."
     )
@@ -55,7 +47,7 @@ class _Neo4jStructuredSchemaPropertyString(BaseNeo4jStructuredSchemaProperty):
         description="The number of distinct values in the database.", default=None
     )
 
-    @property
+    @builtin_property
     def is_enum(self) -> bool:
         """Whether the object contains a valid enum."""
         if len(self.values) > 0 and self.distinct_count is not None:
@@ -65,6 +57,7 @@ class _Neo4jStructuredSchemaPropertyString(BaseNeo4jStructuredSchemaProperty):
 
     @field_validator("type")
     def validate_prop_type(cls, v: str) -> str:
+        _ = cls
         assert v == "STRING", "Property type must be 'STRING'."
         return v
 
@@ -85,7 +78,9 @@ class _Neo4jStructuredSchemaPropertyString(BaseNeo4jStructuredSchemaProperty):
             return set()
 
 
-class Neo4jStructuredSchemaPropertyNumber(BaseNeo4jStructuredSchemaProperty):
+class Neo4jStructuredSchemaPropertyNumber(BaseModel):
+    property: str = Field(description="The property name.")
+    type: str = Field(description="The Neo4j type of the property.")
     min: float = Field(
         description="The min value of the number.", default=float("-inf")
     )
@@ -96,34 +91,14 @@ class Neo4jStructuredSchemaPropertyNumber(BaseNeo4jStructuredSchemaProperty):
 
     @field_validator("type")
     def validate_prop_type(cls, v: str) -> str:
+        _ = cls
         assert v in {"INTEGER", "FLOAT"}, "Property type must be 'INTEGER' or 'FLOAT'."
         return v
 
-
-class Neo4jStructuredSchemaPropertyList(BaseNeo4jStructuredSchemaProperty):
-    min_size: int = Field(description="The minimum size of the list.")
-    max_size: int = Field(description="The maximum size of the list.")
-
-    @field_validator("type")
-    def validate_prop_type(cls, v: str) -> str:
-        assert v == "LIST", "Property type must be 'LIST'."
-        return v
-
-
-class Neo4jStructuredSchemaPropertyDateTime(BaseNeo4jStructuredSchemaProperty):
-    min: str = Field(description="The earliest date.")
-    max: str = Field(description="The most recent date.")
-
-    @field_validator("type")
-    def validate_prop_type(cls, v: str) -> str:
-        assert v == "DATE_TIME", "Property type must be 'DATE_TIME'."
-        return v
-
-
-class _Neo4jStructuredSchemaRelationship(BaseModel):
-    start: str = Field(description="The start node label.")
-    type: str = Field(description="The relationship type.")
-    end: str = Field(description="The end node label.")
+    @builtin_property
+    def is_enum(self) -> bool:
+        """数值属性默认不表示枚举值。"""
+        return False
 
 
 class Neo4jStructuredSchema(BaseModel):
@@ -137,8 +112,6 @@ class Neo4jStructuredSchema(BaseModel):
         List[
             _Neo4jStructuredSchemaPropertyString
             | Neo4jStructuredSchemaPropertyNumber
-            | Neo4jStructuredSchemaPropertyList
-            | Neo4jStructuredSchemaPropertyDateTime
         ],
     ] = Field(
         description="A Python Dictionary with node labels as keys and a list of properties as values."
@@ -148,13 +121,11 @@ class Neo4jStructuredSchema(BaseModel):
         List[
             _Neo4jStructuredSchemaPropertyString
             | Neo4jStructuredSchemaPropertyNumber
-            | Neo4jStructuredSchemaPropertyList
-            | Neo4jStructuredSchemaPropertyDateTime
         ],
     ] = Field(
         description="A Python Dictionary with relationship types as keys and a list of properties as values."
     )
-    relationships: List[_Neo4jStructuredSchemaRelationship] = Field(
+    relationships: List[Dict[str, str]] = Field(
         description="A list of relationships."
     )
     metadata: Dict[str, Any] = Field(

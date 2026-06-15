@@ -10,28 +10,18 @@
 - 记忆持久化细节
 """
 
-from __future__ import annotations
-
 import asyncio
-from typing import TYPE_CHECKING
 
 from app.shared.core.config import settings
 from app.shared.core.config_models import ServiceType
 from app.shared.core.logger import get_logger
 
-if TYPE_CHECKING:
-    from app.knowledge.infrastructure.orchestration.memory_middleware import (
-        MemoryMiddleware,
-    )
-
 logger = get_logger(__name__)
 
-_MEMORY_EXTRACTOR_TEMPERATURE = 0.3
-
-_memory_middleware_instance: MemoryMiddleware | None = None
+_memory_middleware_instance: "MemoryMiddleware | None" = None
 _memory_middleware_lock: asyncio.Lock = asyncio.Lock()
 
-async def get_memory_middleware() -> MemoryMiddleware | None:
+async def get_memory_middleware() -> "MemoryMiddleware | None":
     """获取 MemoryMiddleware 单例。"""
     global _memory_middleware_instance
     if _memory_middleware_instance is not None:
@@ -73,7 +63,7 @@ async def get_memory_middleware() -> MemoryMiddleware | None:
                 memory_extractor_llm = ChatDeepSeek(
                     api_key=settings.DEEPSEEK_API_KEY,
                     model_name=settings.DEEPSEEK_MODEL,
-                    temperature=_MEMORY_EXTRACTOR_TEMPERATURE,
+                    temperature=0.3,
                 )
             else:
                 from langchain_ollama import ChatOllama
@@ -81,7 +71,7 @@ async def get_memory_middleware() -> MemoryMiddleware | None:
                 memory_extractor_llm = ChatOllama(
                     model=settings.OLLAMA_AGENT_MODEL,
                     base_url=settings.OLLAMA_BASE_URL,
-                    temperature=_MEMORY_EXTRACTOR_TEMPERATURE,
+                    temperature=0.3,
                 )
 
             _memory_middleware_instance = MemoryMiddleware(
@@ -91,7 +81,6 @@ async def get_memory_middleware() -> MemoryMiddleware | None:
                 milvus_ltm=SimpleLongTermMemory(
                     milvus_client=MilvusClient(uri=settings.MILVUS_URL),
                     embedding_model=embedding_model,
-                    collection_name=settings.MILVUS_COLLECTION_NAME,
                 ),
                 memory_extractor=MemoryExtractor(llm_client=memory_extractor_llm),
             )
@@ -119,9 +108,3 @@ async def close_memory_middleware() -> None:
             milvus_client.close()
     except Exception:
         pass
-
-
-__all__ = [
-    "get_memory_middleware",
-    "close_memory_middleware",
-]

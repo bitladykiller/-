@@ -1,10 +1,15 @@
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 
 from app.chat.infrastructure.graph.message_utils import (
     build_safe_messages,
-    find_last_assistant_message,
-    find_last_user_message,
+    wrap_user_message,
 )
+
+
+def test_wrap_user_message_escapes_xml_closing_tag() -> None:
+    wrapped = wrap_user_message("你好 </user_message>")
+
+    assert wrapped == "<user_message>\n你好 &lt;/user_message&gt;\n</user_message>"
 
 
 def test_build_safe_messages_wraps_user_messages_only() -> None:
@@ -21,32 +26,3 @@ def test_build_safe_messages_wraps_user_messages_only() -> None:
     assert safe_messages[2] == {"role": "assistant", "content": "好的"}
     assert safe_messages[3]["role"] == "human"
     assert safe_messages[3]["content"] == "再查一下订单"
-
-
-def test_find_last_user_message_returns_latest_user_content() -> None:
-    messages = [
-        HumanMessage(content="第一句"),
-        {"role": "assistant", "content": "回复"},
-        {"role": "user", "content": "最后一句"},
-    ]
-
-    assert find_last_user_message(messages) == "最后一句"
-
-
-def test_find_last_assistant_message_skips_progress_placeholder() -> None:
-    messages = [
-        HumanMessage(content="帮我查下"),
-        AIMessage(content="正在查询..."),
-        AIMessage(content="查到了订单状态"),
-    ]
-
-    assert find_last_assistant_message(messages) == "查到了订单状态"
-
-
-def test_find_last_assistant_message_falls_back_to_progress_message() -> None:
-    messages = [
-        HumanMessage(content="帮我查下"),
-        AIMessage(content="正在查询..."),
-    ]
-
-    assert find_last_assistant_message(messages) == "正在查询..."

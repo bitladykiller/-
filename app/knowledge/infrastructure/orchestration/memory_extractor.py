@@ -6,27 +6,25 @@
 3. 将结果拆分为语义记忆与结构化画像
 """
 
-from __future__ import annotations
-
+import json
 import re
 
-from app.shared.core.logger import get_logger
-from app.shared.core.json_utils import parse_first_json_object
-from app.knowledge.infrastructure.config import (
-    compiled_sensitive_patterns,
-    long_term_memory_type_values,
-)
-from app.knowledge.infrastructure.profile.profile_payload_support import (
-    normalize_profile_data,
-)
 from app.knowledge.domain.schemas import (
     MemoryExtractorResult,
     SessionSummary,
     UserProfileData,
 )
+from app.knowledge.infrastructure.config import (
+    COMPILED_SENSITIVE_PATTERNS,
+    LONG_TERM_MEMORY_TYPE_VALUES,
+)
+from app.knowledge.infrastructure.profile.profile_payload_support import (
+    normalize_profile_data,
+)
+from app.shared.core.json_utils import extract_first_json_object
+from app.shared.core.logger import get_logger
 
 logger = get_logger(__name__)
-_SAVEABLE_MEMORY_TYPES = long_term_memory_type_values()
 _GREETING_MESSAGES = frozenset(
     {
         "你好",
@@ -51,13 +49,12 @@ class MemoryExtractor:
 
     def __init__(self, llm_client):
         self.llm_client = llm_client
-        self.sensitive_patterns = compiled_sensitive_patterns()
 
     async def extract(
         self,
         user_message: str,
         assistant_message: str,
-        session_summary: str | SessionSummary | None = None,
+        session_summary: SessionSummary | None = None,
     ) -> tuple[list[MemoryExtractorResult], UserProfileData]:
         """抽取语义记忆 + 结构化画像。
 
@@ -66,12 +63,7 @@ class MemoryExtractor:
         - profile_data: 存入 MySQL（preferred_brand, budget_range, preferred_category, tags, facts）
         """
         try:
-            if isinstance(session_summary, SessionSummary):
-                summary_text = session_summary.content.strip()
-            elif isinstance(session_summary, str):
-                summary_text = session_summary.strip()
-            else:
-                summary_text = ""
+            summary_text = session_summary.content.strip() if session_summary else ""
             summary_block = f"\n当前会话摘要：{summary_text}" if summary_text else ""
 
             prompt = f"""你是长期记忆抽取助手。从客服对话中判断是否有值得写入长期记忆的信息。
@@ -132,7 +124,9 @@ class MemoryExtractor:
                 raw = str(content)
 
             try:
-                parsed = parse_first_json_object(raw) or {}
+                payload = extract_first_json_object(raw)
+                parsed_json = json.loads(payload) if payload is not None else None
+                parsed = parsed_json if isinstance(parsed_json, dict) else {}
             except Exception as exc:
                 logger.debug("[memory] JSON 解析失败: %s", exc)
                 parsed = {}
@@ -166,18 +160,17 @@ class MemoryExtractor:
                 memory_type = item.get("memory_type", "")
                 if not masked_content or len(masked_content) < 10:
                     continue
-                if any(pattern.search(masked_content) for pattern in self.sensitive_patterns):
+                if any(pattern.search(masked_content) for pattern in COMPILED_SENSITIVE_PATTERNS):
                     continue
                 if masked_content.strip() in _GREETING_MESSAGES:
                     continue
-                if memory_type not in _SAVEABLE_MEMORY_TYPES:
+                if memory_type not in LONG_TERM_MEMORY_TYPE_VALUES:
                     continue
 
                 semantic.append(
                     MemoryExtractorResult(
                         memory_type=memory_type,
                         content=masked_content,
-                        reason=item.get("reason"),
                     )
                 )
             profile = normalize_profile_data(parsed.get("profile"))

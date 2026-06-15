@@ -4,8 +4,6 @@
 统一入口：hybrid_search(query) → List[Dict]
 """
 
-from __future__ import annotations
-
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -89,7 +87,7 @@ class HybridSearcher:
         )
 
         # Reranker 重排序
-        if self.reranker and self.reranker.available:
+        if self.reranker:
             fused = self.reranker.rerank(
                 query, fused,
                 top_k=self.config.rerank_top_k,

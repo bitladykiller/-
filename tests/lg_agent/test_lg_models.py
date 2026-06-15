@@ -104,29 +104,25 @@ def test_get_model_caches_instances_by_role(monkeypatch) -> None:
     lg_models._models_cache.clear()
 
 
-def test_lazy_model_proxy_delegates_attribute_access_and_repr(monkeypatch) -> None:
-    monkeypatch.setattr(lg_models, "_get_model", lambda name, temperature: DummyModel())
+def test_lazy_model_proxy_delegates_attribute_access(monkeypatch) -> None:
+    monkeypatch.setattr(lg_models, "_get_model", lambda *_args: DummyModel())
     lazy_model = lg_models.LazyModelProxy(
         "router",
-        lg_models.MODEL_TEMPERATURES["router"],
-        lg_models._get_model,
+        0.1,
     )
 
     assert lazy_model.answer == "ok"
-    assert bool(lazy_model) is True
-    assert repr(lazy_model) == "_LazyModel(name=router, t=0.1)"
 
 
 def test_lazy_model_proxy_delegates_await(monkeypatch) -> None:
     monkeypatch.setattr(
         lg_models,
         "_get_model",
-        lambda name, temperature: AwaitableDummyModel("awaited"),
+        lambda *_args: AwaitableDummyModel("awaited"),
     )
     lazy_model = lg_models.LazyModelProxy(
         "agent",
-        lg_models.MODEL_TEMPERATURES["agent"],
-        lg_models._get_model,
+        0.7,
     )
 
     async def _await_value() -> str:

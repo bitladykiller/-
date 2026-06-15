@@ -3,53 +3,21 @@
 上传后的文件通过 `rag_doc_parser` 解析，再写入 Milvus / BM25 检索索引。
 本文件只保留“校验输入文件 + 调用解析索引管道”这一层，不承载上传或任务编排逻辑。
 """
-from __future__ import annotations
 
-from collections.abc import Callable
+import uuid
 from pathlib import Path
 from typing import Any
-import uuid
 
-from app.chat.application.document_formats import (
-    get_document_extension,
-    supports_document_indexing,
-)
-from app.knowledge.application.indexing_contracts import (
-    IndexingResult,
-    UploadFileInfo,
-)
-
-STATUS_SUCCESS = "success"
-STATUS_ERROR = "error"
-_STATUS_WARNING = "warning"
-FILE_NOT_FOUND_MESSAGE = "文件不存在"
-_EMPTY_DOCUMENT_MESSAGE = "文档无有效内容"
-_MISSING_DEPENDENCY_MESSAGE = "rag_doc_parser 模块未安装，文档已保存但未索引"
-
-
-def _default_pipeline_loader() -> tuple:
-    """延迟导入解析函数和检索索引器，降低模块 import 成本。"""
-    from rag_doc_parser.pipeline import parse_document
-    from rag_doc_parser.retrieval.config import RetrievalConfig
-    from rag_doc_parser.retrieval.hybrid_search import HybridSearcher
-
-    return parse_document, HybridSearcher(RetrievalConfig())
-
-
-def _default_doc_id_factory(user_id: int) -> str:
-    """生成上传文档默认 doc_id。"""
-    return f"upload_{user_id}_{uuid.uuid4().hex[:8]}"
+INDEXABLE_DOCUMENT_EXTENSIONS = frozenset({".pdf", ".docx"})
+DOCUMENT_MAGIC_SIGNATURES: dict[str, tuple[bytes, ...]] = {
+    ".pdf": (b"%PDF",),
+    ".docx": (b"PK\x03\x04",),
+}
 
 
 async def process_file(
-    file_info: UploadFileInfo,
-    *,
-    pipeline_loader: Callable[
-        [],
-        tuple[Callable[..., list[dict[str, Any]]], Any],
-    ] = _default_pipeline_loader,
-    doc_id_factory: Callable[[int], str] = _default_doc_id_factory,
-) -> IndexingResult:
+    file_info: dict[str, Any],
+) -> dict[str, Any]:
     """处理上传文件并写入检索索引。"""
     raw_path = file_info.get("path")
     if isinstance(raw_path, Path):
@@ -68,38 +36,39 @@ async def process_file(
         user_id = 0
 
     if path is None or not path.exists():
-        return {"status": STATUS_ERROR, "message": FILE_NOT_FOUND_MESSAGE}
+        return {"status": "error", "message": "文件不存在"}
 
-    ext = get_document_extension(path)
-    if not supports_document_indexing(ext):
-        return {"status": STATUS_ERROR, "message": f"不支持的文件类型: {ext}"}
+    ext = path.suffix.lower()
+    if ext not in INDEXABLE_DOCUMENT_EXTENSIONS:
+        return {"status": "error", "message": f"不支持的文件类型: {ext}"}
 
     try:
-        parse_document, searcher = pipeline_loader()
-        doc_id = doc_id_factory(user_id)
+        from rag_doc_parser.pipeline import parse_document
+        from rag_doc_parser.retrieval.config import RetrievalConfig
+        from rag_doc_parser.retrieval.hybrid_search import HybridSearcher
+
+        doc_id = f"upload_{user_id}_{uuid.uuid4().hex[:8]}"
         chunks = parse_document(str(path), doc_id=doc_id)
         if not chunks:
             return {
-                "status": STATUS_SUCCESS,
+                "status": "success",
                 "chunks": 0,
-                "message": _EMPTY_DOCUMENT_MESSAGE,
+                "message": "文档无有效内容",
             }
 
+        searcher = HybridSearcher(RetrievalConfig())
         count = await searcher.index(chunks)
         return {
-            "status": STATUS_SUCCESS,
+            "status": "success",
             "chunks": count,
             "doc_id": doc_id,
             "source_file": str(path),
         }
     except ImportError:
         return {
-            "status": _STATUS_WARNING,
-            "message": _MISSING_DEPENDENCY_MESSAGE,
+            "status": "warning",
+            "message": "rag_doc_parser 模块未安装，文档已保存但未索引",
             "file_info": file_info,
         }
     except Exception as exc:
-        return {"status": STATUS_ERROR, "message": str(exc)}
-
-
-__all__ = ["process_file"]
+        return {"status": "error", "message": str(exc)}

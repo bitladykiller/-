@@ -3,11 +3,6 @@ import sys
 import types
 
 import app.chat.application.task_queue as task_queue_module
-from app.chat.application.task_queue import (
-    TaskStatus,
-    run_task_with_status_updates,
-    write_task_status,
-)
 
 
 class FakeTaskStore:
@@ -80,10 +75,9 @@ def test_write_and_read_task_status_round_trip() -> None:
         store = FakeTaskStore()
         manager = task_queue_module._TaskManager(store)
 
-        await write_task_status(
-            store,
+        await manager._write_task_status(
             "task-2",
-            TaskStatus.RUNNING,
+            "running",
         )
 
         payload = await manager.get_status("task-2")
@@ -121,66 +115,28 @@ def test_task_manager_submit_registers_named_background_task() -> None:
     asyncio.run(scenario())
 
 
-def test_run_task_with_status_updates_marks_completed_and_logs() -> None:
-    async def scenario() -> None:
-        store = FakeTaskStore()
-        logger = FakeLogger()
-
-        async def job(value: int) -> dict[str, int]:
-            return {"value": value}
-
-        await run_task_with_status_updates(store, logger, "task-3", job, 9)
-
-        payload = await task_queue_module._TaskManager(store).get_status("task-3")
-        assert payload is not None
-        assert payload["status"] == "completed"
-        assert payload["result"] == {"value": 9}
-        assert logger.infos == [("任务完成 | task_id=%s", ("task-3",))]
-        assert logger.errors == []
-
-    asyncio.run(scenario())
-
-
-def test_run_task_with_status_updates_marks_failed_and_logs() -> None:
-    async def scenario() -> None:
-        store = FakeTaskStore()
-        logger = FakeLogger()
-
-        async def job() -> None:
-            raise RuntimeError("boom")
-
-        await run_task_with_status_updates(store, logger, "task-4", job)
-
-        payload = await task_queue_module._TaskManager(store).get_status("task-4")
-        assert payload is not None
-        assert payload["status"] == "failed"
-        assert payload["error"] == "boom"
-        assert logger.infos == []
-        assert len(logger.errors) == 1
-        message, args, exc_info = logger.errors[0]
-        assert message == "任务失败 | task_id=%s | %s"
-        assert args[0] == "task-4"
-        assert str(args[1]) == "boom"
-        assert exc_info is True
-
-    asyncio.run(scenario())
-
-
 def test_task_manager_submit_and_complete_task() -> None:
     async def scenario() -> None:
         store = FakeTaskStore()
         manager = task_queue_module._TaskManager(store)
+        fake_logger = FakeLogger()
+        original_logger = task_queue_module.logger
 
         async def job(value: int) -> dict[str, int]:
             return {"value": value}
 
-        task_id = await manager.submit(job, 7)
-        await asyncio.sleep(0.01)
+        task_queue_module.logger = fake_logger
+        try:
+            task_id = await manager.submit(job, 7)
+            await asyncio.sleep(0.01)
+        finally:
+            task_queue_module.logger = original_logger
 
         status = await manager.get_status(task_id)
         assert status is not None
         assert status["status"] == "completed"
         assert status["result"] == {"value": 7}
+        assert ("任务完成 | task_id=%s", (task_id,)) in fake_logger.infos
 
     asyncio.run(scenario())
 
@@ -201,9 +157,6 @@ def test_task_manager_submit_logs_callable_name_for_callable_object() -> None:
             def info(self, msg: str, *args, **kwargs) -> None:
                 info_logs.append((msg, args))
 
-            def error(self, msg: str, *args, **kwargs) -> None:
-                return None
-
         task_queue_module.logger = FakeModuleLogger()
         try:
             task_id = await manager.submit(SampleJob())
@@ -221,12 +174,18 @@ def test_task_manager_marks_failed_tasks() -> None:
     async def scenario() -> None:
         store = FakeTaskStore()
         manager = task_queue_module._TaskManager(store)
+        fake_logger = FakeLogger()
+        original_logger = task_queue_module.logger
 
         async def job() -> None:
             raise RuntimeError("boom")
 
-        task_id = await manager.submit(job)
-        await asyncio.sleep(0.01)
+        task_queue_module.logger = fake_logger
+        try:
+            task_id = await manager.submit(job)
+            await asyncio.sleep(0.01)
+        finally:
+            task_queue_module.logger = original_logger
 
         status = await manager.get_status(task_id)
         assert status is not None
@@ -237,6 +196,12 @@ def test_task_manager_marks_failed_tasks() -> None:
         assert task_id in raw_key
         raw_payload = store.values[raw_key]
         assert raw_payload is not None
+        assert len(fake_logger.errors) == 1
+        message, args, exc_info = fake_logger.errors[0]
+        assert message == "任务失败 | task_id=%s | %s"
+        assert args[0] == task_id
+        assert str(args[1]) == "boom"
+        assert exc_info is True
 
     asyncio.run(scenario())
 

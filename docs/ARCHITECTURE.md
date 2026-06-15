@@ -13,6 +13,7 @@ deepseek_agent/
 │   ├── user/
 │   ├── shared/
 │   └── scripts/
+├── configs/
 ├── docs/
 ├── scripts/
 ├── tests/
@@ -60,6 +61,12 @@ deepseek_agent/
 - 建表
 - Compose 启动链路内部辅助脚本
 
+### 2.7 `configs/docker`
+
+- Neo4j 初始化数据目录
+- MySQL 初始化 SQL
+- 不再承载应用独立启动脚本
+
 ## 3. 依赖方向
 
 默认依赖方向：
@@ -84,3 +91,5 @@ docker compose up -d --build
 
 项目当前只保留 Docker Compose 启动。
 容器启动前会自动执行建表步骤。
+仓库不再暴露任何对外直启入口。
+根目录 `Dockerfile` 只作为 Compose 构建镜像的内部产物。

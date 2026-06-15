@@ -20,7 +20,16 @@ def test_format_log_context_filters_empty_values() -> None:
 def test_setup_logging_adds_single_stream_handler_and_marks_noisy_loggers(monkeypatch) -> None:
     root_logger = logging.Logger("test.root")
     noisy_loggers = {
-        name: logging.Logger(name) for name in logger_module._NOISY_LOGGERS
+        name: logging.Logger(name)
+        for name in (
+            "sqlalchemy.engine",
+            "pymilvus.client",
+            "pymilvus.milvus_client",
+            "httpx",
+            "httpcore",
+            "urllib3",
+            "asyncio",
+        )
     }
 
     def fake_get_logger(name=None):
@@ -31,8 +40,8 @@ def test_setup_logging_adds_single_stream_handler_and_marks_noisy_loggers(monkey
     monkeypatch.setattr(logger_module, "_logging_initialized", False)
     monkeypatch.setattr(logger_module.logging, "getLogger", fake_get_logger)
 
-    logger_module.setup_logging(level=logging.INFO, format_str="%(message)s", date_format="%Y-%m-%d")
-    logger_module.setup_logging(level=logging.INFO, format_str="%(message)s", date_format="%Y-%m-%d")
+    logger_module.setup_logging()
+    logger_module.setup_logging()
 
     stream_handlers = [
         handler

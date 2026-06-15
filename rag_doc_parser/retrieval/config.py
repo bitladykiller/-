@@ -4,8 +4,6 @@
 定义 Milvus 混合检索与 Reranker 参数。
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 

@@ -9,12 +9,9 @@
 - 不承载包级兼容导出
 """
 
-from __future__ import annotations
-
 from typing import Any
 
 from app.chat.infrastructure.retrievers.retriever_contracts import (
-    RAG_SEARCH_STEP,
     Retriever,
 )
 
@@ -60,7 +57,7 @@ class MilvusDocRetriever(Retriever):
             "task": task,
             "records": records,
             "errors": errors,
-            "steps": [RAG_SEARCH_STEP],
+            "steps": ["execute_rag_search"],
         }
 
 
@@ -105,9 +102,3 @@ class KnowledgeGraphRetriever(Retriever):
             "steps": raw_result.get("steps", []),
             "raw": raw_result,
         }
-
-
-__all__ = [
-    "KnowledgeGraphRetriever",
-    "MilvusDocRetriever",
-]

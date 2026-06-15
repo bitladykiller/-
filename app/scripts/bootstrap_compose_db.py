@@ -3,7 +3,6 @@
 只执行 `create_all`，不会删除已有表结构或数据。
 这个模块只供 Docker Compose 启动链路内部调用，不保留独立脚本入口。
 """
-from __future__ import annotations
 
 import importlib
 

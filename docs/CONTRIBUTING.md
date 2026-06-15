@@ -19,8 +19,6 @@
 3. 本地模块
 
 ```python
-from __future__ import annotations
-
 import logging
 from pathlib import Path
 
@@ -237,9 +235,9 @@ async def chat(
 使用 `wrap_user_message` 包裹用户输入：
 
 ```python
-from app.shared.security import wrap_user_message
+from app.chat.infrastructure.graph.message_utils import wrap_user_message
 
-wrapped, original = wrap_user_message(user_input)
+wrapped = wrap_user_message(user_input)
 ```
 
 ### 9.2 敏感信息

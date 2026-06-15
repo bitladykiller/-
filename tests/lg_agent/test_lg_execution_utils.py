@@ -16,10 +16,9 @@ class FakePrompt:
     def __init__(self, chain: FakeChain) -> None:
         self.chain = chain
         self.messages: list[tuple[str, str]] | None = None
-        self.structured_model: object | None = None
 
     def __or__(self, structured_model: object) -> FakeChain:
-        self.structured_model = structured_model
+        _ = structured_model
         return self.chain
 
 

@@ -44,12 +44,13 @@ def test_memory_extractor_extract_supports_list_content_response() -> None:
             )
         )
     )
+    session_summary = SessionSummary(content="  直接摘要 ")
 
     semantic, profile = _run(
         extractor.extract(
             "门铃总是掉线",
             "我来帮你排查",
-            "  直接摘要 ",
+            session_summary,
         )
     )
 
@@ -58,7 +59,6 @@ def test_memory_extractor_extract_supports_list_content_response() -> None:
         {
             "memory_type": "issue_history",
             "content": "用户手机号138****5678反馈门铃总是掉线",
-            "reason": "含长期问题",
         }
     ]
     assert profile == {"preferred_brand": "apple"}
@@ -105,7 +105,6 @@ def test_memory_extractor_extract_masks_and_filters_semantic_items() -> None:
                 "用户手机号138****5678，身份证1000**********0000，"
                 "银行卡6222 **** **** 7890，邮箱a***@example.com"
             ),
-            "reason": None,
         }
     ]
     assert profile == {}
@@ -133,7 +132,6 @@ def test_memory_extractor_extract_returns_semantic_and_normalized_profile() -> N
         {
             "memory_type": "solution_note",
             "content": "联系 aaa***@example.com 后问题已解决",
-            "reason": "已验证",
         }
     ]
     assert profile == {

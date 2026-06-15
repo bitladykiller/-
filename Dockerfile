@@ -18,7 +18,9 @@ RUN pip install --upgrade pip \
 COPY app ./app
 COPY configs ./configs
 
-RUN mkdir -p /app/app/uploads \
-    && chmod +x /app/configs/docker/app/start.sh
+RUN mkdir -p /app/app/uploads
 
 WORKDIR /app
+
+# 这个镜像只供 docker-compose.yml 覆盖 command 后使用，不支持脱离 Compose 单独拉起。
+CMD ["sh", "-lc", "echo 'This image must be started via docker compose up -d --build.' >&2; exit 1"]

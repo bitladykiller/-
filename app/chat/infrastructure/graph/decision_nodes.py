@@ -12,19 +12,17 @@
 - 主图结构组装
 """
 
-from __future__ import annotations
-
 from typing import Literal
 
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
 
-from app.chat.domain.utils import question_from_state
 from app.chat.infrastructure.graph.execution_utils import (
     ainvoke_structured_question_output,
 )
 from app.chat.infrastructure.graph.message_utils import (
     build_safe_messages,
+    wrap_user_message,
 )
 from app.chat.infrastructure.graph.state import AgentState, RetrievalPlan, Router
 from app.chat.infrastructure.memory_bridge.context import (
@@ -45,30 +43,6 @@ from app.chat.infrastructure.modeling.prompts import (
     RETRIEVAL_PLAN_ROUTER_PROMPT,
     ROUTER_SYSTEM_PROMPT,
 )
-from app.shared.security import wrap_user_message
-
-GeneralRouteName = Literal["respond_to_general_query", "retrieval_plan_router"]
-GuardrailsEdgeName = Literal["retrieval_plan_route", "after_response"]
-RetrievalEdgeName = Literal[
-    "execute_graph_only",
-    "execute_rag_only",
-    "execute_parallel",
-    "execute_then",
-    "execute_react",
-]
-_GUARDRAILS_BLOCK_MESSAGE = "抱歉，我家暂时没有这方面的商品，可以在别家看看哦～"
-_RETRIEVAL_EDGE_MAP: dict[str, RetrievalEdgeName] = {
-    "GRAPH_ONLY": "execute_graph_only",
-    "RAG_ONLY": "execute_rag_only",
-    "PARALLEL": "execute_parallel",
-    "GRAPH_THEN_RAG": "execute_then",
-    "AGENT_REACT": "execute_react",
-}
-
-SCOPE_DESCRIPTION = """
-个人电商经营范围：智能家居产品（智能照明/安防/控制/音箱/厨电/清洁）。
-不包含：服装、鞋类、体育用品、化妆品、食品等。
-"""
 
 
 async def analyze_and_route_query(state: AgentState, *, config: RunnableConfig) -> dict:
@@ -81,7 +55,9 @@ async def analyze_and_route_query(state: AgentState, *, config: RunnableConfig) 
     return {"router": response}
 
 
-def route_query(state: AgentState) -> GeneralRouteName:
+def route_query(
+    state: AgentState,
+) -> Literal["respond_to_general_query", "retrieval_plan_router"]:
     """根据路由结果选择下一个节点。"""
     if state.router["type"] == "general":
         return "respond_to_general_query"
@@ -95,7 +71,7 @@ async def respond_to_general_query(
 ) -> dict[str, list[BaseMessage]]:
     """处理通用查询：闲聊、追问等。注入记忆上下文增强回复。"""
     system_prompt = GENERAL_QUERY_SYSTEM_PROMPT.format(logic=state.router["logic"])
-    user_message = question_from_state(state)
+    user_message = state.messages[-1].content if state.messages else ""
     memory_state = await load_memory_state(state, config, user_message)
     if memory_state is not None:
         memory_context = build_memory_context(
@@ -118,10 +94,16 @@ async def guardrails_node(
 ) -> dict[str, list[BaseMessage] | str]:
     """守卫节点：检查问题是否在业务范围内，拦截恶意输入。"""
     _ = config
-    wrapped_question, _ = wrap_user_message(question_from_state(state))
+    question = state.messages[-1].content if state.messages else ""
+    wrapped_question = wrap_user_message(question)
     guardrails_output = await ainvoke_structured_question_output(
         system_prompt=GUARDRAILS_SYSTEM_PROMPT,
-        human_prompt=f"参考此范围描述来决策:\n{SCOPE_DESCRIPTION}\nQuestion: {{question}}",
+        human_prompt=(
+            "参考此范围描述来决策:\n"
+            "个人电商经营范围：智能家居产品（智能照明/安防/控制/音箱/厨电/清洁）。\n"
+            "不包含：服装、鞋类、体育用品、化妆品、食品等。\n"
+            "Question: {question}"
+        ),
         model=guardrails_model,
         output_schema=GuardrailsDecision,
         question=wrapped_question,
@@ -129,13 +111,15 @@ async def guardrails_node(
 
     if guardrails_output.decision == "end":
         return {
-            "messages": [AIMessage(content=_GUARDRAILS_BLOCK_MESSAGE)],
+            "messages": [AIMessage(content="抱歉，我家暂时没有这方面的商品，可以在别家看看哦～")],
             "next_action": "end",
         }
     return {"next_action": "continue"}
 
 
-def guardrails_edge(state: AgentState) -> GuardrailsEdgeName:
+def guardrails_edge(
+    state: AgentState,
+) -> Literal["retrieval_plan_route", "after_response"]:
     """守卫后的路由：continue → 检索计划，end → 直接回复。"""
     if state.next_action == "end":
         return "after_response"
@@ -149,7 +133,8 @@ async def retrieval_plan_route(
 ) -> dict:
     """根据问题特征选择最优检索策略。"""
     _ = config
-    wrapped_question, _ = wrap_user_message(question_from_state(state))
+    question = state.messages[-1].content if state.messages else ""
+    wrapped_question = wrap_user_message(question)
     output = await ainvoke_structured_question_output(
         system_prompt=RETRIEVAL_PLAN_ROUTER_PROMPT,
         human_prompt="问题：{question}",
@@ -162,18 +147,21 @@ async def retrieval_plan_route(
     return {"retrieval_plan": plan}
 
 
-def retrieval_plan_edge(state: AgentState) -> RetrievalEdgeName:
+def retrieval_plan_edge(
+    state: AgentState,
+) -> Literal[
+    "execute_graph_only",
+    "execute_rag_only",
+    "execute_parallel",
+    "execute_then",
+    "execute_react",
+]:
     """根据检索计划路由到对应的执行节点。"""
     plan_name = (state.retrieval_plan or {}).get("plan")
-    return _RETRIEVAL_EDGE_MAP.get(plan_name or "AGENT_REACT", "execute_react")
-
-
-__all__ = [
-    "analyze_and_route_query",
-    "guardrails_edge",
-    "guardrails_node",
-    "respond_to_general_query",
-    "retrieval_plan_edge",
-    "retrieval_plan_route",
-    "route_query",
-]
+    return {
+        "GRAPH_ONLY": "execute_graph_only",
+        "RAG_ONLY": "execute_rag_only",
+        "PARALLEL": "execute_parallel",
+        "GRAPH_THEN_RAG": "execute_then",
+        "AGENT_REACT": "execute_react",
+    }.get(plan_name or "AGENT_REACT", "execute_react")

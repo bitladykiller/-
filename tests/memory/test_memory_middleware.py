@@ -1,6 +1,7 @@
 import asyncio
 
 import app.knowledge.infrastructure.orchestration.memory_middleware as memory_middleware
+import app.user.application.user_profile_service as profile_service
 from app.knowledge.domain.schemas import (
     LongTermMemory,
     MemoryExtractorResult,
@@ -28,35 +29,22 @@ class FakeRedisShortTermMemory:
     def __init__(
         self,
         *,
-        should_compress_result: bool,
-        compress_session_result: bool | None = None,
+        compress_session_result: bool = False,
     ) -> None:
         self.redis = object()
-        self.should_compress_result = should_compress_result
-        self.compress_session_result = (
-            should_compress_result
-            if compress_session_result is None
-            else compress_session_result
-        )
-        self.summary = SessionSummary(
-            content="历史摘要",
-            compressed_at=1,
-            compressed_round=1,
-        )
+        self.compress_session_result = compress_session_result
+        self.summary = SessionSummary(content="历史摘要")
         self.recent_messages = [
             MessageRecord(
-                message_id="msg-1",
                 role="user",
                 content="旧问题",
                 created_at=1,
-                turn_index=1,
             )
         ]
-        self.meta = SessionMeta(total_turns=1, last_updated_at=0, last_compressed_turn=0)
+        self.meta = SessionMeta(total_turns=1, last_compressed_turn=0)
         self.appended_messages: list[MessageRecord] = []
         self.saved_meta: SessionMeta | None = None
         self.refresh_calls = 0
-        self.should_compress_args: tuple[int, int, int] | None = None
         self.compress_calls = 0
         self.summary_callback_result: str | None = None
 
@@ -97,15 +85,6 @@ class FakeRedisShortTermMemory:
 
     async def get_message_count(self, tenant_id: str, user_id: str, session_id: str) -> int:
         return len(self.appended_messages)
-
-    def should_compress(
-        self,
-        total_turns: int,
-        last_compressed_turn: int,
-        msg_count: int,
-    ) -> bool:
-        self.should_compress_args = (total_turns, last_compressed_turn, msg_count)
-        return self.should_compress_result
 
     async def compress_session_memory(
         self,
@@ -201,8 +180,8 @@ def _run(awaitable):
     return asyncio.run(awaitable)
 
 
-def test_before_agent_loads_all_memory_layers() -> None:
-    redis_stm = FakeRedisShortTermMemory(should_compress_result=False)
+def test_before_agent_loads_all_memory_layers(monkeypatch) -> None:
+    redis_stm = FakeRedisShortTermMemory()
     milvus_ltm = FakeLongTermMemory()
     expected_profile = {"preferred_brand": "海尔", "tags": ["家电"]}
     expected_memory = MemorySearchResult(
@@ -213,7 +192,6 @@ def test_before_agent_loads_all_memory_layers() -> None:
             memory_type="issue_history",
             content="曾问过空调维修",
         ),
-        score=0.91,
     )
     milvus_ltm.hybrid_results = [expected_memory]
     extractor = FakeMemoryExtractor()
@@ -223,11 +201,12 @@ def test_before_agent_loads_all_memory_layers() -> None:
         profile_reader_calls.append((user_id, redis_client))
         return expected_profile
 
+    monkeypatch.setattr(profile_service, "get_profile", fake_profile_reader)
+
     middleware = MemoryMiddleware(
         redis_stm=redis_stm,
         milvus_ltm=milvus_ltm,
         memory_extractor=extractor,
-        profile_reader=fake_profile_reader,
     )
 
     memory_state = _run(
@@ -262,11 +241,12 @@ def test_before_agent_degrades_and_warns_once_on_memory_load_failures(monkeypatc
     async def broken_profile_reader(user_id: int, redis_client: object | None):
         raise RuntimeError("profile failed")
 
+    monkeypatch.setattr(profile_service, "get_profile", broken_profile_reader)
+
     middleware = MemoryMiddleware(
-        redis_stm=BrokenRedisShortTermMemory(should_compress_result=False),
+        redis_stm=BrokenRedisShortTermMemory(),
         milvus_ltm=BrokenLongTermMemory(),
         memory_extractor=FakeMemoryExtractor(),
-        profile_reader=broken_profile_reader,
     )
 
     first = _run(middleware.before_agent("tenant-1", "42", "session-1", "怎么修空调"))
@@ -287,8 +267,8 @@ def test_before_agent_degrades_and_warns_once_on_memory_load_failures(monkeypatc
     ]
 
 
-def test_after_agent_persists_turn_extracts_memory_and_updates_hits() -> None:
-    redis_stm = FakeRedisShortTermMemory(should_compress_result=True)
+def test_after_agent_persists_turn_extracts_memory_and_updates_hits(monkeypatch) -> None:
+    redis_stm = FakeRedisShortTermMemory(compress_session_result=True)
     milvus_ltm = FakeLongTermMemory()
     extractor = FakeMemoryExtractor(
         semantic_memories=[
@@ -305,11 +285,12 @@ def test_after_agent_persists_turn_extracts_memory_and_updates_hits() -> None:
         profile_writer_calls.append((user_id, profile, redis_client))
         return True
 
+    monkeypatch.setattr(profile_service, "upsert_profile_data", fake_profile_writer)
+
     middleware = MemoryMiddleware(
         redis_stm=redis_stm,
         milvus_ltm=milvus_ltm,
         memory_extractor=extractor,
-        profile_writer=fake_profile_writer,
     )
     hit_memory = MemorySearchResult(
         memory=LongTermMemory(
@@ -319,7 +300,6 @@ def test_after_agent_persists_turn_extracts_memory_and_updates_hits() -> None:
             memory_type="issue_history",
             content="门铃连不上网",
         ),
-        score=0.88,
     )
 
     _run(
@@ -341,8 +321,25 @@ def test_after_agent_persists_turn_extracts_memory_and_updates_hits() -> None:
     assert redis_stm.saved_meta is not None
     assert redis_stm.saved_meta.total_turns == 2
     assert redis_stm.refresh_calls == 1
-    assert redis_stm.should_compress_args is not None
     assert redis_stm.compress_calls == 1
+    assert extractor.llm_client.prompts == [
+        """你是对话摘要助手。请将以下对话历史压缩为一段简洁的摘要。
+
+已有的摘要（如有）：历史摘要
+
+最近的对话：
+[user]: 旧问题
+
+请用一段中文概括这段对话，内容包括：
+- 用户问了什么、关心什么
+- Agent 给出了什么信息、做了什么
+- 尚未解决的问题或待确认的事项
+
+输出严格JSON格式，只包含一个字段：
+- "content": 上述摘要文本（自由格式，一段中文）
+
+只输出JSON，不要其他内容。"""
+    ]
     assert redis_stm.summary_callback_result == '{"content":"压缩摘要"}'
     assert extractor.extract_calls == [
         ("门铃连不上网", "你可以先检查一下 WiFi 和电源", redis_stm.summary)
@@ -362,7 +359,7 @@ def test_after_agent_persists_turn_extracts_memory_and_updates_hits() -> None:
 def test_after_agent_logs_profile_write_failure_without_aborting(monkeypatch) -> None:
     logger = FakeLogger()
     monkeypatch.setattr(memory_middleware, "logger", logger)
-    redis_stm = FakeRedisShortTermMemory(should_compress_result=True)
+    redis_stm = FakeRedisShortTermMemory(compress_session_result=True)
     milvus_ltm = FakeLongTermMemory()
     extractor = FakeMemoryExtractor(
         semantic_memories=[
@@ -377,11 +374,12 @@ def test_after_agent_logs_profile_write_failure_without_aborting(monkeypatch) ->
     async def broken_profile_writer(user_id: int, profile: dict, redis_client: object | None):
         raise RuntimeError("profile failed")
 
+    monkeypatch.setattr(profile_service, "upsert_profile_data", broken_profile_writer)
+
     middleware = MemoryMiddleware(
         redis_stm=redis_stm,
         milvus_ltm=milvus_ltm,
         memory_extractor=extractor,
-        profile_writer=broken_profile_writer,
     )
 
     _run(
@@ -403,11 +401,8 @@ def test_after_agent_logs_profile_write_failure_without_aborting(monkeypatch) ->
     assert logger.debugs == ["[memory] 用户画像更新失败(user_id=5): profile failed"]
 
 
-def test_after_agent_skips_extraction_when_compress_did_not_complete() -> None:
-    redis_stm = FakeRedisShortTermMemory(
-        should_compress_result=True,
-        compress_session_result=False,
-    )
+def test_after_agent_skips_extraction_when_compress_did_not_complete(monkeypatch) -> None:
+    redis_stm = FakeRedisShortTermMemory()
     milvus_ltm = FakeLongTermMemory()
     extractor = FakeMemoryExtractor(
         semantic_memories=[
@@ -424,11 +419,12 @@ def test_after_agent_skips_extraction_when_compress_did_not_complete() -> None:
         profile_writer_calls.append((user_id, profile, redis_client))
         return True
 
+    monkeypatch.setattr(profile_service, "upsert_profile_data", fake_profile_writer)
+
     middleware = MemoryMiddleware(
         redis_stm=redis_stm,
         milvus_ltm=milvus_ltm,
         memory_extractor=extractor,
-        profile_writer=fake_profile_writer,
     )
 
     _run(
@@ -457,7 +453,7 @@ def test_after_agent_updates_hits_best_effort() -> None:
             self.updated_memory_ids.append(memory.memory_id)
             return True
 
-    redis_stm = FakeRedisShortTermMemory(should_compress_result=False)
+    redis_stm = FakeRedisShortTermMemory()
     milvus_ltm = PartiallyFailingLongTermMemory()
     middleware = MemoryMiddleware(
         redis_stm=redis_stm,
@@ -481,7 +477,6 @@ def test_after_agent_updates_hits_best_effort() -> None:
                         memory_type="issue_history",
                         content="正常命中",
                     ),
-                    score=0.9,
                 ),
                 MemorySearchResult(
                     memory=LongTermMemory(
@@ -491,7 +486,6 @@ def test_after_agent_updates_hits_best_effort() -> None:
                         memory_type="issue_history",
                         content="单条失败",
                     ),
-                    score=0.8,
                 ),
             ],
         )

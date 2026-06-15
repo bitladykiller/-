@@ -12,24 +12,21 @@
 - 纯 payload 构造和 facts 版本链细节
 """
 
-from __future__ import annotations
-
 import json
 
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.shared.core.database import AsyncSessionLocal
-from app.knowledge.infrastructure.profile.profile_payload_support import (
-    PROFILE_FIELD_NAMES,
-    normalize_optional_text,
-    normalize_profile_tags,
-)
 from app.knowledge.domain.schemas import (
     UserProfileData,
     UserProfileFact,
-    UserProfilePayload,
 )
+from app.knowledge.infrastructure.profile.profile_payload_support import (
+    PROFILE_FIELD_NAMES,
+    coerce_user_profile_data,
+    normalize_optional_text,
+    normalize_profile_tags,
+)
+from app.shared.core.database import AsyncSessionLocal
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 _PROFILE_QUERY_SQL = text(
     "SELECT preferred_brand, budget_range, preferred_category, tags "
@@ -58,18 +55,6 @@ _LINK_SUPERSEDED_FACT_SQL = text(
     "UPDATE user_facts SET superseded_by = :new_id WHERE id = :old_id"
 )
 _LAST_INSERT_ID_SQL = text("SELECT LAST_INSERT_ID()")
-
-
-def empty_user_profile(user_id: int) -> UserProfilePayload:
-    """返回默认空画像结构。"""
-    return {
-        "user_id": user_id,
-        "preferred_brand": None,
-        "budget_range": None,
-        "preferred_category": None,
-        "tags": [],
-        "facts": [],
-    }
 
 
 async def upsert_profile_fields_in_db(
@@ -158,9 +143,9 @@ async def upsert_fact_in_db(
     return True
 
 
-async def query_profile_from_db(user_id: int) -> UserProfilePayload:
+async def query_profile_from_db(user_id: int) -> UserProfileData:
     """从 MySQL 读取用户画像和激活中的 facts。"""
-    profile = empty_user_profile(user_id)
+    profile = coerce_user_profile_data({})
 
     async with AsyncSessionLocal() as db:
         profile_row = (
@@ -239,12 +224,3 @@ async def upsert_profile_data_in_db(
         data_changed = data_changed or fact_changed
 
     return data_changed
-
-
-__all__ = [
-    "empty_user_profile",
-    "query_profile_from_db",
-    "upsert_fact_in_db",
-    "upsert_profile_fields_in_db",
-    "upsert_profile_data_in_db",
-]

@@ -15,7 +15,7 @@
 ```python
 from app.shared.core.config import settings
 from app.shared.core.database import Base
-from app.shared.security import wrap_user_message
+from app.chat.infrastructure.graph.message_utils import wrap_user_message
 ```
 
 ### 对话能力

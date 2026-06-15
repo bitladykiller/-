@@ -10,7 +10,6 @@
 - 记忆读写
 - 检索与工具执行细节
 """
-from __future__ import annotations
 
 import json
 import uuid
@@ -21,17 +20,10 @@ from fastapi import APIRouter, HTTPException, Form
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 
-from app.api.common import INTERNAL_SERVER_ERROR_DETAIL
 from app.chat.infrastructure.graph.builder import graph
 from app.chat.infrastructure.graph.state import InputState
 
 router = APIRouter(tags=["langgraph"])
-
-_SSE_MEDIA_TYPE = "text/event-stream"
-_CONVERSATION_ID_HEADER = "X-Conversation-ID"
-_RESEARCH_PLAN_TAG = "research_plan"
-STREAM_MODE_MESSAGES = "messages"
-_SSE_DATA_PREFIX = "data: "
 
 
 @router.post("/langgraph/query")
@@ -45,7 +37,7 @@ async def langgraph_query(
         thread_id = conversation_id or str(uuid.uuid4())
         graph_stream: AsyncIterator[tuple[Any, Mapping[str, Any]]] = graph.astream(
             input=InputState(messages=[HumanMessage(content=query)]),
-            stream_mode=STREAM_MODE_MESSAGES,
+            stream_mode="messages",
             config={
                 "configurable": {
                     "thread_id": thread_id,
@@ -70,13 +62,13 @@ async def langgraph_query(
                 if (
                     not content
                     or additional_kwargs.get("tool_calls")
-                    or _RESEARCH_PLAN_TAG in tags
+                    or "research_plan" in tags
                 ):
                     continue
-                yield f"{_SSE_DATA_PREFIX}{json.dumps(content, ensure_ascii=False)}\n\n"
+                yield f'data: {json.dumps(content, ensure_ascii=False)}\n\n'
 
-        response = StreamingResponse(response_stream(), media_type=_SSE_MEDIA_TYPE)
-        response.headers[_CONVERSATION_ID_HEADER] = thread_id
+        response = StreamingResponse(response_stream(), media_type="text/event-stream")
+        response.headers["X-Conversation-ID"] = thread_id
         return response
     except Exception:
-        raise HTTPException(status_code=500, detail=INTERNAL_SERVER_ERROR_DETAIL)
+        raise HTTPException(status_code=500, detail="Internal server error")

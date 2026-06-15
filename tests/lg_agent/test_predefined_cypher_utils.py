@@ -13,43 +13,45 @@ class FakeLLM:
         return type("Response", (), {"content": self.content})()
 
 
-def test_embed_payload_and_fallback_embeddings_are_stable() -> None:
-    assert predefined_utils.build_embed_payload("bge-m3", ["a", "b"]) == {
-        "model": "bge-m3",
-        "input": ["a", "b"],
-    }
-    assert predefined_utils.fallback_embeddings(2, embedding_dim=3) == [
-        [0.0, 0.0, 0.0],
-        [0.0, 0.0, 0.0],
+def test_vector_query_matcher_embed_texts_uses_payload_and_fallback(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    class FakeResponse:
+        def __init__(self, payload: dict) -> None:
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return self._payload
+
+    matcher = predefined_utils._VectorQueryMatcher({}, {})
+
+    def fake_post(url: str, *, json: dict, timeout: int):
+        calls.append({"url": url, "json": json, "timeout": timeout})
+        return FakeResponse({"embeddings": [[1.0, 2.0], [3.0, 4.0]]})
+
+    monkeypatch.setattr(predefined_utils.requests, "post", fake_post)
+
+    assert matcher._embed_texts(["a", "b"]) == [[1.0, 2.0], [3.0, 4.0]]
+    assert calls == [
+        {
+            "url": matcher.ollama_api_url,
+            "json": {"model": matcher.ollama_embedding_model, "input": ["a", "b"]},
+            "timeout": 10,
+        }
     ]
 
-
-def test_extract_embeddings_and_query_texts_fallback_cleanly() -> None:
-    assert predefined_utils.extract_embeddings({"embeddings": [[1.0, 2.0]]}, expected_count=1) == [[1.0, 2.0]]
-    assert predefined_utils.extract_embeddings({}, expected_count=2, embedding_dim=2) == [
-        [0.0, 0.0],
-        [0.0, 0.0],
-    ]
-    assert predefined_utils.build_query_texts(
-        {"query_a": "MATCH ...", "query_b": "MATCH ..."},
-        {"query_a": "desc a"},
-    ) == (
-        ["query_a", "query_b"],
-        ["query_a desc a", "query_b"],
+    monkeypatch.setattr(
+        predefined_utils.requests,
+        "post",
+        lambda *args, **kwargs: FakeResponse({}),
     )
-
-
-def test_parameter_and_json_helpers_handle_realistic_inputs() -> None:
-    template = "MATCH (p) WHERE p.ProductName = $product_name AND o.OrderID = $order_id"
-    assert predefined_utils.extract_parameter_names(template) == ["product_name", "order_id"]
-    assert predefined_utils.extract_parameters_with_rules("查询 小米门锁 的价格", ["product_name"]) == {
-        "product_name": "小米门锁"
-    }
-    assert predefined_utils.extract_parameters_with_rules("订单 10248 的详情", ["order_id"]) == {
-        "order_id": "10248"
-    }
-    assert predefined_utils.parse_json_response('前缀 {"foo":"bar"} 后缀') == {"foo": "bar"}
-    assert predefined_utils.parse_json_response("没有 JSON") == {}
+    assert matcher._embed_texts(["a", "b"]) == [
+        [0.0] * 1024,
+        [0.0] * 1024,
+    ]
 
 
 def test_vector_query_matcher_match_query_filters_by_similarity(monkeypatch) -> None:
@@ -71,7 +73,10 @@ def test_vector_query_matcher_match_query_filters_by_similarity(monkeypatch) -> 
 
 def test_vector_query_matcher_parameter_extraction_and_factory(monkeypatch) -> None:
     monkeypatch.setattr(predefined_utils._VectorQueryMatcher, "_embed_texts", lambda self, texts: [[1.0, 0.0]])
-    matcher = predefined_utils.create_vector_query_matcher({"product_price_query": "MATCH (p) WHERE p.ProductName = $product_name"})
+    matcher = predefined_utils._VectorQueryMatcher(
+        {"product_price_query": "MATCH (p) WHERE p.ProductName = $product_name"},
+        {"product_price_query": "product price query"},
+    )
 
     assert matcher.query_descriptions == {"product_price_query": "product price query"}
     assert matcher.extract_parameters("查询 小米门锁 的价格", "product_price_query") == {
@@ -84,6 +89,13 @@ def test_vector_query_matcher_parameter_extraction_and_factory(monkeypatch) -> N
         "product_price_query",
         llm=llm,
     ) == {"product_name": "智能门锁Pro"}
+
+    empty_llm = FakeLLM("没有 JSON")
+    assert matcher.extract_parameters(
+        "这个产品多少钱",
+        "product_price_query",
+        llm=empty_llm,
+    ) == {}
 
 
 def test_vector_query_initialization_uses_query_text_order(monkeypatch) -> None:

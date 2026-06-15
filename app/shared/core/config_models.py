@@ -10,17 +10,13 @@
 - 不负责多来源字段代理
 """
 
-from __future__ import annotations
-
 from enum import Enum
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-ROOT_DIR = Path(__file__).parent.parent.parent
-ENV_FILE = ROOT_DIR / ".env"
 PROJECT_SETTINGS_CONFIG = SettingsConfigDict(
-    env_file=str(ENV_FILE),
+    env_file=str(Path(__file__).parent.parent.parent / ".env"),
     env_file_encoding="utf-8",
     case_sensitive=True,
     extra="ignore",
@@ -34,14 +30,10 @@ class ServiceType(str, Enum):
     OLLAMA = "ollama"
 
 
-class ProjectBaseSettings(BaseSettings):
-    """项目统一的 BaseSettings 基类。"""
+class InfrastructureSettings(BaseSettings):
+    """基础设施连接配置。"""
 
     model_config = PROJECT_SETTINGS_CONFIG
-
-
-class InfrastructureSettings(ProjectBaseSettings):
-    """基础设施连接配置。"""
 
     DB_HOST: str
     DB_PORT: int
@@ -63,37 +55,19 @@ class InfrastructureSettings(ProjectBaseSettings):
     MILVUS_PORT: int = 19530
 
 
-class BusinessSettings(ProjectBaseSettings):
+class BusinessSettings(BaseSettings):
     """业务行为配置。"""
 
+    model_config = PROJECT_SETTINGS_CONFIG
+
     DEEPSEEK_API_KEY: str
-    DEEPSEEK_BASE_URL: str
     DEEPSEEK_MODEL: str
 
     OLLAMA_BASE_URL: str
-    OLLAMA_CHAT_MODEL: str
-    OLLAMA_REASON_MODEL: str
     OLLAMA_EMBEDDING_MODEL: str = "bge-m3"
     OLLAMA_AGENT_MODEL: str
 
     EMBEDDING_TYPE: str = "ollama"
     EMBEDDING_MODEL: str = "bge-m3"
 
-    CHAT_SERVICE: ServiceType = ServiceType.DEEPSEEK
-    REASON_SERVICE: ServiceType = ServiceType.OLLAMA
     AGENT_SERVICE: ServiceType = ServiceType.DEEPSEEK
-
-    SERPAPI_KEY: str
-    SEARCH_RESULT_COUNT: int = 3
-
-    REDIS_CACHE_EXPIRE: int = 3600
-    REDIS_CACHE_THRESHOLD: float = 0.8
-
-    MILVUS_COLLECTION_NAME: str = "customer_agent_long_memory"
-
-
-__all__ = [
-    "BusinessSettings",
-    "InfrastructureSettings",
-    "ServiceType",
-]

@@ -1,10 +1,4 @@
-from app.knowledge.infrastructure.ltm.ltm_collection import (
-    MEMORY_OUTPUT_FIELDS,
-    ensure_memory_collection,
-    insert_records,
-    search_records,
-    upsert_records,
-)
+from app.knowledge.infrastructure.ltm.simple_long_term_memory import SimpleLongTermMemory
 
 
 class FakeSchema:
@@ -33,9 +27,6 @@ class FakeMilvusClient:
         self.created_schema = FakeSchema()
         self.created_index_params = FakeIndexParams()
         self.create_collection_calls: list[dict] = []
-        self.insert_calls: list[dict] = []
-        self.upsert_calls: list[dict] = []
-        self.search_calls: list[dict] = []
 
     def create_schema(self, **kwargs) -> FakeSchema:
         self.create_schema_kwargs = kwargs
@@ -51,21 +42,14 @@ class FakeMilvusClient:
     def create_collection(self, **kwargs) -> None:
         self.create_collection_calls.append(kwargs)
 
-    def insert(self, **kwargs) -> None:
-        self.insert_calls.append(kwargs)
-
-    def upsert(self, **kwargs) -> None:
-        self.upsert_calls.append(kwargs)
-
-    def search(self, **kwargs):
-        self.search_calls.append(kwargs)
-        return [[{"distance": 0.91}]]
-
 
 def test_ensure_memory_collection_creates_collection_when_missing() -> None:
     client = FakeMilvusClient(has_collection_result=False)
 
-    created = ensure_memory_collection(client, "customer_agent_long_memory")
+    created = SimpleLongTermMemory._ensure_memory_collection(
+        client,
+        "customer_agent_long_memory",
+    )
 
     assert created is True
     assert client.has_collection_name == "customer_agent_long_memory"
@@ -110,40 +94,10 @@ def test_ensure_memory_collection_creates_collection_when_missing() -> None:
 def test_ensure_memory_collection_skips_existing_collection() -> None:
     client = FakeMilvusClient(has_collection_result=True)
 
-    created = ensure_memory_collection(client, "customer_agent_long_memory")
+    created = SimpleLongTermMemory._ensure_memory_collection(
+        client,
+        "customer_agent_long_memory",
+    )
 
     assert created is False
     assert client.create_collection_calls == []
-
-
-def test_query_insert_upsert_and_search_delegate_to_client() -> None:
-    client = FakeMilvusClient()
-    records = [{"memory_id": "mem-1"}]
-
-    insert_records(client, "memory_coll", records)
-    upsert_records(client, "memory_coll", records)
-    search_result = search_records(
-        client,
-        "memory_coll",
-        [0.1, 0.2],
-        'user_id == "1"',
-        limit=3,
-        output_fields=MEMORY_OUTPUT_FIELDS,
-    )
-
-    assert client.insert_calls == [
-        {"collection_name": "memory_coll", "data": records}
-    ]
-    assert client.upsert_calls == [
-        {"collection_name": "memory_coll", "data": records}
-    ]
-    assert search_result == [[{"distance": 0.91}]]
-    assert client.search_calls == [
-        {
-            "collection_name": "memory_coll",
-            "data": [[0.1, 0.2]],
-            "filter": 'user_id == "1"',
-            "limit": 3,
-            "output_fields": MEMORY_OUTPUT_FIELDS,
-        }
-    ]

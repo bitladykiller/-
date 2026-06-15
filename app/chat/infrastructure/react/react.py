@@ -8,18 +8,15 @@
 边界：
 - 这里只处理 ReAct 兜底链路，不承载主图路由决策
 """
-from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable
-from typing import Any
 
 from langchain_core.messages import AIMessage
+from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import create_react_agent
-from langchain_core.tools import tool
 
 from app.chat.infrastructure.graph.state import AgentState
 from app.chat.infrastructure.retrievers.retriever_contracts import (
@@ -38,34 +35,52 @@ from app.chat.infrastructure.modeling.models import (
 )
 from app.chat.infrastructure.memory_bridge.context import enrich_question
 from app.chat.infrastructure.kg_sub_graph.kg_neo4j_conn import get_neo4j_graph
-from app.chat.domain.utils import question_from_state, no_neo4j_response
 
 
 REACT_MAX_ATTEMPTS = 5
 REACT_RECURSION_LIMIT = 11
-_REACT_TRANSCRIPT_WINDOW = 20
-_REACT_PROGRESS_MESSAGE = "正在综合分析..."
-REACT_FALLBACK_ANSWER = "亲～这个问题回答不了哦～"
-_REACT_RETRY_PROMPT = (
-    "上一次候选答案仍然不充分，请继续按标准 ReAct 检索并补足关键事实。"
-)
-_REACT_STEP_EXHAUSTED_MARKER = "need more steps"
-REACT_STEP_EXHAUSTED_REASON = "单次 ReAct 内部步数耗尽，仍未得到足够答案。"
-REACT_DEFAULT_INSUFFICIENCY_REASON = "答案信息不足。"
-REACT_INITIAL_REASON = "初始状态：尚未完成充分回答。"
 _react_subgraph: CompiledStateGraph | None = None
 _react_lock: asyncio.Lock = asyncio.Lock()
 
 
-async def get_react_subgraph(
-    builder: Callable[[], Awaitable[CompiledStateGraph]],
-) -> CompiledStateGraph:
+async def get_react_subgraph() -> CompiledStateGraph:
     """获取 ReAct 子图单例（双检锁防并发创建）。"""
     global _react_subgraph
     if _react_subgraph is None:
         async with _react_lock:
             if _react_subgraph is None:
-                _react_subgraph = await builder()
+                kg = await get_retriever(KG_RETRIEVER_NAME)
+                rag = await get_retriever(RAG_RETRIEVER_NAME)
+
+                # ReAct 子图是单例，工具里直接捕获检索器引用即可，
+                # 不必把“先拿注册表再查名字”的样板暴露给执行逻辑。
+                @tool
+                async def neo4j_query(task: str) -> str:
+                    """查询 Neo4j 知识图谱，获取商品、订单、客户等结构化数据。"""
+                    if kg is None:
+                        return json.dumps({"error": "知识图谱服务不可用"}, ensure_ascii=False)
+                    return json.dumps(
+                        (await kg.search(task)).get("records", []),
+                        ensure_ascii=False,
+                    )
+
+                @tool
+                async def rag_search(query: str) -> str:
+                    """检索文档知识库，获取售后政策、保修条款等非结构化信息。"""
+                    if rag is None:
+                        return json.dumps({"error": "文档检索服务不可用"}, ensure_ascii=False)
+                    return json.dumps(
+                        (await rag.search(query)).get("records", []),
+                        ensure_ascii=False,
+                    )
+
+                _react_subgraph = create_react_agent(
+                    model=react_model,
+                    tools=[neo4j_query, rag_search],
+                    prompt=REACT_SYSTEM_PROMPT,
+                    version="v2",
+                    name="customer_service_react_agent",
+                )
     return _react_subgraph
 
 
@@ -90,58 +105,30 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
         {"messages": [...]} 包含最终回复。
     """
     if get_neo4j_graph() is None:
-        return no_neo4j_response()
+        return {"messages": [AIMessage(content="抱歉，知识库服务暂时不可用，请稍后重试。")]}
 
-    q = await enrich_question(state, config, question_from_state(state))
+    q = await enrich_question(
+        state,
+        config,
+        state.messages[-1].content if state.messages else "",
+    )
 
-    async def build_react_subgraph() -> CompiledStateGraph:
-        """构建只供当前执行入口缓存复用的 ReAct 子图。"""
-        kg = await get_retriever(KG_RETRIEVER_NAME)
-        rag = await get_retriever(RAG_RETRIEVER_NAME)
-
-        # ReAct 子图是单例，工具里直接捕获检索器引用即可，
-        # 不必把“先拿注册表再查名字”的样板暴露给执行逻辑。
-        @tool
-        async def neo4j_query(task: str) -> str:
-            """查询 Neo4j 知识图谱，获取商品、订单、客户等结构化数据。"""
-            if kg is None:
-                return json.dumps({"error": "知识图谱服务不可用"}, ensure_ascii=False)
-            return json.dumps(
-                (await kg.search(task)).get("records", []),
-                ensure_ascii=False,
-            )
-
-        @tool
-        async def rag_search(query: str) -> str:
-            """检索文档知识库，获取售后政策、保修条款等非结构化信息。"""
-            if rag is None:
-                return json.dumps({"error": "文档检索服务不可用"}, ensure_ascii=False)
-            return json.dumps(
-                (await rag.search(query)).get("records", []),
-                ensure_ascii=False,
-            )
-
-        return create_react_agent(
-            model=react_model,
-            tools=[neo4j_query, rag_search],
-            prompt=REACT_SYSTEM_PROMPT,
-            version="v2",
-            name="customer_service_react_agent",
-        )
-
-    sg = await get_react_subgraph(build_react_subgraph)
+    sg = await get_react_subgraph()
     subgraph_config = dict(config) if config else {}
     # 单次 ReAct 子图的最大 agent/tools 步数
     subgraph_config["recursion_limit"] = REACT_RECURSION_LIMIT
     react_messages: list[dict[str, str]] = [{"role": "user", "content": q}]
-    insufficiency_reason = REACT_INITIAL_REASON
+    insufficiency_reason = "初始状态：尚未完成充分回答。"
 
     for attempt in range(1, REACT_MAX_ATTEMPTS + 1):
         if attempt > 1:
             react_messages.append(
                 {
                     "role": "user",
-                    "content": f"{_REACT_RETRY_PROMPT}不足原因：{insufficiency_reason}",
+                    "content": (
+                        "上一次候选答案仍然不充分，请继续按标准 ReAct 检索并补足关键事实。"
+                        f"不足原因：{insufficiency_reason}"
+                    ),
                 }
             )
 
@@ -153,11 +140,11 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
             last_content = getattr(result_messages[-1], "content", "")
             last_answer = str(last_content) if last_content else "未能确定回答～"
 
-        if _REACT_STEP_EXHAUSTED_MARKER in last_answer.lower():
-            insufficiency_reason = REACT_STEP_EXHAUSTED_REASON
+        if "need more steps" in last_answer.lower():
+            insufficiency_reason = "单次 ReAct 内部步数耗尽，仍未得到足够答案。"
         else:
             transcript_lines: list[str] = []
-            for message in result_messages[-_REACT_TRANSCRIPT_WINDOW:]:
+            for message in result_messages[-20:]:
                 role = getattr(message, "type", None) or getattr(
                     message,
                     "role",
@@ -185,12 +172,12 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
             if check.decision == "sufficient":
                 return {
                     "messages": [
-                        AIMessage(content=_REACT_PROGRESS_MESSAGE),
+                        AIMessage(content="正在综合分析..."),
                         AIMessage(content=last_answer),
                     ],
                 }
 
-            insufficiency_reason = check.reason or REACT_DEFAULT_INSUFFICIENCY_REASON
+            insufficiency_reason = check.reason or "答案信息不足。"
 
         # 准备下一轮：保留原始问题 + 上一轮候选答案
         react_messages = [
@@ -201,7 +188,7 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
     # 5 轮用尽仍未充分
     return {
         "messages": [
-            AIMessage(content=_REACT_PROGRESS_MESSAGE),
-            AIMessage(content=REACT_FALLBACK_ANSWER),
+            AIMessage(content="正在综合分析..."),
+            AIMessage(content="亲～这个问题回答不了哦～"),
         ],
     }

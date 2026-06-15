@@ -29,7 +29,7 @@ def test_langgraph_query_builds_streaming_response(monkeypatch) -> None:
 
         def fake_astream(*, input, stream_mode, config):
             assert input.messages[0].content == "空调推荐"
-            assert stream_mode == langgraph_api.STREAM_MODE_MESSAGES
+            assert stream_mode == "messages"
             assert config == {
                 "configurable": {
                     "thread_id": "thread-1",

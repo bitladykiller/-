@@ -10,22 +10,8 @@
 - 这里不承载具体业务模块的日志字段约定
 """
 
-from __future__ import annotations
-
 import logging
 import sys
-
-LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"
-DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
-_NOISY_LOGGERS = (
-    "sqlalchemy.engine",
-    "pymilvus.client",
-    "pymilvus.milvus_client",
-    "httpx",
-    "httpcore",
-    "urllib3",
-    "asyncio",
-)
 
 _logging_initialized = False
 
@@ -44,24 +30,14 @@ def format_log_context(**context: object) -> str:
     return " ".join(parts)
 
 
-def setup_logging(
-    level: int = logging.INFO,
-    format_str: str = LOG_FORMAT,
-    date_format: str = DATE_FORMAT,
-) -> None:
-    """初始化全局日志配置（幂等，多次调用不会重复添加 handler）。
-
-    Args:
-        level: 根 logger 的日志级别，默认 INFO。
-        format_str: 日志格式字符串。
-        date_format: 时间格式字符串。
-    """
+def setup_logging() -> None:
+    """初始化全局日志配置（幂等，多次调用不会重复添加 handler）。"""
     global _logging_initialized
     if _logging_initialized:
         return
 
     root = logging.getLogger()
-    root.setLevel(level)
+    root.setLevel(logging.INFO)
     has_stream_handler = any(
         isinstance(handler, logging.StreamHandler)
         and not isinstance(handler, logging.FileHandler)
@@ -69,10 +45,23 @@ def setup_logging(
     )
     if not has_stream_handler:
         handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(logging.Formatter(format_str, datefmt=date_format))
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+        )
         root.addHandler(handler)
 
-    for logger_name in _NOISY_LOGGERS:
+    for logger_name in (
+        "sqlalchemy.engine",
+        "pymilvus.client",
+        "pymilvus.milvus_client",
+        "httpx",
+        "httpcore",
+        "urllib3",
+        "asyncio",
+    ):
         logging.getLogger(logger_name).setLevel(logging.WARNING)
 
     _logging_initialized = True
@@ -85,6 +74,3 @@ def get_logger(name: str) -> logging.Logger:
         name: 通常传 __name__ 即可。
     """
     return logging.getLogger(name)
-
-
-__all__ = ["setup_logging", "get_logger", "format_log_context"]

@@ -44,21 +44,14 @@ export VLM_MODEL="your-vlm-model"
 
 如果不设置 VLM 环境变量，图片描述功能会自动降级关闭。
 
-## 命令行使用
+## 使用边界
 
-```bash
-# 解析文档
-python -m rag_doc_parser.cli --file ./example.pdf --output ./chunks.json
+当前仓库只把 `rag_doc_parser` 当作内部库使用：
 
-# 禁用图片描述
-python -m rag_doc_parser.cli --file ./report.docx --output ./chunks.json --no-picture-description
+- `app.knowledge.application.indexing_service` 负责解析后入库
+- `app.chat.infrastructure.retrievers.retriever_implementations` 负责检索
 
-# 构建检索索引
-python -m rag_doc_parser.retrieval.cli index --input ./chunks.json
-
-# 检索
-python -m rag_doc_parser.retrieval.cli search --query "售后政策" --top-k 5
-```
+不再维护额外的命令行入口脚本。
 
 ## Python 使用
 

@@ -1,20 +1,18 @@
 """
-Milvus 向量存储 — Collection 管理与向量检索。
+Milvus 向量存储 — Collection 管理与混合检索。
 
 支持创建 Collection、批量插入 DocumentChunk、
-向量相似度检索。
+以及基于 Milvus native hybrid search 的检索。
 """
-
-from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from pymilvus import MilvusClient, DataType, Function, FunctionType
+from pymilvus import DataType, Function, FunctionType, MilvusClient
+from shared_retrieval.milvus_hybrid_core import MilvusHybridSearchCore
 
 from rag_doc_parser.retrieval.config import RetrievalConfig
-from shared_retrieval import MilvusHybridSearchCore
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +20,7 @@ logger = logging.getLogger(__name__)
 class MilvusStore:
     """Milvus 向量存储。
 
-    管理 RAG 文档的向量索引和相似度检索。
+    管理 RAG 文档的向量索引和混合检索。
     """
 
     def __init__(self, config: RetrievalConfig, embedding_model=None):
@@ -91,7 +89,6 @@ class MilvusStore:
         - chunk_type: VARCHAR(32)
         - section_path: VARCHAR(512)
         - raw_text: VARCHAR(8192)
-        - embedding_text: VARCHAR(8192)
         - embedding: FLOAT_VECTOR(1024) → bge-m3
         """
         name = self.config.milvus_collection_name
@@ -107,7 +104,6 @@ class MilvusStore:
         schema.add_field("chunk_type", DataType.VARCHAR, max_length=32)
         schema.add_field("section_path", DataType.VARCHAR, max_length=512)
         schema.add_field("raw_text", DataType.VARCHAR, max_length=8192)
-        schema.add_field("embedding_text", DataType.VARCHAR, max_length=8192)
         bm25_fn = Function(
             name="bm25",
             function_type=FunctionType.BM25,
@@ -146,7 +142,7 @@ class MilvusStore:
     # 数据操作
     # ------------------------------------------------------------------ #
 
-    async def _get_embedding(self, text: str) -> List[float]:
+    async def _get_embedding(self, text: str) -> list[float]:
         """获取文本的 embedding 向量。
 
         Args:
@@ -159,7 +155,7 @@ class MilvusStore:
             raise RuntimeError("embedding_model 未设置，无法生成向量")
         return self.embedding_model.embed_query(text)
 
-    async def insert_chunks(self, chunks: List[Any]) -> int:
+    async def insert_chunks(self, chunks: list[Any]) -> int:
         """批量插入 DocumentChunk 到 Milvus。
 
         Args:
@@ -183,7 +179,6 @@ class MilvusStore:
                 "chunk_type": chunk.chunk_type,
                 "section_path": chunk.section_path,
                 "raw_text": chunk.raw_text,
-                "embedding_text": chunk.embedding_text,
                 "embedding": vector,
             })
 
@@ -195,59 +190,12 @@ class MilvusStore:
         logger.info(f"插入 {count} 条记录到 Milvus")
         return count
 
-    # ------------------------------------------------------------------ #
-    # 向量检索
-    # ------------------------------------------------------------------ #
-
-    async def search(
-        self,
-        query: str,
-        top_k: Optional[int] = None,
-        filter_expr: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        """向量相似度检索。
-
-        Args:
-            query: 查询文本。
-            top_k: 返回条数（默认使用 config.vector_top_k）。
-            filter_expr: Milvus 过滤表达式（如 'chunk_type == "table"'）。
-
-        Returns:
-            检索结果列表，每项包含 chunk 信息 + score。
-        """
-        top_k = top_k or self.config.vector_top_k
-        hits = await self.retrieval_core.search_dense(
-            query,
-            limit=top_k,
-            filter_expr=filter_expr,
-            output_fields=[
-                "chunk_id", "doc_id", "source_file", "chunk_type",
-                "section_path", "raw_text", "embedding_text",
-            ],
-        )
-
-        formatted = []
-        for hit in hits:
-            entity = hit["entity"]
-            formatted.append({
-                "chunk_id": entity.get("chunk_id", ""),
-                "doc_id": entity.get("doc_id", ""),
-                "source_file": entity.get("source_file", ""),
-                "chunk_type": entity.get("chunk_type", ""),
-                "section_path": entity.get("section_path", ""),
-                "raw_text": entity.get("raw_text", ""),
-                "embedding_text": entity.get("embedding_text", ""),
-                "vector_score": hit["score"],
-            })
-
-        return formatted
-
     async def hybrid_search(
         self,
         query: str,
-        top_k: Optional[int] = None,
-        filter_expr: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        top_k: int | None = None,
+        filter_expr: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Native Milvus hybrid search for document retrieval."""
         top_k = top_k or self.config.rrf_final_top_k
         search_limit = max(self.config.vector_top_k, self.config.bm25_top_k, top_k)
@@ -256,8 +204,7 @@ class MilvusStore:
             limit=top_k,
             filter_expr=filter_expr,
             output_fields=[
-                "chunk_id", "doc_id", "source_file", "chunk_type",
-                "section_path", "raw_text", "embedding_text",
+                "source_file", "chunk_type", "section_path", "raw_text",
             ],
             search_limit=search_limit,
         )
@@ -266,13 +213,10 @@ class MilvusStore:
         for hit in hits:
             entity = hit["entity"]
             formatted.append({
-                "chunk_id": entity.get("chunk_id", ""),
-                "doc_id": entity.get("doc_id", ""),
                 "source_file": entity.get("source_file", ""),
                 "chunk_type": entity.get("chunk_type", ""),
                 "section_path": entity.get("section_path", ""),
                 "raw_text": entity.get("raw_text", ""),
-                "embedding_text": entity.get("embedding_text", ""),
                 "rrf_score": hit["score"],
             })
         return formatted

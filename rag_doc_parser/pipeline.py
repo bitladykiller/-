@@ -4,18 +4,16 @@ RAG 文档解析与切分 — 主控管线。
 将原始文件（PDF/DOCX）经解析→清洗→切分→分块，输出 DocumentChunk 列表。
 """
 
-from __future__ import annotations
-
 import logging
+import os
 import uuid
-from typing import List, Optional
 
 from rag_doc_parser.config import ParserConfig
 from rag_doc_parser.exceptions import DocumentParseError, UnsupportedFileTypeError
-from rag_doc_parser.models import DocumentChunk
 from rag_doc_parser.markdown.block_parser import BlockParser
 from rag_doc_parser.markdown.cleaner import MarkdownCleaner
 from rag_doc_parser.markdown.heading_parser import HeadingParser
+from rag_doc_parser.models import DocumentChunk
 from rag_doc_parser.parsers.docling_docx_parser import DoclingDOCXParser
 from rag_doc_parser.parsers.docling_pdf_parser import DoclingPDFParser
 from rag_doc_parser.parsers.docx_fallback_parser import DocxFallbackParser
@@ -28,15 +26,15 @@ logger = logging.getLogger(__name__)
 
 def parse_document(
     file_path: str,
-    doc_id: Optional[str] = None,
-    config: Optional[ParserConfig] = None,
-) -> List[DocumentChunk]:
+    doc_id: str | None = None,
+    config: ParserConfig | None = None,
+) -> list[DocumentChunk]:
     """解析单个文档，返回 DocumentChunk 列表。
 
     Args:
         file_path: PDF/DOCX 文件路径。
         doc_id: 文档 ID，默认自动生成。
-        config: 解析配置，默认 from_env()。
+        config: 解析配置；未传入时会按环境变量补齐 VLM 相关字段。
 
     Returns:
         DocumentChunk 列表，可直接写入向量数据库。
@@ -46,7 +44,10 @@ def parse_document(
         DocumentParseError: 解析过程出错。
     """
     if config is None:
-        config = ParserConfig.from_env()
+        config = ParserConfig(
+            vlm_api_base_url=os.environ.get("VLM_API_BASE_URL"),
+            vlm_model=os.environ.get("VLM_MODEL"),
+        )
     if doc_id is None:
         doc_id = f"doc_{uuid.uuid4().hex[:12]}"
 
@@ -60,24 +61,20 @@ def parse_document(
         raise UnsupportedFileTypeError(file_path)
 
     try:
-        doc = parser.parse(file_path, doc_id)
+        markdown = parser.parse(file_path)
     except DocumentParseError:
         # DOCX fallback: Docling 失败后用 python-docx
         if file_path.lower().endswith(".docx"):
             logger.warning("Docling DOCX 解析失败，尝试 python-docx fallback")
             fallback = DocxFallbackParser(config)
-            doc = fallback.parse(file_path, doc_id)
+            markdown = fallback.parse(file_path)
         else:
             raise
 
-    markdown = doc.markdown
     source_file = file_path
-    parser_name = doc.metadata.get("parser_name", "unknown")
-
     # 2. 清洗 Markdown
-    if config.enable_markdown_cleaning:
-        cleaner = MarkdownCleaner()
-        markdown = cleaner.clean(markdown)
+    cleaner = MarkdownCleaner()
+    markdown = cleaner.clean(markdown)
 
     # 3. 标题解析 → Sections
     heading_parser = HeadingParser()
@@ -86,13 +83,13 @@ def parse_document(
     # 4. Block 识别 + 切分
     block_parser = BlockParser()
     text_splitter = TextSplitter(config.text_chunk_size, config.text_chunk_overlap)
-    chunks: List[DocumentChunk] = []
+    chunks: list[DocumentChunk] = []
 
     for section in sections:
         blocks = block_parser.parse(section)
 
         for block in blocks:
-            if block.block_type == "table" and config.enable_table_split:
+            if block.block_type == "table":
                 table_splitter = TableSplitter(config.max_table_rows_per_chunk)
                 table_chunks = table_splitter.split(
                     block,
@@ -103,7 +100,7 @@ def parse_document(
                 chunks.extend([chunk for chunk in table_chunks if chunk.raw_text.strip()])
                 continue
 
-            if block.block_type == "code" and config.enable_code_split:
+            if block.block_type == "code":
                 code_splitter = CodeSplitter(config.max_code_lines_per_chunk)
                 pieces = code_splitter.split(
                     block.content,
@@ -136,26 +133,8 @@ def parse_document(
                     source_file=source_file,
                     chunk_type=block.block_type,
                     section_path=block.section_path,
-                    h1=block.h1,
-                    h2=block.h2,
-                    h3=block.h3,
-                    h4=block.h4,
                     raw_text=raw_text,
                     embedding_text=embedding_text,
-                    page_start=block.page_start,
-                    page_end=block.page_end,
-                    table_id=block.metadata.get("table_id"),
-                    row_start=block.metadata.get("row_start"),
-                    row_end=block.metadata.get("row_end"),
-                    language=block.metadata.get("language"),
-                    metadata={
-                        "doc_id": doc_id,
-                        "source_file": source_file,
-                        "section_path": block.section_path,
-                        "chunk_type": block.block_type,
-                        "parser_name": parser_name,
-                        "block_id": block.block_id,
-                    },
                 )
                 chunks.append(chunk)
 

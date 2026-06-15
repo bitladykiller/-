@@ -7,7 +7,7 @@
 ### 1. 通用问答 & 深度思考
 - 支持 DeepSeek V3 / R1 在线 API
 - 支持 Ollama 接入任意对话模型（Qwen2.5、Llama3 等）
-- 通过 `CHAT_SERVICE` / `REASON_SERVICE` 环境变量灵活切换
+- 通过 `AGENT_SERVICE` 环境变量切换 Agent 侧模型服务
 
 ### 2. 智能 Agent (LangGraph)
 - 四层嵌套子图：主图（路由分发）→ RetrievalPlan → 执行器 / ReAct 子图 → Text2Cypher 子图
@@ -69,8 +69,9 @@ docker compose up -d --build
 
 启动流程会自动完成：
 - MySQL / Neo4j / Redis / Milvus 基础设施启动
-- `neo4j-importer` one-off job 会在检测到 `docker/neo4j-import/` 下存在完整 CSV 数据集时自动导入图谱；缺失时直接跳过，不阻塞启动
+- `neo4j-importer` one-off job 会在检测到 `configs/docker/neo4j-import/` 下存在完整 CSV 数据集时自动导入图谱；缺失时直接跳过，不阻塞启动
 - `app` 服务启动前自动执行 MySQL 建表脚本
+- `app` 服务的建表与 FastAPI 拉起逻辑直接内联在 `docker-compose.yml` 的 `app.command`
 - `app` 通过 `.env.docker` 自动切换到容器内服务地址和默认凭据
 - FastAPI 对外暴露 `http://localhost:8000`
 - 只有 `app` 服务映射宿主机 `8000` 端口；MySQL / Neo4j / Redis / MinIO / Milvus 都只在 Compose 内部网络可见
@@ -95,9 +96,10 @@ docker compose down -v
 docker volume ls | grep '^local.*kefu_'
 ```
 
-如果后续要恢复 Neo4j 图谱初始化，把那 16 份 CSV 数据放进 `docker/neo4j-import/` 即可，无需再改 `compose`。
+如果后续要恢复 Neo4j 图谱初始化，把那 16 份 CSV 数据放进 `configs/docker/neo4j-import/` 即可，无需再改 `compose`。
 
-项目当前只保留 `docker compose` 这一种启动方式，不再保留其他应用启动入口。
+项目当前只保留 `docker compose` 这一种启动方式，不再保留任何对外直启入口。
+根目录 `Dockerfile` 只作为 Compose 构建镜像的内部产物，不支持脱离 Compose 单独拉起应用。
 
 ### 4. 开发检查（可选）
 
@@ -123,6 +125,7 @@ deepseek_agent/
 │   ├── user/                    # 用户与会话模型域
 │   ├── shared/                  # 共享基础设施
 │   └── scripts/                 # Compose 启动链路内部辅助脚本
+├── configs/                     # Docker Compose 初始化配置
 ├── docs/                        # 架构、部署、迁移文档
 ├── scripts/                     # 仓库级辅助脚本
 ├── tests/                       # 测试目录
@@ -149,7 +152,6 @@ deepseek_agent/
 - [rag_doc_parser/README.md](rag_doc_parser/README.md) — RAG 文档解析模块
 - [app/scripts/README.md](app/scripts/README.md) — Compose 启动链路内部辅助脚本说明
 - [app/shared/core/README.md](app/shared/core/README.md) — 共享基础设施说明
-- [app/shared/security/README.md](app/shared/security/README.md) — Prompt 防护说明
 - [app/user/infrastructure/models/README.md](app/user/infrastructure/models/README.md) — 持久化模型说明
 - [app/chat/infrastructure/kg_sub_graph/README.md](app/chat/infrastructure/kg_sub_graph/README.md) — KG 子图说明
 

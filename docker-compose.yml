@@ -52,7 +52,7 @@ services:
       NEO4J_USERNAME: neo4j
       NEO4J_PASSWORD: 12345678
     volumes:
-      - ./neo4j-import.sh:/scripts/neo4j-import.sh:ro
+      - ./scripts/neo4j-import.sh:/scripts/neo4j-import.sh:ro
       - ./configs/docker/neo4j-import:/import-data:ro
     command: ["/bin/bash", "/scripts/neo4j-import.sh"]
 
@@ -139,7 +139,16 @@ services:
     env_file:
       - ./app/.env
       - ./.env.docker
-    command: ["/app/configs/docker/app/start.sh"]
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        set -eu
+        echo "初始化 MySQL 表结构..."
+        cd /app
+        python -c "import asyncio; from app.scripts.bootstrap_compose_db import create_all_tables; asyncio.run(create_all_tables())"
+        echo "启动 FastAPI 服务..."
+        exec python -c "import uvicorn; from app.main import create_app; uvicorn.run(create_app(), host='0.0.0.0', port=8000)"
     ports:
       - "8000:8000"
     volumes:

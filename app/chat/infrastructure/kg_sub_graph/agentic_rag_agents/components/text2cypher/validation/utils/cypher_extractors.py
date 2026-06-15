@@ -12,26 +12,6 @@ _NODE_PATTERN = re.compile(r"(\([\w\:\{\s\"\'\}\,\|\&]+\))")
 _NODE_LABEL_PATTERN = re.compile(r"\([^:\{]*:\`?([a-zA-Z\_\d\s\|\&]*)\`?[\s\_\{\)]")
 _RELATIONSHIP_TYPE_PATTERN = re.compile(r":([\w\|\&\:]+?)[\]\s\{]+")
 
-def get_variable_operator_property_pattern(variable: str) -> re.Pattern:
-    """
-    Should be run on an entire Cypher Statement. The variable parameter must be gathered in a prior step.
-
-    Parameters
-    ----------
-    variable : str
-        The variable of interest.
-
-    Returns
-    -------
-    re.Pattern
-        The regex pattern.
-    """
-    return (
-        re.escape(variable)
-        + r"\.(?P<property_name>[^\s]*)\s(?P<operator>contains|CONTAINS|[><=]{0,2}|starts with|STARTS WITH|ends with|ENDS WITH)\s\"?\'?(?P<property_value>[\w\s]+\"|[\d]+)\"?\'?"
-    )
-
-
 def extract_entities_for_validation(
     cypher_statement: str,
 ) -> Dict[str, List[CypherValidationTask]]:
@@ -85,6 +65,10 @@ def extract_entities_for_validation(
                 tasks.extend(match_props_parsed)
 
             if variable is not None and variable not in used_variables:
+                variable_property_pattern = (
+                    re.escape(variable)
+                    + r"\.(?P<property_name>[^\s]*)\s(?P<operator>contains|CONTAINS|[><=]{0,2}|starts with|STARTS WITH|ends with|ENDS WITH)\s\"?\'?(?P<property_value>[\w\s]+\"|[\d]+)\"?\'?"
+                )
                 filters = [
                     {
                         "property_name": property_name.strip().strip("{"),
@@ -95,7 +79,7 @@ def extract_entities_for_validation(
                         .replace("'", ""),
                     }
                     for property_name, operator, property_value in re.findall(
-                        get_variable_operator_property_pattern(variable=variable),
+                        variable_property_pattern,
                         cypher_statement,
                     )
                 ]

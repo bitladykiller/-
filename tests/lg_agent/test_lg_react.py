@@ -46,12 +46,18 @@ def test_react_runtime_caches_builder_result(monkeypatch) -> None:
     build_count = {"count": 0}
     built = FakeCompiledSubgraph()
 
-    async def fake_builder():
+    async def fake_get_retriever(_name: str):
+        return None
+
+    def fake_create_react_agent(**kwargs):
         build_count["count"] += 1
         return built
 
-    first = _run(lg_react.get_react_subgraph(fake_builder))
-    second = _run(lg_react.get_react_subgraph(fake_builder))
+    monkeypatch.setattr(lg_react, "get_retriever", fake_get_retriever)
+    monkeypatch.setattr(lg_react, "create_react_agent", fake_create_react_agent)
+
+    first = _run(lg_react.get_react_subgraph())
+    second = _run(lg_react.get_react_subgraph())
 
     assert first is built
     assert second is built
@@ -60,8 +66,6 @@ def test_react_runtime_caches_builder_result(monkeypatch) -> None:
 
 def test_execute_react_returns_no_neo4j_response_when_graph_missing(monkeypatch) -> None:
     monkeypatch.setattr(lg_react, "get_neo4j_graph", lambda: None)
-    expected = {"messages": [AIMessage(content="图谱不可用")]}
-    monkeypatch.setattr(lg_react, "no_neo4j_response", lambda: expected)
 
     result = _run(
         lg_react.execute_react(
@@ -70,7 +74,9 @@ def test_execute_react_returns_no_neo4j_response_when_graph_missing(monkeypatch)
         )
     )
 
-    assert result == expected
+    assert [message.content for message in result["messages"]] == [
+        "抱歉，知识库服务暂时不可用，请稍后重试。"
+    ]
 
 
 def test_execute_react_returns_checked_answer_with_progress_message(monkeypatch) -> None:
@@ -86,7 +92,7 @@ def test_execute_react_returns_checked_answer_with_progress_message(monkeypatch)
     async def fake_enrich_question(*args):
         return "怎么修空调"
 
-    async def fake_get_react_subgraph(_builder):
+    async def fake_get_react_subgraph():
         return subgraph
 
     monkeypatch.setattr(lg_react, "get_neo4j_graph", lambda: object())
@@ -134,7 +140,7 @@ def test_execute_react_retries_on_step_exhaustion_and_returns_fallback(monkeypat
     async def fake_enrich_question(*args):
         return "帮我查订单"
 
-    async def fake_get_react_subgraph(_builder):
+    async def fake_get_react_subgraph():
         return subgraph
 
     monkeypatch.setattr(lg_react, "get_neo4j_graph", lambda: object())
@@ -150,7 +156,7 @@ def test_execute_react_retries_on_step_exhaustion_and_returns_fallback(monkeypat
 
     assert [message.content for message in result["messages"]] == [
         "正在综合分析...",
-        lg_react.REACT_FALLBACK_ANSWER,
+        "亲～这个问题回答不了哦～",
     ]
     assert subgraph.calls == [
         (
@@ -165,8 +171,8 @@ def test_execute_react_retries_on_step_exhaustion_and_returns_fallback(monkeypat
                     {
                         "role": "user",
                         "content": (
-                            f"{lg_react._REACT_RETRY_PROMPT}"
-                            f"不足原因：{lg_react.REACT_STEP_EXHAUSTED_REASON}"
+                            "上一次候选答案仍然不充分，请继续按标准 ReAct 检索并补足关键事实。"
+                            "不足原因：单次 ReAct 内部步数耗尽，仍未得到足够答案。"
                         ),
                     },
                 ]

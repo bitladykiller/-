@@ -9,65 +9,20 @@
 - LLM 抽取逻辑
 - Prompt 构造
 """
-from __future__ import annotations
 
 import time
 import uuid
-from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from pymilvus import MilvusClient
-
-from app.knowledge.infrastructure.config import (
-    long_term_collection_name,
-    long_term_deduplication_config,
-    long_term_search_config,
-    long_term_update_on_hit_config,
-)
 from app.knowledge.domain.schemas import LongTermMemory, MemorySearchResult
-from app.shared.core.logger import get_logger
-from shared_retrieval import MilvusHybridSearchCore
-from app.knowledge.infrastructure.ltm.ltm_collection import (
-    DEDUP_OUTPUT_FIELDS,
-    MEMORY_OUTPUT_FIELDS,
-    MilvusRecord,
-    ensure_memory_collection,
-    insert_records,
-    search_records,
-    upsert_records,
+from app.knowledge.infrastructure.config import (
+    LONG_TERM_MEMORY_CONFIG,
 )
-
-if TYPE_CHECKING:
-    from shared_retrieval import MilvusHybridSearchCore
+from app.shared.core.logger import get_logger
+from pymilvus import DataType, Function, FunctionType, MilvusClient
+from shared_retrieval.milvus_hybrid_core import MilvusHybridSearchCore
 
 logger = get_logger(__name__)
-SEARCH_LOG_PREVIEW_LIMIT = 100
-EMBEDDING_LOG_PREVIEW_LIMIT = 200
-HYBRID_SEARCH_LIMIT_MULTIPLIER = 2
-
-
-def entity_to_memory(entity: Mapping[str, Any]) -> LongTermMemory:
-    """将 Milvus entity 字典转换为 LongTermMemory 对象。"""
-    payload: dict[str, Any] = {
-        "memory_id": "",
-        "tenant_id": "",
-        "user_id": "",
-        "memory_type": "",
-        "content": "",
-        "created_at": 0,
-        "updated_at": 0,
-        "last_hit_at": 0,
-        "hit_count": 0,
-        "is_deleted": False,
-    }
-    payload.update(
-        {
-            key: value
-            for key, value in entity.items()
-            if key in payload and value is not None
-        }
-    )
-    return LongTermMemory(**payload)
 
 
 class SimpleLongTermMemory:
@@ -85,8 +40,6 @@ class SimpleLongTermMemory:
         self,
         milvus_client: MilvusClient,
         embedding_model,
-        collection_name: str | None = None,
-        retrieval_core: MilvusHybridSearchCore | None = None,
     ):
         """
         初始化长期记忆模块。
@@ -94,19 +47,16 @@ class SimpleLongTermMemory:
         参数：
         - milvus_client：Milvus 客户端
         - embedding_model：Embedding 模型，需要有 embed_query 方法
-        - collection_name：Collection 名称，默认从配置读取
-        - retrieval_core：可选的检索核心注入点，便于单测或替换底层检索实现
         """
         self.milvus_client = milvus_client
         self.embedding_model = embedding_model
-        self.search_config = long_term_search_config()
-        self.deduplication_config = long_term_deduplication_config()
-        self.update_on_hit_config = long_term_update_on_hit_config()
-        self.collection_name = collection_name or long_term_collection_name()
+        self.search_config = LONG_TERM_MEMORY_CONFIG["search"]
+        self.deduplication_config = LONG_TERM_MEMORY_CONFIG["deduplication"]
+        self.collection_name = LONG_TERM_MEMORY_CONFIG["collection_name"]
 
         # 初始化 Collection
         try:
-            created = ensure_memory_collection(
+            created = self._ensure_memory_collection(
                 self.milvus_client,
                 self.collection_name,
             )
@@ -122,19 +72,70 @@ class SimpleLongTermMemory:
                 exc_info=True,
             )
             raise
-        if retrieval_core is None:
-            self.retrieval_core = MilvusHybridSearchCore(
-                milvus_client=self.milvus_client,
-                embedding_model=self.embedding_model,
-                collection_name=self.collection_name,
-                dense_field="embedding",
-                sparse_field="sparse_vector",
-                dense_metric_type="COSINE",
-                dense_search_params={"nprobe": 16},
-                hybrid_rrf_k=60,
+        self.retrieval_core = MilvusHybridSearchCore(
+            milvus_client=self.milvus_client,
+            embedding_model=self.embedding_model,
+            collection_name=self.collection_name,
+            dense_field="embedding",
+            sparse_field="sparse_vector",
+            dense_metric_type="COSINE",
+            dense_search_params={"nprobe": 16},
+            hybrid_rrf_k=60,
+        )
+
+    @staticmethod
+    def _ensure_memory_collection(
+        milvus_client: MilvusClient,
+        collection_name: str,
+    ) -> bool:
+        """确保长期记忆 collection 存在。"""
+        if milvus_client.has_collection(collection_name):
+            return False
+
+        schema = milvus_client.create_schema(
+            auto_id=False,
+            enable_dynamic_field=True,
+        )
+        schema.add_field("memory_id", DataType.VARCHAR, is_primary=True, max_length=64)
+        schema.add_field("tenant_id", DataType.VARCHAR, max_length=64)
+        schema.add_field("user_id", DataType.VARCHAR, max_length=64)
+        schema.add_field("memory_type", DataType.VARCHAR, max_length=32)
+        schema.add_field("content", DataType.VARCHAR, max_length=4096)
+        schema.add_field("embedding", DataType.FLOAT_VECTOR, dim=1024)
+        schema.add_field("created_at", DataType.INT64)
+        schema.add_field("updated_at", DataType.INT64)
+        schema.add_field("last_hit_at", DataType.INT64)
+        schema.add_field("hit_count", DataType.INT64)
+        schema.add_field("is_deleted", DataType.BOOL)
+        schema.add_function(
+            Function(
+                name="bm25",
+                function_type=FunctionType.BM25,
+                input_field_names=["content"],
+                output_field_names=["sparse_vector"],
             )
-        else:
-            self.retrieval_core = retrieval_core
+        )
+        schema.add_field("sparse_vector", DataType.SPARSE_FLOAT_VECTOR)
+
+        index_params = milvus_client.prepare_index_params()
+        index_params.add_index(
+            field_name="embedding",
+            index_type="IVF_FLAT",
+            metric_type="COSINE",
+            params={"nlist": 1024},
+        )
+        index_params.add_index(
+            field_name="sparse_vector",
+            index_type="SPARSE_INVERTED_INDEX",
+            metric_type="BM25",
+        )
+
+        milvus_client.create_collection(
+            collection_name=collection_name,
+            schema=schema,
+            index_params=index_params,
+        )
+        return True
 
     # ------------------------------------------------------------------ #
     # Collection 管理
@@ -174,7 +175,7 @@ class SimpleLongTermMemory:
 
             now_ts = int(time.time())
             memory_id = str(uuid.uuid4())
-            memory_data: MilvusRecord = {
+            memory_data: dict[str, Any] = {
                 "memory_id": memory_id,
                 "tenant_id": tenant_id,
                 "user_id": user_id,
@@ -187,7 +188,10 @@ class SimpleLongTermMemory:
                 "hit_count": 0,
                 "is_deleted": False,
             }
-            insert_records(self.milvus_client, self.collection_name, [memory_data])
+            self.milvus_client.insert(
+                collection_name=self.collection_name,
+                data=[memory_data],
+            )
             return memory_id
         except Exception as exc:
             logger.error(
@@ -205,21 +209,10 @@ class SimpleLongTermMemory:
         不需要重新生成 embedding，也不需要传输全量字段。
         """
         try:
-            if not self.update_on_hit_config["enabled"]:
-                return True
-
             now_ts = int(time.time())
-            last_hit_at = (
-                now_ts
-                if self.update_on_hit_config["update_last_hit_at"]
-                else memory.last_hit_at
-            )
-            hit_count = (
-                (memory.hit_count or 0) + 1
-                if self.update_on_hit_config["increase_hit_count"]
-                else memory.hit_count
-            )
-            update_record: MilvusRecord = {
+            last_hit_at = now_ts
+            hit_count = (memory.hit_count or 0) + 1
+            update_record: dict[str, Any] = {
                 "memory_id": memory.memory_id,
                 "updated_at": now_ts,
                 "hit_count": hit_count,
@@ -227,10 +220,9 @@ class SimpleLongTermMemory:
             }
             memory.hit_count = hit_count
             memory.last_hit_at = last_hit_at
-            upsert_records(
-                self.milvus_client,
-                self.collection_name,
-                [update_record],
+            self.milvus_client.upsert(
+                collection_name=self.collection_name,
+                data=[update_record],
             )
             return True
         except Exception as exc:
@@ -267,13 +259,12 @@ class SimpleLongTermMemory:
                     'is_deleted == false',
                 ]
             )
-            results = search_records(
-                self.milvus_client,
-                self.collection_name,
-                embedding,
-                filter_expr,
+            results = self.milvus_client.search(
+                collection_name=self.collection_name,
+                data=[list(embedding)],
+                filter=filter_expr,
                 limit=self.deduplication_config["top_k"],
-                output_fields=DEDUP_OUTPUT_FIELDS,
+                output_fields=["memory_id", "content"],
             )
             if not results or not results[0]:
                 return True
@@ -334,26 +325,55 @@ class SimpleLongTermMemory:
                 query,
                 limit=resolved_top_k,
                 filter_expr=filter_expr,
-                output_fields=MEMORY_OUTPUT_FIELDS,
+                output_fields=[
+                    "memory_id",
+                    "tenant_id",
+                    "user_id",
+                    "memory_type",
+                    "content",
+                    "created_at",
+                    "updated_at",
+                    "last_hit_at",
+                    "hit_count",
+                    "is_deleted",
+                ],
                 score_threshold=resolved_score_threshold,
-                search_limit=resolved_top_k * HYBRID_SEARCH_LIMIT_MULTIPLIER,
+                search_limit=resolved_top_k * 2,
             )
             search_results: list[MemorySearchResult] = []
             for hit in hits:
                 entity = hit.get("entity")
                 if not isinstance(entity, dict):
                     continue
+                payload: dict[str, Any] = {
+                    "memory_id": "",
+                    "tenant_id": "",
+                    "user_id": "",
+                    "memory_type": "",
+                    "content": "",
+                    "created_at": 0,
+                    "updated_at": 0,
+                    "last_hit_at": 0,
+                    "hit_count": 0,
+                    "is_deleted": False,
+                }
+                payload.update(
+                    {
+                        key: value
+                        for key, value in entity.items()
+                        if key in payload and value is not None
+                    }
+                )
                 search_results.append(
                     MemorySearchResult(
-                        memory=entity_to_memory(entity),
-                        score=hit.get("score", 0.0),
+                        memory=LongTermMemory(**payload),
                     )
                 )
             return search_results
         except Exception as exc:
             logger.error(
                 f"hybrid_search 异常 | tenant={tenant_id} user={user_id} "
-                f"query={query[:SEARCH_LOG_PREVIEW_LIMIT]} | {exc}",
+                f"query={query[:100]} | {exc}",
                 exc_info=True,
             )
             return []
@@ -371,7 +391,7 @@ class SimpleLongTermMemory:
         except Exception as exc:
             logger.error(
                 f"embedding 生成异常 | "
-                f"text_preview={text[:EMBEDDING_LOG_PREVIEW_LIMIT]} | {exc}",
+                f"text_preview={text[:200]} | {exc}",
                 exc_info=True,
             )
             return None

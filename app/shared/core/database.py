@@ -7,7 +7,6 @@
 
 把这些对象集中在一个模块里，可以避免各业务服务各自拼接数据库配置。
 """
-from __future__ import annotations
 
 import logging
 
@@ -37,5 +36,3 @@ AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     expire_on_commit=False,
 )
-
-__all__ = ["engine", "AsyncSessionLocal", "Base"]

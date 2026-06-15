@@ -4,12 +4,9 @@ RAG 文档解析与切分模块 — 核心数据模型。
 定义从原始文档到最终入库的所有数据结构。
 """
 
-from __future__ import annotations
-
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional
-
+from typing import Any, Literal
 
 # RAG = Retrieval-Augmented Generation，检索增强生成
 # PDF = Portable Document Format，便携式文档格式
@@ -19,66 +16,17 @@ from typing import Any, Dict, List, Literal, Optional
 # OCR = Optical Character Recognition，光学字符识别
 # UUID = Universally Unique Identifier，通用唯一标识符
 
-
-@dataclass
-class PageMarkdown:
-    """单个页面的 Markdown 表示。
-
-    用于保留页级信息，方便后续定位原文页码。
-    """
-
-    page_number: Optional[int] = None
-    markdown: str = ""
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class ParsedMarkdownDocument:
-    """完成解析的统一 Markdown 文档。
-
-    PDF 和 DOCX 都最终统一为此格式，然后进入同一套切分流程。
-
-    Attributes:
-        doc_id: 文档唯一标识。
-        source_file: 原始文件路径。
-        markdown: 最终统一 Markdown 全文。
-        page_markdown_list: 按页拆分的 Markdown（保留页级信息）。
-        metadata: Docling 原始统计、解析器名称、错误警告等。
-    """
-
-    doc_id: str
-    source_file: str
-    markdown: str = ""
-    page_markdown_list: List[PageMarkdown] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-
 @dataclass
 class MarkdownSection:
     """按多级标题划分的章节。
 
     Attributes:
-        section_id: 章节唯一标识。
-        level: 标题级别（1-4）。
-        title: 标题文本（不含 # 前缀）。
         section_path: 完整标题路径，如 "数据库 > 事务管理 > 隔离级别"。
-        h1/h2/h3/h4: 当前各级标题。
         content: 该标题下的正文内容（不含标题行本身）。
-        page_start/page_end: 起止页码。
     """
 
-    section_id: str = ""
-    level: int = 0
-    title: str = ""
     section_path: str = ""
-    h1: Optional[str] = None
-    h2: Optional[str] = None
-    h3: Optional[str] = None
-    h4: Optional[str] = None
     content: str = ""
-    page_start: Optional[int] = None
-    page_end: Optional[int] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -96,13 +44,7 @@ class MarkdownBlock:
     block_type: Literal["text", "table", "code", "image_caption"] = "text"
     content: str = ""
     section_path: str = ""
-    h1: Optional[str] = None
-    h2: Optional[str] = None
-    h3: Optional[str] = None
-    h4: Optional[str] = None
-    page_start: Optional[int] = None
-    page_end: Optional[int] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -117,10 +59,6 @@ class DocumentChunk:
         section_path: 标题路径。
         raw_text: 干净原文（不加标题路径），用于展示。
         embedding_text: 带标题路径的文本，用于向量化。
-        page_start/page_end: 起止页码。
-        table_id/row_start/row_end: 表格增补字段。
-        language: 代码块语言。
-        metadata: 额外元信息（doc_id, source_file, section_path, chunk_type, parser_name, block_id）。
     """
 
     chunk_id: str = ""
@@ -128,24 +66,8 @@ class DocumentChunk:
     source_file: str = ""
     chunk_type: str = "text"
     section_path: str = ""
-    h1: Optional[str] = None
-    h2: Optional[str] = None
-    h3: Optional[str] = None
-    h4: Optional[str] = None
     raw_text: str = ""
     embedding_text: str = ""
-    page_start: Optional[int] = None
-    page_end: Optional[int] = None
-    table_id: Optional[str] = None
-    row_start: Optional[int] = None
-    row_end: Optional[int] = None
-    language: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> Dict[str, Any]:
-        """转为可 JSON 序列化的字典。"""
-        from dataclasses import asdict
-        return asdict(self)
 
 
 def new_uuid() -> str:

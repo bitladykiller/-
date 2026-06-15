@@ -1,7 +1,7 @@
 """Retriever 运行时单例管理。
 
 这个模块负责：
-- 管理 RetrieverRegistry 的模块级单例
+- 管理检索器注册表的模块级单例
 - 懒初始化 KG / RAG 检索器
 - 缓存 Text2Cypher 子图和 Cypher 示例检索器
 
@@ -10,7 +10,6 @@
 - 适配 Milvus / Neo4j 的检索返回结构
 - 生成检索结果摘要
 """
-from __future__ import annotations
 
 import asyncio
 from typing import Any
@@ -18,9 +17,10 @@ from typing import Any
 from app.chat.infrastructure.retrievers.retriever_contracts import (
     KG_RETRIEVER_NAME,
     RAG_RETRIEVER_NAME,
+    Retriever,
 )
 
-_registry: Any | None = None
+_registry: dict[str, Retriever] | None = None
 _registry_lock: asyncio.Lock = asyncio.Lock()
 _cypher_example_retriever: Any | None = None
 _t2c_agent: Any | None = None
@@ -31,20 +31,12 @@ async def get_retriever(name: str):
     global _registry, _cypher_example_retriever, _t2c_agent
 
     if _registry is None:
-        from app.chat.infrastructure.retrievers.retriever_contracts import (
-            RetrieverRegistry,
-        )
-
-        _registry = RetrieverRegistry()
+        _registry = {}
     registry = _registry
     if KG_RETRIEVER_NAME not in registry or RAG_RETRIEVER_NAME not in registry:
         async with _registry_lock:
             if _registry is None:
-                from app.chat.infrastructure.retrievers.retriever_contracts import (
-                    RetrieverRegistry,
-                )
-
-                _registry = RetrieverRegistry()
+                _registry = {}
             registry = _registry
             if KG_RETRIEVER_NAME not in registry:
                 from app.chat.infrastructure.kg_sub_graph.kg_neo4j_conn import (
@@ -62,10 +54,8 @@ async def get_retriever(name: str):
 
                     if _t2c_agent is None:
                         from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.cypher_dict import (
-                            predefined_cypher_dict,
-                        )
-                        from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.descriptions import (
                             QUERY_DESCRIPTIONS,
+                            predefined_cypher_dict,
                         )
                         from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.workflows.single_agent.text2cypher import (
                             create_text2cypher_agent,
@@ -75,7 +65,7 @@ async def get_retriever(name: str):
                         _t2c_agent = create_text2cypher_agent(
                             llm=cypher_model,
                             graph=neo4j_graph,
-                            cypher_example_retriever=_cypher_example_retriever,
+                            get_examples=_cypher_example_retriever.get_examples,
                             predefined_cypher_dict=predefined_cypher_dict,
                             query_descriptions=QUERY_DESCRIPTIONS,
                         )
@@ -84,17 +74,11 @@ async def get_retriever(name: str):
                         KnowledgeGraphRetriever,
                     )
 
-                    registry.register(
-                        KG_RETRIEVER_NAME,
-                        KnowledgeGraphRetriever(_t2c_agent),
-                    )
+                    registry[KG_RETRIEVER_NAME] = KnowledgeGraphRetriever(_t2c_agent)
             if RAG_RETRIEVER_NAME not in registry:
                 from app.chat.infrastructure.retrievers.retriever_implementations import (
                     MilvusDocRetriever,
                 )
 
-                registry.register(RAG_RETRIEVER_NAME, MilvusDocRetriever())
+                registry[RAG_RETRIEVER_NAME] = MilvusDocRetriever()
     return registry.get(name)
-
-
-__all__ = ["get_retriever"]

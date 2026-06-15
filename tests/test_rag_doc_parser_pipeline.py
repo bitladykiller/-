@@ -1,23 +1,21 @@
 import pytest
-
 import rag_doc_parser.pipeline as pipeline
 from rag_doc_parser.config import ParserConfig
 from rag_doc_parser.exceptions import DocumentParseError, UnsupportedFileTypeError
+from rag_doc_parser.markdown.block_parser import BlockParser
+from rag_doc_parser.markdown.heading_parser import HeadingParser
 from rag_doc_parser.models import (
     DocumentChunk,
     MarkdownBlock,
     MarkdownSection,
-    ParsedMarkdownDocument,
 )
+from rag_doc_parser.parsers.docling_pdf_parser import DoclingPDFParser
+from rag_doc_parser.splitters.text_splitter import TextSplitter
 
 
 def _build_section() -> MarkdownSection:
     return MarkdownSection(
-        section_id="sec-1",
-        level=1,
-        title="Title",
         section_path="Title",
-        h1="Title",
         content="ignored",
     )
 
@@ -32,6 +30,131 @@ class _FakeHeadingParser:
         return [_build_section()]
 
 
+def test_heading_parser_builds_nested_section_paths() -> None:
+    sections = HeadingParser().parse(
+        "# 一级标题\n"
+        "一级内容\n"
+        "## 二级标题\n"
+        "二级内容\n"
+        "### 三级标题\n"
+        "三级内容\n"
+    )
+
+    assert [section.section_path for section in sections] == [
+        "一级标题",
+        "一级标题 > 二级标题",
+        "一级标题 > 二级标题 > 三级标题",
+    ]
+
+
+def test_heading_parser_uses_default_title_for_headingless_markdown() -> None:
+    sections = HeadingParser().parse("没有标题的正文")
+
+    assert len(sections) == 1
+    assert sections[0].section_path == "Untitled"
+    assert sections[0].content == "没有标题的正文"
+
+
+def test_block_parser_sets_language_metadata_for_code_blocks() -> None:
+    blocks = BlockParser().parse(
+        MarkdownSection(
+            section_path="Title",
+            content="```python\nprint(1)\n```\n\n普通段落",
+        )
+    )
+
+    assert [(block.block_type, block.metadata) for block in blocks] == [
+        ("code", {"language": "python"}),
+        ("text", {}),
+    ]
+
+
+def test_docling_pdf_parser_formats_picture_annotation_without_fake_optional_index() -> None:
+    parser = object.__new__(DoclingPDFParser)
+
+    unnamed = parser._format_picture_annotation(
+        type("Picture", (), {"caption": None, "text": None, "description": "desc"})(),
+        index=0,
+    )
+    numbered = parser._format_picture_annotation(
+        type("Picture", (), {"caption": None, "text": None, "description": "desc"})(),
+        index=2,
+    )
+
+    assert unnamed == ":::image_caption\n\ndesc\n:::"
+    assert numbered == ":::image_caption\ntitle: 图片 2\n\ndesc\n:::"
+
+
+def test_docling_pdf_parser_reads_fixed_vlm_api_key_env(monkeypatch) -> None:
+    monkeypatch.setenv("VLM_API_KEY", "secret-key")
+
+    parser = DoclingPDFParser(ParserConfig())
+
+    assert parser._vlm_api_key == "secret-key"
+
+
+def test_text_splitter_applies_overlap_to_following_chunks() -> None:
+    splitter = TextSplitter(chunk_size=8, chunk_overlap=2)
+
+    chunks = splitter.split("abcd efgh ijkl")
+
+    assert chunks == ["abcd", "cdefgh", "ghijkl"]
+
+
+def test_parse_document_builds_default_config_from_env(monkeypatch) -> None:
+    captured: dict[str, ParserConfig] = {}
+
+    class FakePDFParser:
+        def __init__(self, config: ParserConfig) -> None:
+            captured["config"] = config
+
+        def parse(self, file_path: str) -> str:
+            return "raw markdown"
+
+    class EmptyBlockParser:
+        def parse(self, section: MarkdownSection):
+            return []
+
+    monkeypatch.setenv("VLM_API_BASE_URL", "https://vlm.example/v1/chat/completions")
+    monkeypatch.setenv("VLM_MODEL", "fake-vlm")
+    monkeypatch.setattr(pipeline, "DoclingPDFParser", FakePDFParser)
+    monkeypatch.setattr(pipeline, "MarkdownCleaner", _FakeCleaner)
+    monkeypatch.setattr(pipeline, "HeadingParser", _FakeHeadingParser)
+    monkeypatch.setattr(pipeline, "BlockParser", EmptyBlockParser)
+
+    assert pipeline.parse_document("demo.pdf", doc_id="doc-env") == []
+    assert captured["config"].vlm_api_base_url == "https://vlm.example/v1/chat/completions"
+    assert captured["config"].vlm_model == "fake-vlm"
+
+
+def test_parse_document_always_runs_markdown_cleaner(monkeypatch) -> None:
+    clean_calls: list[str] = []
+
+    class FakePDFParser:
+        def __init__(self, config: ParserConfig) -> None:
+            self.config = config
+
+        def parse(self, file_path: str) -> str:
+            return "raw markdown"
+
+    class TrackingCleaner:
+        def clean(self, markdown: str) -> str:
+            clean_calls.append(markdown)
+            return markdown
+
+    class EmptyBlockParser:
+        def parse(self, section: MarkdownSection):
+            return []
+
+    monkeypatch.setattr(pipeline, "DoclingPDFParser", FakePDFParser)
+    monkeypatch.setattr(pipeline, "MarkdownCleaner", TrackingCleaner)
+    monkeypatch.setattr(pipeline, "HeadingParser", _FakeHeadingParser)
+    monkeypatch.setattr(pipeline, "BlockParser", EmptyBlockParser)
+
+    assert pipeline.parse_document("demo.pdf", doc_id="doc-clean", config=ParserConfig()) == []
+    assert clean_calls == ["raw markdown"]
+
+
 def test_parse_document_routes_blocks_to_expected_splitters(monkeypatch) -> None:
     calls: dict[str, object] = {
         "table_split": [],
@@ -43,13 +166,8 @@ def test_parse_document_routes_blocks_to_expected_splitters(monkeypatch) -> None
         def __init__(self, config: ParserConfig) -> None:
             self.config = config
 
-        def parse(self, file_path: str, doc_id: str) -> ParsedMarkdownDocument:
-            return ParsedMarkdownDocument(
-                doc_id=doc_id,
-                source_file=file_path,
-                markdown="raw markdown",
-                metadata={"parser_name": "FakePDFParser"},
-            )
+        def parse(self, file_path: str) -> str:
+            return "raw markdown"
 
     class FakeBlockParser:
         def parse(self, section: MarkdownSection):
@@ -59,14 +177,12 @@ def test_parse_document_routes_blocks_to_expected_splitters(monkeypatch) -> None
                     block_type="table",
                     content="|h|\n|---|\n|a|",
                     section_path=section.section_path,
-                    h1=section.h1,
                 ),
                 MarkdownBlock(
                     block_id="code",
                     block_type="code",
                     content="```python\nprint(1)\n```",
                     section_path=section.section_path,
-                    h1=section.h1,
                     metadata={"language": "python"},
                 ),
                 MarkdownBlock(
@@ -74,14 +190,12 @@ def test_parse_document_routes_blocks_to_expected_splitters(monkeypatch) -> None
                     block_type="text",
                     content="plain text",
                     section_path=section.section_path,
-                    h1=section.h1,
                 ),
                 MarkdownBlock(
                     block_id="img",
                     block_type="image_caption",
                     content="x" * 50,
                     section_path=section.section_path,
-                    h1=section.h1,
                 ),
             ]
 
@@ -166,7 +280,7 @@ def test_parse_document_falls_back_to_python_docx_parser(monkeypatch) -> None:
         def __init__(self, config: ParserConfig) -> None:
             self.config = config
 
-        def parse(self, file_path: str, doc_id: str) -> ParsedMarkdownDocument:
+        def parse(self, file_path: str) -> str:
             parse_calls.append("docling")
             raise DocumentParseError("boom", file_path=file_path, parser_name="docling")
 
@@ -174,14 +288,9 @@ def test_parse_document_falls_back_to_python_docx_parser(monkeypatch) -> None:
         def __init__(self, config: ParserConfig) -> None:
             self.config = config
 
-        def parse(self, file_path: str, doc_id: str) -> ParsedMarkdownDocument:
+        def parse(self, file_path: str) -> str:
             parse_calls.append("fallback")
-            return ParsedMarkdownDocument(
-                doc_id=doc_id,
-                source_file=file_path,
-                markdown="fallback markdown",
-                metadata={"parser_name": "DocxFallbackParser"},
-            )
+            return "fallback markdown"
 
     class FakeBlockParser:
         def parse(self, section: MarkdownSection):
@@ -191,7 +300,6 @@ def test_parse_document_falls_back_to_python_docx_parser(monkeypatch) -> None:
                     block_type="text",
                     content="fallback text",
                     section_path=section.section_path,
-                    h1=section.h1,
                 )
             ]
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """记忆中间件。
 
 统一编排：
@@ -6,34 +8,29 @@
 
 本文件重点做流程编排，不把 Redis / Milvus / 画像服务的细节分散到多个调用点。
 """
-from __future__ import annotations
 
 import time
-from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING
 
-from app.shared.core.logger import get_logger
-from app.knowledge.domain.prompt_builder import build_compression_prompt
 from app.knowledge.domain.schemas import (
     AgentMemoryState,
     MemorySearchResult,
     MessageRecord,
-    UserProfileData,
 )
-from app.knowledge.infrastructure.config import LongTermMemoryConfig, long_term_config
+from app.shared.core.logger import get_logger
 
 if TYPE_CHECKING:
-    from app.knowledge.infrastructure.orchestration.memory_extractor import MemoryExtractor
-    from app.knowledge.infrastructure.stm.redis_short_term_memory import (
-        RedisShortTermMemory,
-    )
     from app.knowledge.infrastructure.ltm.simple_long_term_memory import (
         SimpleLongTermMemory,
     )
+    from app.knowledge.infrastructure.orchestration.memory_extractor import (
+        MemoryExtractor,
+    )
+    from app.knowledge.infrastructure.stm.redis_short_term_memory import (
+        RedisShortTermMemory,
+    )
 
 logger = get_logger(__name__)
-ProfileReader: TypeAlias = Callable[[int, Any | None], Awaitable[UserProfileData]]
-ProfileWriter: TypeAlias = Callable[[int, UserProfileData, Any | None], Awaitable[bool]]
 
 
 class MemoryMiddleware:
@@ -44,50 +41,10 @@ class MemoryMiddleware:
         redis_stm: RedisShortTermMemory,
         milvus_ltm: SimpleLongTermMemory,
         memory_extractor: MemoryExtractor,
-        profile_reader: ProfileReader | None = None,
-        profile_writer: ProfileWriter | None = None,
     ):
-        if profile_reader is None:
-            async def default_profile_reader(
-                user_id: int,
-                redis_client: Any | None = None,
-            ) -> UserProfileData:
-                """通过用户画像服务读取结构化画像。"""
-                from app.user.application.user_profile_service import get_profile
-
-                return await get_profile(
-                    user_id,
-                    redis_client=redis_client,
-                )
-
-            self.profile_reader = default_profile_reader
-        else:
-            self.profile_reader = profile_reader
-
-        if profile_writer is None:
-            async def default_profile_writer(
-                user_id: int,
-                profile: UserProfileData,
-                redis_client: Any | None = None,
-            ) -> bool:
-                """通过用户画像服务回写结构化画像。"""
-                from app.user.application.user_profile_service import upsert_profile_data
-
-                return await upsert_profile_data(
-                    user_id=user_id,
-                    profile=profile,
-                    redis_client=redis_client,
-                )
-
-            self.profile_writer = default_profile_writer
-        else:
-            self.profile_writer = profile_writer
-
         self.redis_stm = redis_stm
         self.milvus_ltm = milvus_ltm
         self.memory_extractor = memory_extractor
-        self.ltm_config: LongTermMemoryConfig = long_term_config()
-        self.ltm_enabled = self.ltm_config["enabled"]
         self._errors_warned: set[str] = set()
 
     def _warn_once(self, key: str, message: str) -> None:
@@ -125,27 +82,28 @@ class MemoryMiddleware:
         uid = int(user_id) if user_id and user_id.isdigit() else 0
         if uid > 0:
             try:
-                memory_state.user_profile = await self.profile_reader(
+                from app.user.application.user_profile_service import get_profile
+
+                memory_state.user_profile = await get_profile(
                     uid,
-                    getattr(self.redis_stm, "redis", None),
+                    redis_client=getattr(self.redis_stm, "redis", None),
                 )
             except Exception:
                 self._warn_once("user_profile", "[memory] 用户画像读取失败，降级为空画像")
                 memory_state.user_profile = {}
 
-        if self.ltm_enabled:
-            try:
-                memory_state.long_term_memories = await self.milvus_ltm.hybrid_search(
-                    tenant_id,
-                    user_id,
-                    user_input,
-                )
-            except Exception:
-                self._warn_once(
-                    "milvus_ltm",
-                    "[memory] Milvus LTM 检索失败，长期记忆降级",
-                )
-                memory_state.long_term_memories = []
+        try:
+            memory_state.long_term_memories = await self.milvus_ltm.hybrid_search(
+                tenant_id,
+                user_id,
+                user_input,
+            )
+        except Exception:
+            self._warn_once(
+                "milvus_ltm",
+                "[memory] Milvus LTM 检索失败，长期记忆降级",
+            )
+            memory_state.long_term_memories = []
         return memory_state
 
     async def after_agent(
@@ -162,22 +120,17 @@ class MemoryMiddleware:
         try:
             meta = await self.redis_stm.get_meta(tenant_id, user_id, session_id)
             meta.total_turns += 1
-            meta.last_updated_at = now_ts
 
             for message in [
                 MessageRecord(
-                    message_id=f"msg_u_{now_ts}",
                     role="user",
                     content=user_message,
                     created_at=now_ts,
-                    turn_index=meta.total_turns,
                 ),
                 MessageRecord(
-                    message_id=f"msg_a_{now_ts}",
                     role="assistant",
                     content=assistant_message,
                     created_at=now_ts,
-                    turn_index=meta.total_turns,
                 ),
             ]:
                 await self.redis_stm.append_message(
@@ -193,38 +146,42 @@ class MemoryMiddleware:
             self._warn_once("redis_stm_write", "[memory] Redis STM 写入失败")
 
         try:
-            meta = await self.redis_stm.get_meta(tenant_id, user_id, session_id)
-            msg_count = await self.redis_stm.get_message_count(
+            async def summary_compressor(
+                old_summary_str: str,
+                old_messages: list[MessageRecord],
+            ) -> str:
+                messages_text = "\n".join(
+                    f"[{message.role}]: {message.content}"
+                    for message in old_messages
+                    if getattr(message, "role", None) and getattr(message, "content", None)
+                )
+                prompt = f"""你是对话摘要助手。请将以下对话历史压缩为一段简洁的摘要。
+
+已有的摘要（如有）：{old_summary_str or "无"}
+
+最近的对话：
+{messages_text}
+
+请用一段中文概括这段对话，内容包括：
+- 用户问了什么、关心什么
+- Agent 给出了什么信息、做了什么
+- 尚未解决的问题或待确认的事项
+
+输出严格JSON格式，只包含一个字段：
+- "content": 上述摘要文本（自由格式，一段中文）
+
+只输出JSON，不要其他内容。"""
+                response = await self.memory_extractor.llm_client.ainvoke(prompt)
+                content = getattr(response, "content", response)
+                return content if isinstance(content, str) else str(content)
+
+            compressed = await self.redis_stm.compress_session_memory(
                 tenant_id,
                 user_id,
                 session_id,
+                summary_compressor,
             )
-            compressed = False
-            if self.redis_stm.should_compress(
-                meta.total_turns,
-                meta.last_compressed_turn,
-                msg_count,
-            ):
-                async def summary_compressor(
-                    old_summary_str: str,
-                    old_messages: list[MessageRecord],
-                ) -> str:
-                    prompt = build_compression_prompt(
-                        old_summary=old_summary_str,
-                        old_messages=old_messages,
-                        compressed_round=meta.total_turns,
-                    )
-                    response = await self.memory_extractor.llm_client.ainvoke(prompt)
-                    content = getattr(response, "content", response)
-                    return content if isinstance(content, str) else str(content)
-
-                compressed = await self.redis_stm.compress_session_memory(
-                    tenant_id,
-                    user_id,
-                    session_id,
-                    summary_compressor,
-                )
-            if compressed and self.ltm_enabled:
+            if compressed:
                 new_summary = await self.redis_stm.get_summary(tenant_id, user_id, session_id)
                 semantic_memories, profile = await self.memory_extractor.extract(
                     user_message,
@@ -250,10 +207,14 @@ class MemoryMiddleware:
                 uid = int(user_id) if user_id and user_id.isdigit() else 0
                 if uid > 0 and profile and isinstance(profile, dict):
                     try:
-                        await self.profile_writer(
-                            uid,
-                            profile,
-                            getattr(self.redis_stm, "redis", None),
+                        from app.user.application.user_profile_service import (
+                            upsert_profile_data,
+                        )
+
+                        await upsert_profile_data(
+                            user_id=uid,
+                            profile=profile,
+                            redis_client=getattr(self.redis_stm, "redis", None),
                         )
                     except Exception as exc:
                         logger.debug(f"[memory] 用户画像更新失败(user_id={user_id}): {exc}")

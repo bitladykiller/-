@@ -25,6 +25,9 @@ docker compose up -d --build
 3. 自动完成数据库建表
 4. 启动 FastAPI 服务
 
+其中应用进程的建表与 FastAPI 拉起逻辑直接定义在
+`docker-compose.yml` 的 `app.command` 中。
+
 ### 2.2 常用命令
 
 ```bash
@@ -39,7 +42,8 @@ docker compose down -v
 - API：`http://localhost:8000`
 - Swagger：`http://localhost:8000/docs`
 
-项目当前只保留 `docker compose` 这一种应用启动方式，不再提供本地直启入口。
+项目当前只保留 `docker compose` 这一种应用启动方式，不再提供任何本地直启入口。
+根目录 `Dockerfile` 只作为 Compose 构建镜像的内部产物，不支持脱离 Compose 单独拉起应用。
 
 数据库维护脚本属于内部维护能力，不作为项目启动入口对外提供。
 

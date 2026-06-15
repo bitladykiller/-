@@ -218,6 +218,35 @@ def test_after_response_writes_latest_user_and_final_assistant_message(monkeypat
     ]
 
 
+def test_after_response_supports_dict_messages_and_falls_back_to_progress_message(
+    monkeypatch,
+) -> None:
+    middleware = FakeMemoryMiddleware()
+    state = AgentState(
+        messages=[
+            {"role": "user", "content": "帮我查一下订单"},
+            {"role": "assistant", "content": "正在查询..."},
+        ]
+    )
+
+    async def fake_get_memory_middleware():
+        return middleware
+
+    monkeypatch.setattr(lg_nodes, "get_memory_middleware", fake_get_memory_middleware)
+    result = _run(lg_nodes.after_response(state, config={}))
+
+    assert result == {}
+    assert middleware.calls == [
+        {
+            "tenant_id": "default",
+            "user_id": "anonymous",
+            "session_id": "default",
+            "user_message": "帮我查一下订单",
+            "assistant_message": "正在查询...",
+        }
+    ]
+
+
 def test_after_response_skips_when_missing_complete_message_pair(monkeypatch) -> None:
     middleware = FakeMemoryMiddleware()
 

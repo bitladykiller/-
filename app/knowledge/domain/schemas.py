@@ -10,7 +10,6 @@
 - 配置管理
 - Prompt 组装
 """
-from __future__ import annotations
 
 from typing import Literal, TypedDict
 
@@ -34,12 +33,6 @@ class UserProfileData(TypedDict, total=False):
     facts: list[UserProfileFact]
 
 
-class UserProfilePayload(UserProfileData):
-    """用户画像服务对外返回的完整结构，额外包含 user_id。"""
-
-    user_id: int
-
-
 class MessageRecord(BaseModel):
     """
     短期记忆中的单条消息记录。
@@ -48,8 +41,6 @@ class MessageRecord(BaseModel):
     这里不保存 token_count、intent、entities、tool_calls，
     只保存构造上下文最必要的信息，降低实现复杂度。
     """
-
-    message_id: str = Field(..., description="消息唯一 ID")
 
     role: Literal["user", "assistant", "tool", "system"] = Field(
         ...,
@@ -60,19 +51,15 @@ class MessageRecord(BaseModel):
 
     created_at: int = Field(..., description="消息创建时间戳，单位秒")
 
-    turn_index: int = Field(..., description="当前会话中的轮次")
-
 
 class SessionMeta(BaseModel):
     """
     短期会话元信息。
 
-    只保存轮次和更新时间，不做 token 统计。
+    只保存轮次和压缩游标，不做 token 统计。
     """
 
     total_turns: int = Field(default=0, description="当前 session 总轮次")
-
-    last_updated_at: int = Field(default=0, description="最近更新时间戳")
 
     last_compressed_turn: int = Field(
         default=0,
@@ -85,14 +72,10 @@ class SessionSummary(BaseModel):
     压缩后的短期会话摘要。
 
     不预设对话领域（不假设对话是"问题→方案"模式）。
-    LLM 自由生成摘要文本，本层只存内容和元信息。
+    LLM 自由生成摘要文本，本层只存真正被读取的摘要正文。
     """
 
     content: str = Field(default="", description="LLM 生成的压缩摘要，自由格式文本")
-
-    compressed_at: int = Field(default=0, description="压缩时间戳（秒）")
-
-    compressed_round: int = Field(default=0, description="压缩时对应的对话轮次")
 
 
 class LongTermMemory(BaseModel):
@@ -133,8 +116,6 @@ class MemorySearchResult(BaseModel):
 
     memory: LongTermMemory
 
-    score: float = Field(default=0.0, description="相似度分数")
-
 
 class MemoryExtractorResult(BaseModel):
     """
@@ -150,8 +131,6 @@ class MemoryExtractorResult(BaseModel):
     ]
 
     content: str
-
-    reason: str | None = None
 
 
 class AgentMemoryState(BaseModel):

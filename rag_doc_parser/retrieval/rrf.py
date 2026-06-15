@@ -1,11 +1,11 @@
 """混合检索结果的重排序支持。"""
 
-from __future__ import annotations
-
 import logging
-from typing import Any, Dict, List
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
 class Reranker:
     """基于 Cross-Encoder 的重排序器。
 
@@ -24,15 +24,10 @@ class Reranker:
         """
         self.model_name = model_name
         self._model = None
-        self._available = False
-        self._init_model()
-
-    def _init_model(self):
-        """延迟加载模型。"""
         try:
             from FlagEmbedding import FlagReranker
+
             self._model = FlagReranker(self.model_name, use_fp16=True)
-            self._available = True
             logger.info(f"Reranker 加载成功: {self.model_name}")
         except ImportError:
             logger.warning(
@@ -45,10 +40,10 @@ class Reranker:
     def rerank(
         self,
         query: str,
-        candidates: List[Dict[str, Any]],
+        candidates: list[dict[str, Any]],
         top_k: int = 5,
         text_field: str = "raw_text",
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """对候选结果重排序。
 
         Args:
@@ -60,7 +55,7 @@ class Reranker:
         Returns:
             重排序后的结果列表。
         """
-        if not self._available or not candidates:
+        if self._model is None or not candidates:
             return candidates[:top_k]
 
         pairs = [[query, c.get(text_field, "")] for c in candidates]
@@ -74,7 +69,3 @@ class Reranker:
 
         candidates.sort(key=lambda x: x.get("rerank_score", 0), reverse=True)
         return candidates[:top_k]
-
-    @property
-    def available(self) -> bool:
-        return self._available

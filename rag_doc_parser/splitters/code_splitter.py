@@ -5,8 +5,6 @@ RAG 文档解析器 — 代码块切分器（按函数/类边界优先）。
 超长函数退回到行级硬切分。
 """
 
-from __future__ import annotations
-
 from typing import List
 
 # 各语言的函数/类边界关键词
@@ -41,23 +39,32 @@ class CodeSplitter:
             切分后的代码块列表。
         """
         lines = code_block.split("\n")
-        lang = language or CodeSplitter._detect_lang(lines)
+        lang = language
+        if not lang and lines and lines[0].strip().startswith("```"):
+            lang = lines[0].strip()[3:].strip().lower()
 
-        code_lines = CodeSplitter._strip_fences(lines)
+        start = 1 if lines and lines[0].strip().startswith("```") else 0
+        end = -1 if lines and lines[-1].strip() == "```" else len(lines)
+        code_lines = lines[start:end]
         n = len(code_lines)
         if n <= self.max_lines_per_chunk:
-            return [CodeSplitter._wrap(code_lines, lang)] if code_lines else []
+            if not code_lines:
+                return []
+            fence = f"```{lang}" if lang else "```"
+            return [fence + "\n" + "\n".join(code_lines) + "\n```"]
 
         # 1. 按函数/类边界切分
         chunks = CodeSplitter._split_by_functions(code_lines, lang)
         if len(chunks) > 1:
-            return [CodeSplitter._wrap(c, lang) for c in chunks if c]
+            fence = f"```{lang}" if lang else "```"
+            return [fence + "\n" + "\n".join(c) + "\n```" for c in chunks if c]
 
         # 2. 退回到行级切分
         result = []
+        fence = f"```{lang}" if lang else "```"
         for i in range(0, n, self.max_lines_per_chunk):
             sub = code_lines[i : i + self.max_lines_per_chunk]
-            result.append(CodeSplitter._wrap(sub, lang))
+            result.append(fence + "\n" + "\n".join(sub) + "\n```")
         return result
 
     # ------------------------------------------------------------------ #
@@ -115,26 +122,3 @@ class CodeSplitter:
                 chunks.insert(0, header_clean)
 
         return chunks
-
-    # ------------------------------------------------------------------ #
-    # 工具方法
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _detect_lang(lines: List[str]) -> str:
-        """从 ```python 提取语言标记。"""
-        if lines and lines[0].strip().startswith("```"):
-            return lines[0].strip()[3:].strip().lower()
-        return ""
-
-    @staticmethod
-    def _strip_fences(lines: List[str]) -> List[str]:
-        """去除首尾 ``` 标记。"""
-        start = 1 if lines and lines[0].strip().startswith("```") else 0
-        end = -1 if lines and lines[-1].strip() == "```" else len(lines)
-        return lines[start:end]
-
-    @staticmethod
-    def _wrap(code_lines: List[str], language: str) -> str:
-        h = f"```{language}" if language else "```"
-        return h + "\n" + "\n".join(code_lines) + "\n```"

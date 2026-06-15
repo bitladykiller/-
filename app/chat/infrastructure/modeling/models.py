@@ -6,9 +6,7 @@
 - 通过懒初始化代理避免 import 阶段就连接外部 LLM
 - 存放节点会用到的结构化输出模型
 """
-from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -33,48 +31,26 @@ ModelRole = Literal[
     "react_judge",
 ]
 
-MODEL_TEMPERATURES: dict[ModelRole, float] = {
-    "agent": 0.7,
-    "router": 0.1,
-    "retrieval_plan": 0.1,
-    "guardrails": 0.1,
-    "cypher": 0.2,
-    "react": 0.4,
-    "react_judge": 0.1,
-}
-
 
 class LazyModelProxy:
     """延迟代理：访问属性/方法时才真正创建模型。"""
 
-    __slots__ = ("_name", "_temperature", "_resolver")
+    __slots__ = ("_name", "_temperature")
 
     def __init__(
         self,
         name: ModelRole,
         temperature: float,
-        resolver: Callable[[ModelRole, float], Any],
     ) -> None:
         self._name = name
         self._temperature = temperature
-        self._resolver = resolver
 
     def __getattr__(self, item: str) -> Any:
-        return getattr(self._resolver(self._name, self._temperature), item)
-
-    def __bool__(self) -> bool:
-        """总是返回 True，避免代理在条件判断里表现反常。"""
-        return True
+        return getattr(_get_model(self._name, self._temperature), item)
 
     def __await__(self):
         """支持 `await lazy_model`，直接代理到底层模型。"""
-        return self._resolver(self._name, self._temperature).__await__()
-
-    def __str__(self) -> str:
-        return f"_LazyModel(name={self._name}, t={self._temperature})"
-
-    def __repr__(self) -> str:
-        return self.__str__()
+        return _get_model(self._name, self._temperature).__await__()
 
 
 # ================================================================== #
@@ -115,25 +91,13 @@ def _get_model(name: ModelRole, temperature: float) -> Any:
 # ================================================================== #
 # 模块级模型入口（实际使用的是这些懒加载代理）
 # ================================================================== #
-agent_model = LazyModelProxy("agent", MODEL_TEMPERATURES["agent"], _get_model)
-router_model = LazyModelProxy("router", MODEL_TEMPERATURES["router"], _get_model)
-retrieval_plan_model = LazyModelProxy(
-    "retrieval_plan",
-    MODEL_TEMPERATURES["retrieval_plan"],
-    _get_model,
-)
-guardrails_model = LazyModelProxy(
-    "guardrails",
-    MODEL_TEMPERATURES["guardrails"],
-    _get_model,
-)
-cypher_model = LazyModelProxy("cypher", MODEL_TEMPERATURES["cypher"], _get_model)
-react_model = LazyModelProxy("react", MODEL_TEMPERATURES["react"], _get_model)
-react_judge_model = LazyModelProxy(
-    "react_judge",
-    MODEL_TEMPERATURES["react_judge"],
-    _get_model,
-)
+agent_model = LazyModelProxy("agent", 0.7)
+router_model = LazyModelProxy("router", 0.1)
+retrieval_plan_model = LazyModelProxy("retrieval_plan", 0.1)
+guardrails_model = LazyModelProxy("guardrails", 0.1)
+cypher_model = LazyModelProxy("cypher", 0.2)
+react_model = LazyModelProxy("react", 0.4)
+react_judge_model = LazyModelProxy("react_judge", 0.1)
 
 
 # ================================================================== #
@@ -164,20 +128,3 @@ class ReactAnswerCheckOutput(BaseModel):
         description="当前答案是否足够，或需要继续检索/转人工"
     )
     reason: str = Field(description="做出该判断的原因，供下一轮 ReAct 参考")
-
-
-__all__ = [
-    "GuardrailsDecision",
-    "LazyModelProxy",
-    "MODEL_TEMPERATURES",
-    "ModelRole",
-    "ReactAnswerCheckOutput",
-    "RetrievalPlanOutput",
-    "agent_model",
-    "cypher_model",
-    "guardrails_model",
-    "react_judge_model",
-    "react_model",
-    "retrieval_plan_model",
-    "router_model",
-]

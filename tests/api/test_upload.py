@@ -15,7 +15,7 @@ class FakeNow:
 
 class FakeDateTime:
     @classmethod
-    def now(cls) -> FakeNow:
+    def now(_cls) -> FakeNow:
         return FakeNow()
 
 
@@ -40,14 +40,12 @@ class FakeTaskManager:
         self.task_id = task_id
         self.status = status
         self.submit_calls: list[tuple[object, tuple[object, ...]]] = []
-        self.status_calls: list[str] = []
 
     async def submit(self, coro_func, *args):
         self.submit_calls.append((coro_func, args))
         return self.task_id
 
     async def get_status(self, task_id: str):
-        self.status_calls.append(task_id)
         return self.status
 
 
@@ -90,7 +88,7 @@ def test_upload_file_rejects_oversize_and_signature_mismatch(monkeypatch, tmp_pa
     with pytest.raises(HTTPException) as oversize_exc:
         _run(
             upload_api.upload_file(
-                FakeUploadFile(content=b"x" * (upload_api.MAX_UPLOAD_SIZE_BYTES + 1)),
+                FakeUploadFile(content=b"x" * (upload_api.MAX_UPLOAD_SIZE_MB * 1024 * 1024 + 1)),
                 3,
             )
         )
@@ -116,7 +114,7 @@ def test_upload_file_writes_file_and_returns_stable_metadata(
         NAMESPACE_DNS = object()
 
         @staticmethod
-        def uuid5(namespace, value):
+        def uuid5(_namespace, value):
             return "user-uuid"
 
     manager = FakeTaskManager(task_id="task-store")

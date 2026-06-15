@@ -10,37 +10,31 @@
 - 服务层只保留对外 API 和缓存编排
 """
 
-from __future__ import annotations
-
 import json
 from typing import Any
 
-from app.shared.core.database import AsyncSessionLocal
-from app.knowledge.domain.schemas import UserProfileData, UserProfilePayload
+from app.knowledge.domain.schemas import UserProfileData
 from app.knowledge.infrastructure.profile.profile_payload_support import (
-    coerce_user_profile_payload,
+    coerce_user_profile_data,
 )
+from app.shared.core.database import AsyncSessionLocal
 from app.user.application.user_profile_store import (
-    empty_user_profile,
     query_profile_from_db,
     upsert_profile_data_in_db,
 )
-
-CACHE_TTL = 1800  # 30 分钟
-CACHE_PREFIX = "user:profile"
 
 
 async def get_profile(
     user_id: int,
     redis_client: Any | None = None,
-) -> UserProfilePayload:
+) -> UserProfileData:
     """获取用户画像，优先读 Redis，未命中再查 MySQL。"""
-    cache_key = f"{CACHE_PREFIX}:{user_id}"
+    cache_key = f"user:profile:{user_id}"
     if redis_client is not None:
         cached = await redis_client.get(cache_key)
         if cached:
             try:
-                return coerce_user_profile_payload(user_id, json.loads(cached))
+                return coerce_user_profile_data(json.loads(cached))
             except (TypeError, ValueError):
                 pass
 
@@ -49,12 +43,12 @@ async def get_profile(
         if redis_client is not None:
             await redis_client.setex(
                 cache_key,
-                CACHE_TTL,
+                1800,
                 json.dumps(profile, ensure_ascii=False),
             )
         return profile
     except Exception:
-        return empty_user_profile(user_id)
+        return coerce_user_profile_data({})
 
 
 async def upsert_profile_data(
@@ -80,13 +74,5 @@ async def upsert_profile_data(
         return False
 
     if data_changed and redis_client is not None:
-        await redis_client.delete(f"{CACHE_PREFIX}:{user_id}")
+        await redis_client.delete(f"user:profile:{user_id}")
     return True
-
-
-__all__ = [
-    "CACHE_PREFIX",
-    "CACHE_TTL",
-    "get_profile",
-    "upsert_profile_data",
-]

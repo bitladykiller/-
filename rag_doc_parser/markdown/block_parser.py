@@ -5,10 +5,7 @@ RAG 文档解析器 — Markdown 内容块解析器。
 识别代码块、表格、图片说明、普通文本等类型。
 """
 
-from __future__ import annotations
-
 import re
-from typing import List
 
 from rag_doc_parser.markdown.table_utils import is_markdown_table
 from rag_doc_parser.models import MarkdownBlock, MarkdownSection, new_uuid
@@ -38,7 +35,7 @@ class BlockParser:
     输出的 MarkdownBlock 继承 section 的标题信息。
     """
 
-    def parse(self, section: MarkdownSection) -> List[MarkdownBlock]:
+    def parse(self, section: MarkdownSection) -> list[MarkdownBlock]:
         """将 section 的 content 拆分为 MarkdownBlock 列表。
 
         Args:
@@ -52,7 +49,7 @@ class BlockParser:
             return []
 
         lines = content.split("\n")
-        blocks: List[MarkdownBlock] = []
+        blocks: list[MarkdownBlock] = []
 
         # 状态机
         i = 0
@@ -74,10 +71,8 @@ class BlockParser:
                     block_type="code",
                     content="\n".join(code_lines),
                     section=section,
-                    extra_metadata={"language": language} if language else {},
+                    metadata={"language": language} if language else {},
                 )
-                # 为代码块设置 language 属性
-                block.metadata["language"] = language
                 blocks.append(block)
                 i = end_idx + 1
                 continue
@@ -89,6 +84,7 @@ class BlockParser:
                     block_type="table",
                     content="\n".join(table_lines),
                     section=section,
+                    metadata={},
                 )
                 blocks.append(block)
                 i = end_idx + 1
@@ -105,6 +101,7 @@ class BlockParser:
                     block_type="image_caption",
                     content="\n".join(caption_lines),
                     section=section,
+                    metadata={},
                 )
                 blocks.append(block)
                 i = end_idx + 1
@@ -116,6 +113,7 @@ class BlockParser:
                 block_type="text",
                 content="\n".join(text_lines),
                 section=section,
+                metadata={},
             )
             blocks.append(block)
             i = end_idx + 1
@@ -123,8 +121,8 @@ class BlockParser:
         return blocks
 
     def _extract_code_block(
-        self, lines: List[str], start: int
-    ) -> tuple[List[str], int]:
+        self, lines: list[str], start: int
+    ) -> tuple[list[str], int]:
         """提取代码块内容（不含开始/结束标记行）。
 
         Args:
@@ -134,7 +132,7 @@ class BlockParser:
         Returns:
             (代码行列表, 结束行索引)。
         """
-        code_lines: List[str] = []
+        code_lines: list[str] = []
         i = start + 1  # 跳过开始标记
 
         while i < len(lines):
@@ -147,8 +145,8 @@ class BlockParser:
         return code_lines, len(lines) - 1
 
     def _extract_table(
-        self, lines: List[str], start: int
-    ) -> tuple[List[str], int]:
+        self, lines: list[str], start: int
+    ) -> tuple[list[str], int]:
         """提取表格行。
 
         Args:
@@ -158,7 +156,7 @@ class BlockParser:
         Returns:
             (表格行列表, 结束行索引)。
         """
-        table_lines: List[str] = []
+        table_lines: list[str] = []
         i = start
 
         while i < len(lines):
@@ -171,8 +169,8 @@ class BlockParser:
         return table_lines, i - 1
 
     def _extract_image_caption(
-        self, lines: List[str], start: int
-    ) -> tuple[List[str], int]:
+        self, lines: list[str], start: int
+    ) -> tuple[list[str], int]:
         """提取图片说明行。
 
         图片说明通常是连续的以 ** 开头的行。
@@ -184,7 +182,7 @@ class BlockParser:
         Returns:
             (图片说明行列表, 结束行索引)。
         """
-        caption_lines: List[str] = []
+        caption_lines: list[str] = []
         i = start
 
         inside_caption_block = False
@@ -225,8 +223,8 @@ class BlockParser:
         return caption_lines, i - 1
 
     def _extract_text(
-        self, lines: List[str], start: int
-    ) -> tuple[List[str], int]:
+        self, lines: list[str], start: int
+    ) -> tuple[list[str], int]:
         """提取连续的普通文本行。
 
         遇到代码块标记、表格行、图片说明行时停止。
@@ -238,7 +236,7 @@ class BlockParser:
         Returns:
             (文本行列表, 结束行索引)。
         """
-        text_lines: List[str] = []
+        text_lines: list[str] = []
         i = start
 
         while i < len(lines):
@@ -268,7 +266,7 @@ class BlockParser:
         block_type: str,
         content: str,
         section: MarkdownSection,
-        extra_metadata: dict | None = None,
+        metadata: dict,
     ) -> MarkdownBlock:
         """创建 MarkdownBlock，继承 section 的标题信息。
 
@@ -276,25 +274,15 @@ class BlockParser:
             block_type: 块类型。
             content: 块内容。
             section: 所属 section。
-            extra_metadata: 额外元数据。
+            metadata: 额外元数据。
 
         Returns:
             MarkdownBlock 实例。
         """
-        metadata: dict = {}
-        if extra_metadata:
-            metadata.update(extra_metadata)
-
         return MarkdownBlock(
             block_id=new_uuid(),
             block_type=block_type,
             content=content,
             section_path=section.section_path,
-            h1=section.h1,
-            h2=section.h2,
-            h3=section.h3,
-            h4=section.h4,
-            page_start=section.page_start,
-            page_end=section.page_end,
             metadata=metadata,
         )

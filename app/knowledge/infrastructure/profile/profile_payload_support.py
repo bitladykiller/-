@@ -1,13 +1,9 @@
 """用户画像结构收口与 payload 构造 helper。"""
 
-from __future__ import annotations
-
 from typing import Any
 
 from app.knowledge.domain.schemas import (
     UserProfileData,
-    UserProfileFact,
-    UserProfilePayload,
 )
 
 PROFILE_FIELD_NAMES = (
@@ -41,23 +37,6 @@ def normalize_profile_tags(raw_tags: Any) -> list[str]:
     return normalized_tags
 
 
-def normalize_profile_facts(raw_facts: Any) -> list[UserProfileFact]:
-    """把 facts 收口成稳定的 `{key, value}` 数组。"""
-    if not isinstance(raw_facts, list):
-        return []
-
-    facts: list[UserProfileFact] = []
-    for item in raw_facts:
-        if not isinstance(item, dict):
-            continue
-        key = normalize_optional_text(item.get("key"))
-        value = normalize_optional_text(item.get("value"))
-        if not key or not value:
-            continue
-        facts.append({"key": key, "value": value})
-    return facts
-
-
 def normalize_profile_data(raw_profile: Any) -> UserProfileData:
     """把松散画像字典裁剪成记忆模块内部使用的稳定结构。"""
     if not isinstance(raw_profile, dict):
@@ -73,34 +52,30 @@ def normalize_profile_data(raw_profile: Any) -> UserProfileData:
     if tags:
         normalized_profile["tags"] = tags
 
-    facts = normalize_profile_facts(raw_profile.get("facts"))
+    facts: list[dict[str, str]] = []
+    raw_facts = raw_profile.get("facts")
+    if isinstance(raw_facts, list):
+        for item in raw_facts:
+            if not isinstance(item, dict):
+                continue
+            key = normalize_optional_text(item.get("key"))
+            value = normalize_optional_text(item.get("value"))
+            if not key or not value:
+                continue
+            facts.append({"key": key, "value": value})
     if facts:
         normalized_profile["facts"] = facts
 
     return normalized_profile
 
 
-def coerce_user_profile_payload(
-    user_id: int,
-    raw_profile: Any,
-) -> UserProfilePayload:
-    """把缓存或外部传入的画像收口成带 `user_id` 的完整 payload。"""
+def coerce_user_profile_data(raw_profile: Any) -> UserProfileData:
+    """把缓存或外部传入的画像收口成带稳定默认值的标准画像结构。"""
     normalized_profile = normalize_profile_data(raw_profile)
     return {
-        "user_id": user_id,
         "preferred_brand": normalized_profile.get("preferred_brand"),
         "budget_range": normalized_profile.get("budget_range"),
         "preferred_category": normalized_profile.get("preferred_category"),
         "tags": normalized_profile.get("tags", []),
         "facts": normalized_profile.get("facts", []),
     }
-
-
-__all__ = [
-    "PROFILE_FIELD_NAMES",
-    "coerce_user_profile_payload",
-    "normalize_profile_data",
-    "normalize_optional_text",
-    "normalize_profile_facts",
-    "normalize_profile_tags",
-]

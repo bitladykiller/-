@@ -1,6 +1,5 @@
-import pytest
-
 import app.shared.core.config as config_module
+import pytest
 from app.shared.core.config_models import (
     BusinessSettings,
     InfrastructureSettings,
@@ -27,24 +26,22 @@ def _build_infrastructure_settings() -> InfrastructureSettings:
 def _build_business_settings() -> BusinessSettings:
     return BusinessSettings(
         DEEPSEEK_API_KEY="key",
-        DEEPSEEK_BASE_URL="https://api.deepseek.com",
         DEEPSEEK_MODEL="deepseek-chat",
         OLLAMA_BASE_URL="http://ollama:11434",
-        OLLAMA_CHAT_MODEL="qwen2.5:32b",
-        OLLAMA_REASON_MODEL="deepseek-r1:32b",
         OLLAMA_AGENT_MODEL="qwen2.5:32b",
-        SERPAPI_KEY="serp-key",
-        CHAT_SERVICE=ServiceType.DEEPSEEK,
-        REASON_SERVICE=ServiceType.OLLAMA,
         AGENT_SERVICE=ServiceType.DEEPSEEK,
     )
 
 
+def _make_settings():
+    settings = type(config_module.settings)()
+    settings._infra = _build_infrastructure_settings()
+    settings._business = _build_business_settings()
+    return settings
+
+
 def test_settings_proxies_sub_settings_and_computed_urls() -> None:
-    settings = type(config_module.settings)(
-        infra=_build_infrastructure_settings(),
-        business=_build_business_settings(),
-    )
+    settings = _make_settings()
 
     assert settings.DB_HOST == "mysql"
     assert settings.DEEPSEEK_MODEL == "deepseek-chat"
@@ -54,21 +51,14 @@ def test_settings_proxies_sub_settings_and_computed_urls() -> None:
 
 
 def test_settings_redis_url_without_password_omits_auth_prefix() -> None:
-    settings = type(config_module.settings)(
-        infra=_build_infrastructure_settings().model_copy(
-            update={"REDIS_DB": 0, "REDIS_PASSWORD": ""}
-        ),
-        business=_build_business_settings(),
-    )
+    settings = _make_settings()
+    settings._infra = settings._infra.model_copy(update={"REDIS_DB": 0, "REDIS_PASSWORD": ""})
 
     assert settings.REDIS_URL == "redis://redis:6379/0"
 
 
 def test_settings_unknown_attribute_raises_attribute_error() -> None:
-    settings = type(config_module.settings)(
-        infra=_build_infrastructure_settings(),
-        business=_build_business_settings(),
-    )
+    settings = _make_settings()
 
     with pytest.raises(AttributeError):
         _ = settings.NOT_A_REAL_SETTING

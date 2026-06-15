@@ -3,18 +3,9 @@
 这个模块只做一件事：根据用户问题，从预置 Cypher 示例中挑出最相关的几条。
 示例数据和相关性打分规则都留在同一处，方便直接阅读和调整。
 """
-from __future__ import annotations
 
 import re
 from itertools import chain
-from typing import TypedDict
-
-
-class CypherExample(TypedDict):
-    """单条 Cypher 示例的数据结构。"""
-
-    question: str
-    cypher: str
 
 
 _IMPORTANT_PATTERNS: list[tuple[str, str]] = [
@@ -29,7 +20,7 @@ _IMPORTANT_PATTERNS: list[tuple[str, str]] = [
     (r"手册|说明书", "手册"),
 ]
 
-_EXAMPLES_BY_CATEGORY: dict[str, list[CypherExample]] = {
+_EXAMPLES_BY_CATEGORY: dict[str, list[dict[str, str]]] = {
     "产品查询": [
         {
             "question": "查询所有智能音箱类产品",
@@ -227,7 +218,7 @@ class NorthwindCypherRetriever:
         """根据用户查询返回相关的 Cypher 示例。"""
         examples = list(chain.from_iterable(_EXAMPLES_BY_CATEGORY.values()))
         query_words = set(re.findall(r"\w+", query.lower()))
-        scored_examples: list[tuple[CypherExample, int]] = []
+        scored_examples: list[tuple[dict[str, str], int]] = []
 
         for example in examples:
             score = 0

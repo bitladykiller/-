@@ -4,7 +4,7 @@ import app.chat.infrastructure.kg_sub_graph.kg_neo4j_conn as kg_conn
 class FakeGraph:
     def __init__(self, *, fail_on_query: bool = False, **kwargs) -> None:
         self.fail_on_query = fail_on_query
-        self.kwargs = kwargs
+        _ = kwargs
         self.query_calls: list[str] = []
 
     def query(self, statement: str) -> None:

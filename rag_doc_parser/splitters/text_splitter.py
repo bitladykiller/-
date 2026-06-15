@@ -5,8 +5,6 @@ RAG 文档解析器 — 文本切分器。
 分隔符优先级：\\n\\n > \\n > 。> ！> ？> ；> ，> 空格 > 硬切。
 """
 
-from __future__ import annotations
-
 from typing import List
 
 
@@ -80,7 +78,16 @@ class TextSplitter:
 
         # 应用重叠
         if self.chunk_overlap > 0:
-            chunks = self._apply_overlap(chunks)
+            if len(chunks) > 1:
+                overlapped_chunks: List[str] = [chunks[0]]
+                for i in range(1, len(chunks)):
+                    prev = chunks[i - 1]
+                    current = chunks[i]
+                    combined = prev[-self.chunk_overlap:] + current
+                    if len(combined) > self.chunk_size:
+                        combined = combined[:self.chunk_size]
+                    overlapped_chunks.append(combined)
+                chunks = overlapped_chunks
 
         return chunks
 
@@ -190,37 +197,3 @@ class TextSplitter:
             start = end
 
         return chunks
-
-    def _apply_overlap(self, chunks: List[str]) -> List[str]:
-        """在相邻 chunk 之间添加重叠。
-
-        每个 chunk（除了第一个）的开头包含上一个 chunk 末尾的 overlap 个字符。
-
-        Args:
-            chunks: 原始切分结果。
-
-        Returns:
-            添加重叠后的切分结果。
-        """
-        if len(chunks) <= 1 or self.chunk_overlap <= 0:
-            return chunks
-
-        result: List[str] = [chunks[0]]
-
-        for i in range(1, len(chunks)):
-            prev = chunks[i - 1]
-            current = chunks[i]
-
-            # 取上一个 chunk 末尾的 overlap 个字符
-            overlap_text = prev[-self.chunk_overlap:]
-
-            # 将重叠文本添加到当前 chunk 开头
-            combined = overlap_text + current
-
-            # 如果合并后超过 chunk_size，截断
-            if len(combined) > self.chunk_size:
-                combined = combined[:self.chunk_size]
-
-            result.append(combined)
-
-        return result

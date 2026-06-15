@@ -3,8 +3,6 @@
 这里只持久化会话元信息，不保存逐条聊天消息。
 消息内容当前由短期记忆层维护。
 """
-from __future__ import annotations
-
 import enum
 from datetime import datetime
 

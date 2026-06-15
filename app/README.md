@@ -20,4 +20,5 @@
 ## 使用约定
 
 - 新代码优先从 `app.chat`、`app.knowledge`、`app.user`、`app.shared` 导入。
-- 应用启动统一由 `docker compose` 调用 `configs/docker/app/start.sh` 完成。
+- `app/` 目录不再暴露可直接启动服务的模块级入口。
+- 应用启动统一由 `docker compose` 在 `docker-compose.yml` 内部完成。

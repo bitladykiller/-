@@ -38,10 +38,10 @@ class FakeSessionFactory:
         session = self.session
 
         class _SessionContext:
-            async def __aenter__(self_inner):
+            async def __aenter__(self):
                 return session
 
-            async def __aexit__(self_inner, exc_type, exc, tb) -> bool:
+            async def __aexit__(self, _exc_type, exc, _tb) -> bool:
                 return False
 
         return _SessionContext()
@@ -54,7 +54,6 @@ def _run(awaitable):
 def test_get_profile_uses_cached_profile(monkeypatch) -> None:
     cache = FakeProfileCache()
     expected = {
-        "user_id": 7,
         "preferred_brand": "小米",
         "budget_range": None,
         "preferred_category": "空调",
@@ -81,7 +80,6 @@ def test_get_profile_ignores_invalid_cached_json_and_queries_db(monkeypatch) -> 
     cache = FakeProfileCache()
     cache.values["user:profile:3"] = "{not-json"
     expected = {
-        "user_id": 3,
         "preferred_brand": "海尔",
         "budget_range": "0-3000",
         "preferred_category": None,
@@ -101,7 +99,7 @@ def test_get_profile_ignores_invalid_cached_json_and_queries_db(monkeypatch) -> 
     assert cache.setex_calls == [
         (
             "user:profile:3",
-            profile_service.CACHE_TTL,
+            1800,
             json.dumps(expected, ensure_ascii=False),
         )
     ]
@@ -110,7 +108,6 @@ def test_get_profile_ignores_invalid_cached_json_and_queries_db(monkeypatch) -> 
 def test_get_profile_queries_db_and_backfills_cache(monkeypatch) -> None:
     cache = FakeProfileCache()
     expected = {
-        "user_id": 9,
         "preferred_brand": "海尔",
         "budget_range": "0-3000",
         "preferred_category": None,
@@ -130,7 +127,7 @@ def test_get_profile_queries_db_and_backfills_cache(monkeypatch) -> None:
     assert len(cache.setex_calls) == 1
     key, ttl, value = cache.setex_calls[0]
     assert key == "user:profile:9"
-    assert ttl == profile_service.CACHE_TTL
+    assert ttl == 1800
     assert json.loads(value) == expected
 
 
@@ -143,7 +140,6 @@ def test_get_profile_returns_empty_profile_when_query_fails(monkeypatch) -> None
     result = _run(profile_service.get_profile(11))
 
     assert result == {
-        "user_id": 11,
         "preferred_brand": None,
         "budget_range": None,
         "preferred_category": None,

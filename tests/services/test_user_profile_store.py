@@ -47,10 +47,10 @@ class FakeSessionFactory:
         session = self.session
 
         class _SessionContext:
-            async def __aenter__(self_inner):
+            async def __aenter__(self):
                 return session
 
-            async def __aexit__(self_inner, exc_type, exc, tb) -> bool:
+            async def __aexit__(self, _exc_type, exc, _tb) -> bool:
                 return False
 
         return _SessionContext()
@@ -60,9 +60,13 @@ def _run(awaitable):
     return asyncio.run(awaitable)
 
 
-def test_empty_user_profile_returns_stable_default_payload() -> None:
-    assert profile_store.empty_user_profile(8) == {
-        "user_id": 8,
+def test_query_profile_from_db_returns_stable_default_payload_when_rows_missing(
+    monkeypatch,
+) -> None:
+    session = FakeSession([FakeResult(first=None), FakeResult(all_rows=[])])
+    monkeypatch.setattr(profile_store, "AsyncSessionLocal", FakeSessionFactory(session))
+
+    assert _run(profile_store.query_profile_from_db(8)) == {
         "preferred_brand": None,
         "budget_range": None,
         "preferred_category": None,
@@ -95,7 +99,6 @@ def test_query_profile_from_db_reads_rows_and_normalizes_payload(monkeypatch) ->
     result = _run(profile_store.query_profile_from_db(7))
 
     assert result == {
-        "user_id": 7,
         "preferred_brand": "海尔",
         "budget_range": "3000以内",
         "preferred_category": None,
@@ -126,7 +129,6 @@ def test_query_profile_from_db_falls_back_to_empty_tags_when_json_invalid(monkey
     result = _run(profile_store.query_profile_from_db(7))
 
     assert result == {
-        "user_id": 7,
         "preferred_brand": "海尔",
         "budget_range": None,
         "preferred_category": None,

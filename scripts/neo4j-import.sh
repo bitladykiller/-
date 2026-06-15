@@ -40,7 +40,7 @@ done
 if [ -n "${missing_files}" ]; then
     echo "未检测到完整 Neo4j CSV 数据集，跳过导入。"
     echo "缺失文件:${missing_files}"
-    echo "如需启用图谱导入，请把 CSV 放到 docker/neo4j-import/ 目录。"
+    echo "如需启用图谱导入，请把 CSV 放到 configs/docker/neo4j-import/ 目录。"
     exit 0
 fi
 

@@ -6,10 +6,8 @@
 3. 在命中后提取模板参数
 """
 
-from __future__ import annotations
-
+import json
 import re
-from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -17,9 +15,8 @@ import requests
 from sklearn.metrics.pairwise import cosine_similarity
 
 from app.shared.core.config import settings
-from app.shared.core.json_utils import parse_first_json_object
+from app.shared.core.json_utils import extract_first_json_object
 
-_DEFAULT_EMBEDDING_DIM = 1024
 _PARAM_PATTERNS: dict[str, re.Pattern[str]] = {
     "product_name": re.compile(
         r"(?:关于|查询|找|有关)\s*([\w\s\u4e00-\u9fff-]+?)\s*(?:的|是|多少)"
@@ -29,80 +26,6 @@ _PARAM_PATTERNS: dict[str, re.Pattern[str]] = {
     ),
     "order_id": re.compile(r"订单\s*([0-9]+)"),
 }
-
-
-def build_embed_payload(model: str, texts: list[str]) -> dict[str, Any]:
-    """构造 Ollama embedding 请求体。"""
-    return {
-        "model": model,
-        "input": texts,
-    }
-
-
-def fallback_embeddings(
-    count: int,
-    *,
-    embedding_dim: int = _DEFAULT_EMBEDDING_DIM,
-) -> list[list[float]]:
-    """返回固定维度的零向量，避免调用失败时中断后续匹配流程。"""
-    return [[0.0] * embedding_dim for _ in range(count)]
-
-
-def extract_embeddings(
-    payload: dict[str, Any],
-    *,
-    expected_count: int,
-    embedding_dim: int = _DEFAULT_EMBEDDING_DIM,
-) -> list[list[float]]:
-    """从 Ollama 响应中提取 `embeddings` 字段。"""
-    embeddings = payload.get("embeddings", [])
-    if isinstance(embeddings, list) and embeddings:
-        return embeddings
-    return fallback_embeddings(expected_count, embedding_dim=embedding_dim)
-
-
-def build_query_texts(
-    predefined_cypher_dict: Mapping[str, str],
-    query_descriptions: Mapping[str, str],
-) -> tuple[list[str], list[str]]:
-    """把查询名和描述拼成 embedding 输入文本。"""
-    query_texts: list[str] = []
-    query_keys: list[str] = []
-    for query_name in predefined_cypher_dict:
-        description = query_descriptions.get(query_name, "")
-        query_texts.append(f"{query_name} {description}".strip())
-        query_keys.append(query_name)
-    return query_keys, query_texts
-
-
-def extract_parameter_names(cypher_template: str) -> list[str]:
-    """提取 Cypher 模板中的参数名。"""
-    return re.findall(r"\$(\w+)", cypher_template)
-
-
-def extract_parameters_with_rules(
-    user_question: str,
-    param_names: Sequence[str],
-) -> dict[str, str]:
-    """使用规则从用户问题中提取参数。"""
-    params: dict[str, str] = {}
-    for param_name in param_names:
-        pattern = _PARAM_PATTERNS.get(param_name)
-        if pattern is None:
-            continue
-        match = pattern.search(user_question)
-        if match:
-            params[param_name] = match.group(1).strip()
-    return params
-
-
-def parse_json_response(content: str) -> dict[str, Any]:
-    """从模型返回内容中提取 JSON 对象。"""
-    try:
-        parsed = parse_first_json_object(content)
-        return parsed or {}
-    except Exception:
-        return {}
 
 
 class _VectorQueryMatcher:
@@ -135,10 +58,11 @@ class _VectorQueryMatcher:
         if not self.predefined_cypher_dict:
             self.query_vectors = {}
         else:
-            query_keys, query_texts = build_query_texts(
-                self.predefined_cypher_dict,
-                self.query_descriptions,
-            )
+            query_keys = list(self.predefined_cypher_dict)
+            query_texts = [
+                f"{query_name} {self.query_descriptions.get(query_name, '')}".strip()
+                for query_name in query_keys
+            ]
             vectors = self._embed_texts(query_texts)
             self.query_vectors = {
                 key: np.array(vector)
@@ -150,13 +74,16 @@ class _VectorQueryMatcher:
         try:
             response = requests.post(
                 self.ollama_api_url,
-                json=build_embed_payload(self.ollama_embedding_model, texts),
+                json={"model": self.ollama_embedding_model, "input": texts},
                 timeout=10,
             )
             response.raise_for_status()
-            return extract_embeddings(response.json(), expected_count=len(texts))
+            embeddings = response.json().get("embeddings", [])
+            if isinstance(embeddings, list) and embeddings:
+                return embeddings
         except Exception:
-            return fallback_embeddings(len(texts))
+            pass
+        return [[0.0] * 1024 for _ in range(len(texts))]
 
     def match_query(self, user_question: str, top_k: int = 3) -> list[dict[str, Any]]:
         """将用户问题匹配到最相似的预定义查询。"""
@@ -204,7 +131,7 @@ class _VectorQueryMatcher:
         cypher_template = self.predefined_cypher_dict[query_name]
 
         # 提取参数列表
-        param_names = extract_parameter_names(cypher_template)
+        param_names = re.findall(r"\$(\w+)", cypher_template)
 
         # 使用LLM提取参数（如果提供）
         if llm is not None:
@@ -231,31 +158,22 @@ class _VectorQueryMatcher:
                 ]
             )
             response = llm.invoke(prompt)
-            return parse_json_response(getattr(response, "content", ""))
+            try:
+                payload = extract_first_json_object(getattr(response, "content", ""))
+                if payload is None:
+                    return {}
+                parsed = json.loads(payload)
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
 
         # 使用简单规则进行参数提取
-        return extract_parameters_with_rules(user_question, param_names)
-
-
-def create_vector_query_matcher(
-    predefined_cypher_dict: dict[str, str],
-    query_descriptions: dict[str, str] | None = None,
-) -> _VectorQueryMatcher:
-    """
-    创建并返回预定义 Cypher 查询匹配器实例。
-
-    参数:
-    predefined_cypher_dict: 预定义的 Cypher 查询字典
-    query_descriptions: 可选的查询描述字典
-
-    返回:
-    查询匹配器实例
-    """
-    # 如果没有提供描述，为每个查询生成默认描述。
-    if query_descriptions is None:
-        query_descriptions = {
-            query_name: query_name.replace("_", " ")
-            for query_name in predefined_cypher_dict
-        }
-
-    return _VectorQueryMatcher(predefined_cypher_dict, query_descriptions)
+        params: dict[str, str] = {}
+        for param_name in param_names:
+            pattern = _PARAM_PATTERNS.get(param_name)
+            if pattern is None:
+                continue
+            match = pattern.search(user_question)
+            if match:
+                params[param_name] = match.group(1).strip()
+        return params

@@ -1,13 +1,19 @@
+import asyncio
+
 from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.text2cypher.validation.models import (
     CypherValidationTask,
     Neo4jStructuredSchema,
     Neo4jStructuredSchemaPropertyNumber,
+    ValidateCypherOutput,
+)
+from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.text2cypher.validation.validators import (
+    validate_cypher_query_with_schema,
+    validate_cypher_query_with_llm,
 )
 from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.text2cypher.validation.utils.cypher_extractors import (
     extract_entities_for_validation,
 )
 from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.text2cypher.validation.schema_validation_rules import (
-    build_validation_task_groups,
     validate_property_names_with_enum,
     validate_property_values_with_enum,
     validate_property_values_with_range,
@@ -65,40 +71,6 @@ def test_schema_relationship_value_helpers_use_rel_props() -> None:
     assert list(rel_ranges.keys()) == ["PURCHASED"]
     assert rel_ranges["PURCHASED"]["quantity"].min == 1
     assert rel_ranges["PURCHASED"]["quantity"].max == 10
-
-
-def test_build_validation_task_groups_splits_string_and_numeric_tasks() -> None:
-    tasks = [
-        CypherValidationTask(
-            labels_or_types="Product",
-            operator="=",
-            property_name="status",
-            property_value="archived",
-            property_type="STRING",
-        ),
-        CypherValidationTask(
-            labels_or_types="Product",
-            operator="=",
-            property_name="price",
-            property_value=20000,
-            property_type="FLOAT",
-        ),
-        CypherValidationTask(
-            labels_or_types="Product",
-            operator="=",
-            property_name="unknown",
-            property_value="x",
-            property_type=None,
-        ),
-    ]
-
-    groups = build_validation_task_groups(tasks)
-
-    assert groups.name_checks == tasks
-    assert [task.property_name for task in groups.enum_value_checks] == ["status"]
-    assert [task.property_name for task in groups.range_value_checks] == ["price"]
-
-
 def test_validate_property_names_with_enum_reports_missing_property() -> None:
     schema = _build_schema()
     tasks = [
@@ -208,4 +180,67 @@ def test_extract_entities_for_validation_reads_node_and_relationship_properties(
             "property_value": "2",
             "property_type": None,
         },
+    ]
+
+
+def test_validate_cypher_query_with_llm_sanitizes_graph_schema_for_prompt() -> None:
+    captured: list[dict[str, str]] = []
+
+    class FakeChain:
+        async def ainvoke(self, payload: dict[str, str]) -> ValidateCypherOutput:
+            captured.append(payload)
+            return ValidateCypherOutput(errors=["bad cypher"], filters=[])
+
+    class FakeGraph:
+        get_schema = (
+            "- **CypherQuery**\n"
+            "remove me\n"
+            "Relationship properties\n"
+            "- **Product** {name: STRING}"
+        )
+        structured_schema = {"node_props": {}}
+
+    result = asyncio.run(
+        validate_cypher_query_with_llm(
+            FakeChain(),
+            question="查产品",
+            graph=FakeGraph(),
+            cypher_statement="MATCH (p:Product) RETURN p",
+        )
+    )
+
+    assert result == {"errors": ["bad cypher"], "mapping_errors": []}
+    assert captured == [
+        {
+            "question": "查产品",
+            "schema": "Relationship properties\n- **Product** [name: STRING]",
+            "cypher": "MATCH (p:Product) RETURN p",
+        }
+    ]
+
+
+def test_validate_cypher_query_with_schema_checks_enums_and_ranges() -> None:
+    class FakeGraph:
+        get_structured_schema = _build_schema().model_dump()
+
+    errors = validate_cypher_query_with_schema(
+        FakeGraph(),
+        """
+        MATCH (u:User)-[r:PURCHASED {channel: "store"}]->(p:Product)
+        WHERE p.price > 20000
+        RETURN p
+        """,
+    )
+
+    assert errors == [
+        "Node Product has property price = 20000 which is out of range 0.0 to 9999.0 in graph database.",
+        "Relationship ['PURCHASED'] with property channel = store not found in graph database.",
+    ]
+
+
+def test_schema_relationships_keep_plain_mapping_shape() -> None:
+    schema = _build_schema()
+
+    assert schema.relationships == [
+        {"start": "User", "type": "PURCHASED", "end": "Product"}
     ]

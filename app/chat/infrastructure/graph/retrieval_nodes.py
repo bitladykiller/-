@@ -10,14 +10,11 @@
 - after_response 写回记忆
 """
 
-from __future__ import annotations
-
 import asyncio
 
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 
-from app.chat.domain.utils import no_neo4j_response, question_from_state
 from app.chat.infrastructure.graph.execution_utils import (
     summarize_and_build_response,
 )
@@ -29,14 +26,20 @@ from app.chat.infrastructure.retrievers.retriever_contracts import (
 )
 from app.chat.infrastructure.retrievers.retriever_runtime import get_retriever
 
+_NEO4J_UNAVAILABLE_MESSAGE = "抱歉，知识库服务暂时不可用，请稍后重试。"
+
 
 async def execute_graph_only(state: AgentState, *, config: RunnableConfig) -> dict:
     """仅查 Neo4j 图数据库（通过 Retriever 接口）。"""
     kg = await get_retriever(KG_RETRIEVER_NAME)
     if kg is None:
-        return no_neo4j_response()
+        return {"messages": [AIMessage(content=_NEO4J_UNAVAILABLE_MESSAGE)]}
 
-    query = await enrich_question(state, config, question_from_state(state))
+    query = await enrich_question(
+        state,
+        config,
+        state.messages[-1].content if state.messages else "",
+    )
     result = await kg.search(query)
     records = result.get("records", [])
     return await summarize_and_build_response(
@@ -53,7 +56,11 @@ async def execute_rag_only(state: AgentState, *, config: RunnableConfig) -> dict
     if rag is None:
         return {"messages": [AIMessage(content="文档检索服务暂不可用。")]}
 
-    query = await enrich_question(state, config, question_from_state(state))
+    query = await enrich_question(
+        state,
+        config,
+        state.messages[-1].content if state.messages else "",
+    )
     result = await rag.search(query)
     records = result.get("records", [])
     return await summarize_and_build_response(
@@ -68,10 +75,14 @@ async def execute_parallel(state: AgentState, *, config: RunnableConfig) -> dict
     """并行查 Neo4j + RAG（通过 Retriever 接口），合并结果后生成摘要。"""
     kg = await get_retriever(KG_RETRIEVER_NAME)
     if kg is None:
-        return no_neo4j_response()
+        return {"messages": [AIMessage(content=_NEO4J_UNAVAILABLE_MESSAGE)]}
     rag = await get_retriever(RAG_RETRIEVER_NAME)
 
-    query = await enrich_question(state, config, question_from_state(state))
+    query = await enrich_question(
+        state,
+        config,
+        state.messages[-1].content if state.messages else "",
+    )
     graph_query = query + "（仅查询结构化数据：价格、库存、订单等）"
     rag_query = query + "（仅查询文档知识：售后政策、保修条款等）"
     if rag is None:
@@ -101,10 +112,14 @@ async def execute_then(state: AgentState, *, config: RunnableConfig) -> dict:
     """先查 Neo4j 确定实体，再用结果查 RAG（通过 Retriever 接口）。"""
     kg = await get_retriever(KG_RETRIEVER_NAME)
     if kg is None:
-        return no_neo4j_response()
+        return {"messages": [AIMessage(content=_NEO4J_UNAVAILABLE_MESSAGE)]}
     rag = await get_retriever(RAG_RETRIEVER_NAME)
 
-    query = await enrich_question(state, config, question_from_state(state))
+    query = await enrich_question(
+        state,
+        config,
+        state.messages[-1].content if state.messages else "",
+    )
     neo_result = await kg.search(query)
     neo_records = neo_result.get("records", [])
     if not isinstance(neo_records, list):
@@ -123,11 +138,3 @@ async def execute_then(state: AgentState, *, config: RunnableConfig) -> dict:
         all_records,
         progress_message="正在先查数据库，再查文档...",
     )
-
-
-__all__ = [
-    "execute_graph_only",
-    "execute_parallel",
-    "execute_rag_only",
-    "execute_then",
-]

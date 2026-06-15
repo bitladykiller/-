@@ -10,7 +10,6 @@
 - 不负责具体的文档解析业务
 - 关闭时只释放 Redis 连接，不主动改写后台任务生命周期
 """
-from __future__ import annotations
 
 import asyncio
 import json
@@ -18,8 +17,7 @@ import uuid
 from collections.abc import Callable
 from collections.abc import Coroutine
 from datetime import datetime
-from enum import Enum
-from typing import Any, Protocol, TypedDict
+from typing import Any
 
 import redis.asyncio as aioredis
 
@@ -28,99 +26,40 @@ from app.shared.core.logger import get_logger
 logger = get_logger(__name__)
 _runtime_instance: "_TaskManager | None" = None
 _runtime_lock: asyncio.Lock = asyncio.Lock()
-_TASK_KEY_PREFIX = "task:doc_parse:"
-_TASK_TTL_SECONDS = 3600 * 24  # 任务状态保留 24 小时
-
-
-class TaskStatus(str, Enum):
-    """任务状态枚举。"""
-
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-
-class TaskStatusPayload(TypedDict, total=False):
-    """Redis 中存储的任务状态结构。"""
-
-    task_id: str
-    status: str
-    updated_at: str
-    result: Any
-    error: str
-
-
-class TaskStore(Protocol):
-    """任务状态存储后端的最小接口。"""
-
-    async def set(self, key: str, value: str, ex: int | None = None) -> Any: ...
-
-    async def get(self, key: str) -> str | None: ...
-
-    async def close(self) -> Any: ...
-async def write_task_status(
-    redis_client: TaskStore,
-    task_id: str,
-    status: TaskStatus,
-    *,
-    result: Any = None,
-    error: str | None = None,
-) -> None:
-    """构造统一状态 payload 并写入 Redis。"""
-    payload: TaskStatusPayload = {
-        "task_id": task_id,
-        "status": status.value,
-        "updated_at": datetime.now().isoformat(),
-    }
-    if result is not None:
-        payload["result"] = result
-    if error is not None:
-        payload["error"] = error
-
-    await redis_client.set(
-        f"{_TASK_KEY_PREFIX}{task_id}",
-        json.dumps(payload, ensure_ascii=False, default=str),
-        ex=_TASK_TTL_SECONDS,
-    )
-
-
-async def run_task_with_status_updates(
-    redis_client: TaskStore,
-    logger: Any,
-    task_id: str,
-    coro_func: Callable[..., Coroutine[Any, Any, Any]],
-    *args: Any,
-    **kwargs: Any,
-) -> None:
-    """执行后台任务，并统一维护 Redis 状态流转与日志。"""
-    await write_task_status(redis_client, task_id, TaskStatus.RUNNING)
-    try:
-        result = await coro_func(*args, **kwargs)
-        await write_task_status(
-            redis_client,
-            task_id,
-            TaskStatus.COMPLETED,
-            result=result,
-        )
-        logger.info("任务完成 | task_id=%s", task_id)
-    except Exception as exc:
-        await write_task_status(
-            redis_client,
-            task_id,
-            TaskStatus.FAILED,
-            error=str(exc),
-        )
-        logger.error("任务失败 | task_id=%s | %s", task_id, exc, exc_info=True)
 
 
 class _TaskManager:
     """基于 Redis 的异步任务管理器。"""
 
-    def __init__(self, redis_client: TaskStore) -> None:
+    def __init__(self, redis_client: Any) -> None:
         self._redis = redis_client
         # 保留后台任务引用，避免任务未完成前被垃圾回收后丢失异常信息。
         self._pending_tasks: set[asyncio.Task[Any]] = set()
+
+    async def _write_task_status(
+        self,
+        task_id: str,
+        status: str,
+        *,
+        result: Any = None,
+        error: str | None = None,
+    ) -> None:
+        """构造统一状态 payload 并写入 Redis。"""
+        payload: dict[str, Any] = {
+            "task_id": task_id,
+            "status": status,
+            "updated_at": datetime.now().isoformat(),
+        }
+        if result is not None:
+            payload["result"] = result
+        if error is not None:
+            payload["error"] = error
+
+        await self._redis.set(
+            f"task:doc_parse:{task_id}",
+            json.dumps(payload, ensure_ascii=False, default=str),
+            ex=3600 * 24,
+        )
 
     async def submit(
         self,
@@ -130,16 +69,28 @@ class _TaskManager:
     ) -> str:
         """提交一个后台协程任务并返回 task_id。"""
         task_id = uuid.uuid4().hex[:12]
-        await write_task_status(self._redis, task_id, TaskStatus.PENDING)
+        await self._write_task_status(task_id, "pending")
+
+        async def background_runner() -> None:
+            await self._write_task_status(task_id, "running")
+            try:
+                result = await coro_func(*args, **kwargs)
+                await self._write_task_status(
+                    task_id,
+                    "completed",
+                    result=result,
+                )
+                logger.info("任务完成 | task_id=%s", task_id)
+            except Exception as exc:
+                await self._write_task_status(
+                    task_id,
+                    "failed",
+                    error=str(exc),
+                )
+                logger.error("任务失败 | task_id=%s | %s", task_id, exc, exc_info=True)
+
         task = asyncio.create_task(
-            run_task_with_status_updates(
-                self._redis,
-                logger,
-                task_id,
-                coro_func,
-                *args,
-                **kwargs,
-            ),
+            background_runner(),
             name=f"task:{task_id}",
         )
         self._pending_tasks.add(task)
@@ -151,9 +102,9 @@ class _TaskManager:
         )
         return task_id
 
-    async def get_status(self, task_id: str) -> TaskStatusPayload | None:
+    async def get_status(self, task_id: str) -> dict[str, Any] | None:
         """读取任务状态，不存在时返回 None。"""
-        raw = await self._redis.get(f"{_TASK_KEY_PREFIX}{task_id}")
+        raw = await self._redis.get(f"task:doc_parse:{task_id}")
         if raw is None:
             return None
         try:
@@ -173,7 +124,7 @@ class _TaskManager:
         ):
             return None
 
-        payload: TaskStatusPayload = {
+        payload: dict[str, Any] = {
             "task_id": current_task_id,
             "status": status,
             "updated_at": updated_at,
@@ -226,13 +177,3 @@ async def close_task_manager() -> None:
         await manager.close()
     except Exception:
         return
-
-
-__all__ = [
-    "TaskStatus",
-    "TaskStatusPayload",
-    "close_task_manager",
-    "get_task_manager",
-    "run_task_with_status_updates",
-    "write_task_status",
-]

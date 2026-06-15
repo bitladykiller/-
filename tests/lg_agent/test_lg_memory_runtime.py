@@ -2,8 +2,8 @@ import asyncio
 import sys
 import types
 
-import app.chat.infrastructure.memory_bridge.context as memory_context
 import app.chat.infrastructure.memory_bridge.runtime as lg_memory_runtime
+from app.knowledge.infrastructure.config import LONG_TERM_MEMORY_CONFIG
 
 
 class FakeMiddleware:
@@ -49,8 +49,7 @@ def install_fake_runtime_dependencies(
 
     class FakeRedisClient:
         def __init__(self, url: str, decode_responses: bool) -> None:
-            self.url = url
-            self.decode_responses = decode_responses
+            _ = (url, decode_responses)
 
     class FakeRedisSTM:
         def __init__(self, redis_client: FakeRedisClient) -> None:
@@ -59,24 +58,19 @@ def install_fake_runtime_dependencies(
     class FakeMilvusClient:
         def __init__(self, uri: str) -> None:
             calls["milvus_uri"].append(uri)
-            self.uri = uri
-
-        def close(self) -> None:
-            return None
 
     class FakeEmbeddingModel:
         def __init__(self, **kwargs) -> None:
-            self.kwargs = kwargs
+            _ = kwargs
 
     class FakeChatOllama:
         def __init__(self, **kwargs) -> None:
             self.kwargs = kwargs
 
     class FakeSimpleLongTermMemory:
-        def __init__(self, *, milvus_client, embedding_model, collection_name: str) -> None:
-            self.milvus_client = milvus_client
-            self.embedding_model = embedding_model
-            self.collection_name = collection_name
+        def __init__(self, *, milvus_client, embedding_model) -> None:
+            _ = (milvus_client, embedding_model)
+            self.collection_name = LONG_TERM_MEMORY_CONFIG["collection_name"]
 
     class FakeMemoryExtractor:
         def __init__(self, *, llm_client) -> None:
@@ -150,11 +144,6 @@ def install_fake_runtime_dependencies(
         lg_memory_runtime.ServiceType.OLLAMA,
     )
     monkeypatch.setattr(lg_memory_runtime.settings._business, "OLLAMA_AGENT_MODEL", "fake-agent")
-    monkeypatch.setattr(
-        lg_memory_runtime.settings._business,
-        "MILVUS_COLLECTION_NAME",
-        "memory_collection",
-    )
     monkeypatch.setattr(lg_memory_runtime.settings._infra, "REDIS_HOST", "fake-redis")
     monkeypatch.setattr(lg_memory_runtime.settings._infra, "REDIS_PORT", 6380)
     monkeypatch.setattr(lg_memory_runtime.settings._infra, "REDIS_DB", 7)
@@ -163,6 +152,8 @@ def install_fake_runtime_dependencies(
     monkeypatch.setattr(lg_memory_runtime.settings._infra, "MILVUS_PORT", 19531)
 
     return calls
+
+
 def test_get_memory_middleware_caches_created_instance(monkeypatch) -> None:
     calls = install_fake_runtime_dependencies(monkeypatch)
     monkeypatch.setattr(lg_memory_runtime, "_memory_middleware_instance", None)
@@ -174,7 +165,7 @@ def test_get_memory_middleware_caches_created_instance(monkeypatch) -> None:
     assert first is not None
     assert calls["redis_from_url"] == [("redis://fake-redis:6380/7", True)]
     assert calls["milvus_uri"] == ["fake-milvus:19531"]
-    assert first.milvus_ltm.collection_name == "memory_collection"
+    assert first.milvus_ltm.collection_name == LONG_TERM_MEMORY_CONFIG["collection_name"]
     assert first.memory_extractor.llm_client.kwargs == {
         "model": "fake-agent",
         "base_url": "http://ollama.local",

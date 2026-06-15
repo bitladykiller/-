@@ -4,8 +4,6 @@ RAG 文档解析器 — Markdown 表格工具。
 提供表格识别、解析和构建功能。
 """
 
-from __future__ import annotations
-
 import re
 from typing import List, Tuple
 
@@ -139,4 +137,3 @@ def build_markdown_table(
         lines.append("| " + " | ".join(padded_row) + " |")
 
     return "\n".join(lines)
-

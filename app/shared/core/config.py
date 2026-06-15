@@ -9,36 +9,24 @@
 - 这里直接承载运行时组合逻辑和全局 `settings` 单例
 """
 
-from __future__ import annotations
-
 from typing import Any
 
 from app.shared.core.config_models import (
     BusinessSettings,
     InfrastructureSettings,
-    ProjectBaseSettings,
 )
 
 
 class _Settings:
     """组合配置实现，统一代理基础设施与业务配置。"""
 
-    def __init__(
-        self,
-        *,
-        infra: InfrastructureSettings | None = None,
-        business: BusinessSettings | None = None,
-    ) -> None:
-        self._infra = infra or InfrastructureSettings()
-        self._business = business or BusinessSettings()
-        self._sources: tuple[ProjectBaseSettings, ...] = (
-            self._infra,
-            self._business,
-        )
+    def __init__(self) -> None:
+        self._infra = InfrastructureSettings()
+        self._business = BusinessSettings()
 
     def __getattr__(self, name: str) -> Any:
         """优先从基础设施配置，再从业务配置中解析字段。"""
-        for source in self._sources:
+        for source in (self._infra, self._business):
             model_fields = getattr(source.__class__, "model_fields", {})
             if name in model_fields:
                 return getattr(source, name)
@@ -65,7 +53,3 @@ class _Settings:
 
 
 settings = _Settings()
-
-__all__ = [
-    "settings",
-]

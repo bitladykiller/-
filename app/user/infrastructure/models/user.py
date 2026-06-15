@@ -3,8 +3,6 @@
 当前项目只在 MySQL 中持久化最小用户信息，
 主要用于承载会话归属关系。
 """
-from __future__ import annotations
-
 from datetime import datetime
 
 from sqlalchemy import DateTime, String, func

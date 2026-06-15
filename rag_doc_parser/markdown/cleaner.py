@@ -9,8 +9,6 @@ RAG 文档解析器 — Markdown 清洗器。
 - 保护代码块和表格不被破坏
 """
 
-from __future__ import annotations
-
 import re
 from typing import List
 
@@ -70,15 +68,29 @@ class MarkdownCleaner:
             stripped = line.rstrip()
 
             # 移除页码行
-            if self._is_page_number(stripped):
+            if stripped and any(pattern.match(stripped) for pattern in self._PAGE_NUMBER_PATTERNS):
                 continue
 
             cleaned_lines.append(stripped)
 
         # 5. 合并多余空行
-        result = self._collapse_blank_lines(cleaned_lines)
+        result_parts: List[str] = []
+        blank_count = 0
+        for line in cleaned_lines:
+            if line.strip() == "":
+                blank_count += 1
+                if blank_count <= 2:
+                    result_parts.append(line)
+            else:
+                blank_count = 0
+                result_parts.append(line)
 
-        return result
+        while result_parts and result_parts[0].strip() == "":
+            result_parts.pop(0)
+        while result_parts and result_parts[-1].strip() == "":
+            result_parts.pop()
+
+        return "\n".join(result_parts)
 
     @staticmethod
     def _mark_code_blocks(lines: List[str]) -> List[bool]:
@@ -103,50 +115,3 @@ class MarkdownCleaner:
                 in_code[i] = True
 
         return in_code
-
-    def _is_page_number(self, line: str) -> bool:
-        """判断一行是否为页码。
-
-        Args:
-            line: 已去除行尾空白的文本行。
-
-        Returns:
-            是否为页码行。
-        """
-        if not line:
-            return False
-        for pattern in self._PAGE_NUMBER_PATTERNS:
-            if pattern.match(line):
-                return True
-        return False
-
-    @staticmethod
-    def _collapse_blank_lines(lines: List[str]) -> str:
-        """合并连续 3 个以上空行为 2 个空行。
-
-        Args:
-            lines: 处理后的行列表。
-
-        Returns:
-            合并空行后的完整文本。
-        """
-        result_parts: List[str] = []
-        blank_count = 0
-
-        for line in lines:
-            if line.strip() == "":
-                blank_count += 1
-                # 最多保留 2 个连续空行
-                if blank_count <= 2:
-                    result_parts.append(line)
-            else:
-                blank_count = 0
-                result_parts.append(line)
-
-        # 去除首尾空行
-        while result_parts and result_parts[0].strip() == "":
-            result_parts.pop(0)
-        while result_parts and result_parts[-1].strip() == "":
-            result_parts.pop()
-
-        return "\n".join(result_parts)

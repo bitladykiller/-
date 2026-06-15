@@ -10,8 +10,6 @@
 - KG 检索策略选择
 - 上层业务降级决策
 """
-from __future__ import annotations
-
 import logging
 import time
 

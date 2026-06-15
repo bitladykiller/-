@@ -20,7 +20,6 @@ from langchain_core.messages import AnyMessage
 from langgraph.graph import add_messages
 
 
-RouterType = Literal["general", "rag_doc-query"]
 RetrievalPlanType = Literal[
     "GRAPH_ONLY",
     "RAG_ONLY",
@@ -36,7 +35,7 @@ class Router(TypedDict):
     """顶层路由输出。"""
 
     logic: str
-    type: RouterType
+    type: Literal["general", "rag_doc-query"]
 
 
 class RetrievalPlan(TypedDict):
@@ -61,14 +60,3 @@ class AgentState(InputState):
     next_action: GuardrailsAction | Literal[""] = ""
     retrieval_plan: RetrievalPlan | None = None
     memory_state: Any | None = field(default=None)
-
-
-__all__ = [
-    "AgentState",
-    "GuardrailsAction",
-    "InputState",
-    "ReactJudgeDecision",
-    "RetrievalPlan",
-    "RetrievalPlanType",
-    "Router",
-]

@@ -4,10 +4,7 @@ RAG 文档解析器 — 表格切分器。
 当表格行数超过阈值时，按指定行数切分，每个子表格重复表头。
 """
 
-from __future__ import annotations
-
 import logging
-from typing import List, Optional
 
 from rag_doc_parser.markdown.table_utils import (
     build_markdown_table,
@@ -22,7 +19,7 @@ class TableSplitter:
     """表格切分器。
 
     当表格数据行数超过 max_rows_per_chunk 时，按指定行数切分为多个子表格。
-    每个子表格都会重复表头行，并设置 row_start/row_end 标记。
+    每个子表格都会重复表头行。
 
     Attributes:
         max_rows_per_chunk: 每个子表格的最大数据行数。
@@ -42,7 +39,7 @@ class TableSplitter:
         doc_id: str,
         source_file: str,
         chunk_id_prefix: str = "",
-    ) -> List[DocumentChunk]:
+    ) -> list[DocumentChunk]:
         """切分表格块为 DocumentChunk 列表。
 
         如果表格行数不超过阈值，返回单个 chunk。
@@ -76,14 +73,11 @@ class TableSplitter:
                 doc_id=doc_id,
                 source_file=source_file,
                 raw_text=block.content,
-                row_start=1,
-                row_end=len(rows),
                 chunk_id_prefix=chunk_id_prefix,
             )]
 
         # 按行数切分
-        chunks: List[DocumentChunk] = []
-        table_id = new_uuid()
+        chunks: list[DocumentChunk] = []
 
         for start_idx in range(0, len(rows), self.max_rows_per_chunk):
             end_idx = min(start_idx + self.max_rows_per_chunk, len(rows))
@@ -97,9 +91,6 @@ class TableSplitter:
                 doc_id=doc_id,
                 source_file=source_file,
                 raw_text=sub_table_text,
-                row_start=start_idx + 1,
-                row_end=end_idx,
-                table_id=table_id,
                 chunk_id_prefix=chunk_id_prefix,
             )
             chunks.append(chunk)
@@ -117,9 +108,6 @@ class TableSplitter:
         doc_id: str,
         source_file: str,
         raw_text: str,
-        row_start: Optional[int] = None,
-        row_end: Optional[int] = None,
-        table_id: Optional[str] = None,
         chunk_id_prefix: str = "",
     ) -> DocumentChunk:
         """构建表格 DocumentChunk。
@@ -129,9 +117,6 @@ class TableSplitter:
             doc_id: 文档 ID。
             source_file: 原始文件路径。
             raw_text: 表格文本。
-            row_start: 起始行号。
-            row_end: 结束行号。
-            table_id: 表格 ID（切分后的子表格共享同一 ID）。
             chunk_id_prefix: chunk_id 前缀。
 
         Returns:
@@ -149,22 +134,6 @@ class TableSplitter:
             source_file=source_file,
             chunk_type="table",
             section_path=block.section_path,
-            h1=block.h1,
-            h2=block.h2,
-            h3=block.h3,
-            h4=block.h4,
             raw_text=raw_text,
             embedding_text=embedding_text,
-            page_start=block.page_start,
-            page_end=block.page_end,
-            table_id=table_id,
-            row_start=row_start,
-            row_end=row_end,
-            metadata={
-                "doc_id": doc_id,
-                "source_file": source_file,
-                "section_path": block.section_path,
-                "chunk_type": "table",
-                "block_id": block.block_id,
-            },
         )

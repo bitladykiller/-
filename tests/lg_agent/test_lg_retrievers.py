@@ -1,18 +1,20 @@
 import asyncio
 
-import app.chat.infrastructure.retrievers.retriever_contracts as retriever_contracts
 import app.chat.infrastructure.retrievers.retriever_implementations as retriever_implementations
 import app.chat.infrastructure.retrievers.retriever_runtime as retriever_runtime
+from app.chat.infrastructure.retrievers.retriever_contracts import (
+    KG_RETRIEVER_NAME,
+    RAG_RETRIEVER_NAME,
+    Retriever,
+)
 
 
 class FakeSearcher:
     def __init__(self, *, result=None, error: Exception | None = None) -> None:
         self.result = result or []
         self.error = error
-        self.calls: list[str] = []
 
     async def search(self, task: str):
-        self.calls.append(task)
         if self.error is not None:
             raise self.error
         return self.result
@@ -28,7 +30,7 @@ class FakeT2CAgent:
         return self.payload
 
 
-class FakeRetriever(retriever_contracts.Retriever):
+class FakeRetriever(Retriever):
     def __init__(self, payload: dict) -> None:
         self.payload = payload
 
@@ -75,7 +77,7 @@ def test_milvus_doc_retriever_search_truncates_records() -> None:
         "rerank_score": 0.0,
     }
     assert result["errors"] == []
-    assert result["steps"] == [retriever_contracts.RAG_SEARCH_STEP]
+    assert result["steps"] == ["execute_rag_search"]
 
 
 def test_milvus_doc_retriever_search_keeps_stable_record_shape() -> None:
@@ -179,7 +181,6 @@ def test_knowledge_graph_retriever_normalizes_records_and_cyphers() -> None:
 
 def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
     import app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.cypher_dict as cypher_dict
-    import app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.descriptions as descriptions
     import app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.retrievers.cypher_examples.northwind_retriever as northwind_retriever
     import app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.workflows.single_agent.text2cypher as text2cypher
     import app.chat.infrastructure.kg_sub_graph.kg_neo4j_conn as kg_neo4j_conn
@@ -188,7 +189,7 @@ def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
     monkeypatch.setattr(
         retriever_runtime,
         "_registry",
-        retriever_contracts.RetrieverRegistry(),
+        {},
     )
     monkeypatch.setattr(retriever_runtime, "_cypher_example_retriever", None)
     monkeypatch.setattr(retriever_runtime, "_t2c_agent", None)
@@ -200,6 +201,11 @@ def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
     class FakeNorthwindRetriever:
         def __init__(self) -> None:
             created["cypher_examples"] = int(created.get("cypher_examples", 0)) + 1
+
+        def get_examples(self, query: str, k: int = 5) -> str:
+            created["example_query"] = query
+            created["example_k"] = k
+            return "Question: 示例\nCypher: MATCH (n) RETURN n"
 
     class FakeKgRetriever(FakeRetriever):
         def __init__(self, agent) -> None:
@@ -223,11 +229,7 @@ def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
         "predefined_cypher_dict",
         {"query_a": "MATCH (n) RETURN n"},
     )
-    monkeypatch.setattr(
-        descriptions,
-        "QUERY_DESCRIPTIONS",
-        {"query_a": "desc"},
-    )
+    monkeypatch.setattr(cypher_dict, "QUERY_DESCRIPTIONS", {"query_a": "desc"})
     monkeypatch.setattr(
         text2cypher,
         "create_text2cypher_agent",
@@ -246,10 +248,10 @@ def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
     )
 
     kg = _run(
-        retriever_runtime.get_retriever(retriever_contracts.KG_RETRIEVER_NAME)
+        retriever_runtime.get_retriever(KG_RETRIEVER_NAME)
     )
     rag = _run(
-        retriever_runtime.get_retriever(retriever_contracts.RAG_RETRIEVER_NAME)
+        retriever_runtime.get_retriever(RAG_RETRIEVER_NAME)
     )
 
     assert isinstance(kg, FakeKgRetriever)
@@ -262,7 +264,7 @@ def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
         "t2c_kwargs": {
             "llm": fake_model,
             "graph": fake_graph,
-            "cypher_example_retriever": retriever_runtime._cypher_example_retriever,
+            "get_examples": retriever_runtime._cypher_example_retriever.get_examples,
             "predefined_cypher_dict": {"query_a": "MATCH (n) RETURN n"},
             "query_descriptions": {"query_a": "desc"},
         },
