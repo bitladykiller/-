@@ -67,7 +67,7 @@ def build_memory_context(
     session_summary: SessionSummary | None,
     recent_messages: list[MessageRecord],
     long_term_memories: list[MemorySearchResult],
-    user_profile: UserProfileData | None = None,
+    user_profile: UserProfileData,
 ) -> str:
     """组装带优先级的记忆上下文字符串，用于注入 system prompt。"""
     recent_message_lines: list[str] = []
@@ -75,21 +75,19 @@ def build_memory_context(
         role = _RECENT_MESSAGE_ROLE_LABELS.get(message.role, message.role)
         recent_message_lines.append(f"[{role}]: {message.content}")
 
-    user_profile_text = ""
-    if user_profile is not None:
-        profile_lines: list[str] = []
-        for field_name, label in _USER_PROFILE_TEXT_LABELS.items():
-            value = user_profile[field_name]
-            if value:
-                profile_lines.append(f"{label}: {value}")
+    profile_lines: list[str] = []
+    for field_name, label in _USER_PROFILE_TEXT_LABELS.items():
+        value = user_profile[field_name]
+        if value:
+            profile_lines.append(f"{label}: {value}")
 
-        tags = user_profile["tags"]
-        if tags:
-            profile_lines.append(f"标签: {', '.join(tags)}")
+    tags = user_profile["tags"]
+    if tags:
+        profile_lines.append(f"标签: {', '.join(tags)}")
 
-        for fact in user_profile["facts"]:
-            profile_lines.append(f"{fact['key']}: {fact['value']}")
-        user_profile_text = "\n".join(profile_lines)
+    for fact in user_profile["facts"]:
+        profile_lines.append(f"{fact['key']}: {fact['value']}")
+    user_profile_text = "\n".join(profile_lines)
 
     long_term_memory_text = ""
     if long_term_memories:

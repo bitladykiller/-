@@ -6,6 +6,7 @@ from app.knowledge.domain.schemas import (
     MemorySearchResult,
     MessageRecord,
     SessionSummary,
+    empty_user_profile_data,
 )
 
 
@@ -63,4 +64,4 @@ def test_build_memory_context_orders_sections_by_priority() -> None:
 
 
 def test_build_memory_context_returns_empty_when_all_inputs_empty() -> None:
-    assert build_memory_context(None, [], [], None) == ""
+    assert build_memory_context(None, [], [], empty_user_profile_data()) == ""

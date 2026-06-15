@@ -5,6 +5,7 @@ import app.chat.infrastructure.graph.decision_nodes as lg_decision_nodes
 import app.chat.infrastructure.graph.lifecycle_nodes as lg_nodes
 import app.chat.infrastructure.graph.retrieval_nodes as lg_retrieval_nodes
 from app.chat.infrastructure.graph.state import AgentState
+from app.knowledge.domain.schemas import empty_user_profile_data
 from langchain_core.messages import AIMessage, HumanMessage
 
 
@@ -85,7 +86,7 @@ def test_respond_to_general_query_appends_memory_context(monkeypatch) -> None:
             session_summary=None,
             recent_messages=[],
             long_term_memories=[],
-            user_profile=None,
+            user_profile=empty_user_profile_data(),
         )
 
     monkeypatch.setattr(lg_decision_nodes, "load_memory_state", fake_load_memory_state)
