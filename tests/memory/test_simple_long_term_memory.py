@@ -28,6 +28,11 @@ class FakeRetrievalCore:
                     "user_id": "user-1",
                     "memory_type": "solution_note",
                     "content": "建议先检查路由器",
+                    "created_at": 11,
+                    "updated_at": 12,
+                    "last_hit_at": 13,
+                    "hit_count": 2,
+                    "is_deleted": False,
                 },
                 "score": 0.88,
             }
@@ -107,21 +112,21 @@ def test_constructor_builds_runtime_retrieval_core(monkeypatch) -> None:
     }
 
 
-def test_hybrid_search_falls_back_for_none_entity_fields(monkeypatch) -> None:
+def test_hybrid_search_maps_entity_contract_into_memory_result(monkeypatch) -> None:
     fake_core = FakeRetrievalCore()
     fake_core.hybrid_hits = [
         {
             "entity": {
-                "memory_id": None,
+                "memory_id": "mem-9",
                 "tenant_id": "tenant-1",
-                "user_id": None,
+                "user_id": "user-1",
                 "memory_type": "solution_note",
-                "content": None,
-                "created_at": None,
+                "content": "建议重启网关",
+                "created_at": 10,
                 "updated_at": 12,
-                "last_hit_at": None,
+                "last_hit_at": 14,
                 "hit_count": 3,
-                "is_deleted": None,
+                "is_deleted": False,
             },
             "score": 0.88,
         }
@@ -138,14 +143,14 @@ def test_hybrid_search_falls_back_for_none_entity_fields(monkeypatch) -> None:
 
     assert len(results) == 1
     assert results[0].memory.model_dump() == {
-        "memory_id": "",
+        "memory_id": "mem-9",
         "tenant_id": "tenant-1",
-        "user_id": "",
+        "user_id": "user-1",
         "memory_type": "solution_note",
-        "content": "",
-        "created_at": 0,
+        "content": "建议重启网关",
+        "created_at": 10,
         "updated_at": 12,
-        "last_hit_at": 0,
+        "last_hit_at": 14,
         "hit_count": 3,
         "is_deleted": False,
     }
@@ -265,36 +270,6 @@ def test_hybrid_search_uses_default_search_config_when_overrides_missing(monkeyp
             "search_limit": 10,
         }
     ]
-
-
-def test_hybrid_search_skips_hits_without_entity_dict(monkeypatch) -> None:
-    fake_core = FakeRetrievalCore()
-    fake_core.hybrid_hits = [
-        {"entity": None, "score": 0.5},
-        {
-            "entity": {
-                "memory_id": "mem-3",
-                "tenant_id": "tenant-1",
-                "user_id": "user-1",
-                "memory_type": "issue_history",
-                "content": "之前问过洗衣机问题",
-            },
-            "score": 0.93,
-        },
-    ]
-    ltm, _embedding_model, _fake_core = _build_ltm(monkeypatch, retrieval_core=fake_core)
-
-    results = _run(
-        ltm.hybrid_search(
-            "tenant-1",
-            "user-1",
-            "洗衣机一直异响",
-        )
-    )
-
-    assert len(results) == 1
-    assert results[0].memory.memory_id == "mem-3"
-    assert results[0].memory.memory_type == "issue_history"
 
 
 def test_deduplicate_memory_returns_false_when_hit_threshold_reached(monkeypatch) -> None:

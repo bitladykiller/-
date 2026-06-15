@@ -12,9 +12,6 @@
 
 import asyncio
 
-from langchain_core.messages import AIMessage
-from langchain_core.runnables import RunnableConfig
-
 from app.chat.infrastructure.graph.execution_utils import (
     summarize_and_build_response,
 )
@@ -25,6 +22,8 @@ from app.chat.infrastructure.retrievers.retriever_contracts import (
     RAG_RETRIEVER_NAME,
 )
 from app.chat.infrastructure.retrievers.retriever_runtime import get_retriever
+from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableConfig
 
 _NEO4J_UNAVAILABLE_MESSAGE = "抱歉，知识库服务暂时不可用，请稍后重试。"
 
@@ -38,13 +37,13 @@ async def execute_graph_only(state: AgentState, *, config: RunnableConfig) -> di
     query = await enrich_question(
         state,
         config,
-        state.messages[-1].content if state.messages else "",
+        state.messages[-1].content,
     )
     result = await kg.search(query)
-    records = result.get("records", [])
+    records = result["records"]
     return await summarize_and_build_response(
         query,
-        records if isinstance(records, list) else [],
+        records,
         progress_message="正在查询...",
         fallback="未查询到相关信息，请确认后重新咨询～",
     )
@@ -53,19 +52,16 @@ async def execute_graph_only(state: AgentState, *, config: RunnableConfig) -> di
 async def execute_rag_only(state: AgentState, *, config: RunnableConfig) -> dict:
     """仅查 RAG 文档知识库（通过 Retriever 接口）。"""
     rag = await get_retriever(RAG_RETRIEVER_NAME)
-    if rag is None:
-        return {"messages": [AIMessage(content="文档检索服务暂不可用。")]}
-
     query = await enrich_question(
         state,
         config,
-        state.messages[-1].content if state.messages else "",
+        state.messages[-1].content,
     )
     result = await rag.search(query)
-    records = result.get("records", [])
+    records = result["records"]
     return await summarize_and_build_response(
         query,
-        records if isinstance(records, list) else [],
+        records,
         progress_message="正在检索文档...",
         fallback="未在文档中找到相关信息～",
     )
@@ -81,26 +77,19 @@ async def execute_parallel(state: AgentState, *, config: RunnableConfig) -> dict
     query = await enrich_question(
         state,
         config,
-        state.messages[-1].content if state.messages else "",
+        state.messages[-1].content,
     )
     graph_query = query + "（仅查询结构化数据：价格、库存、订单等）"
     rag_query = query + "（仅查询文档知识：售后政策、保修条款等）"
-    if rag is None:
-        neo_result = await kg.search(graph_query)
-        rag_result: dict[str, object] = {"records": []}
-    else:
-        neo_result, rag_result = await asyncio.gather(
-            kg.search(graph_query),
-            rag.search(rag_query),
-        )
+    neo_result, rag_result = await asyncio.gather(
+        kg.search(graph_query),
+        rag.search(rag_query),
+    )
 
-    neo_records = neo_result.get("records", [])
-    rag_records = rag_result.get("records", [])
-    all_records = []
-    if isinstance(neo_records, list):
-        all_records.extend(neo_records)
-    if isinstance(rag_records, list):
-        all_records.extend(rag_records)
+    all_records = [
+        *neo_result["records"],
+        *rag_result["records"],
+    ]
     return await summarize_and_build_response(
         query,
         all_records,
@@ -118,20 +107,13 @@ async def execute_then(state: AgentState, *, config: RunnableConfig) -> dict:
     query = await enrich_question(
         state,
         config,
-        state.messages[-1].content if state.messages else "",
+        state.messages[-1].content,
     )
     neo_result = await kg.search(query)
-    neo_records = neo_result.get("records", [])
-    if not isinstance(neo_records, list):
-        neo_records = []
+    neo_records = neo_result["records"]
     rag_query = f"已知信息：{neo_records}\n\n查询：{query}"
-    if rag is None:
-        rag_records: list[dict[str, object]] = []
-    else:
-        rag_result = await rag.search(rag_query)
-        rag_records = rag_result.get("records", [])
-        if not isinstance(rag_records, list):
-            rag_records = []
+    rag_result = await rag.search(rag_query)
+    rag_records = rag_result["records"]
     all_records = [*neo_records, *rag_records]
     return await summarize_and_build_response(
         query,

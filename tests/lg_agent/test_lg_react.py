@@ -1,9 +1,8 @@
 import asyncio
 
-from langchain_core.messages import AIMessage, HumanMessage
-
 import app.chat.infrastructure.react.react as lg_react
 from app.chat.infrastructure.graph.state import AgentState
+from langchain_core.messages import AIMessage, ChatMessage, HumanMessage
 
 
 class FakeAnswerCheck:
@@ -46,8 +45,12 @@ def test_react_runtime_caches_builder_result(monkeypatch) -> None:
     build_count = {"count": 0}
     built = FakeCompiledSubgraph()
 
+    class FakeRetriever:
+        async def search(self, _query: str) -> dict:
+            return {"records": []}
+
     async def fake_get_retriever(_name: str):
-        return None
+        return FakeRetriever()
 
     def fake_create_react_agent(**kwargs):
         build_count["count"] += 1
@@ -89,7 +92,7 @@ def test_execute_react_returns_checked_answer_with_progress_message(monkeypatch)
             ]
         }
     )
-    async def fake_enrich_question(*args):
+    async def fake_enrich_question(*_args):
         return "怎么修空调"
 
     async def fake_get_react_subgraph():
@@ -132,12 +135,50 @@ def test_execute_react_returns_checked_answer_with_progress_message(monkeypatch)
     ]
 
 
+def test_execute_react_preserves_chat_message_role_in_transcript(monkeypatch) -> None:
+    judge_model = FakeJudgeModel(FakeAnswerCheck("retry", "需要更多事实"))
+    subgraph = FakeCompiledSubgraph(
+        {
+            "messages": [
+                HumanMessage(content="查订单"),
+                ChatMessage(role="tool", content="订单状态：已发货"),
+                AIMessage(content="订单已发货"),
+            ]
+        }
+    )
+
+    async def fake_enrich_question(*_args):
+        return "查订单"
+
+    async def fake_get_react_subgraph():
+        return subgraph
+
+    monkeypatch.setattr(lg_react, "REACT_MAX_ATTEMPTS", 1)
+    monkeypatch.setattr(lg_react, "get_neo4j_graph", lambda: object())
+    monkeypatch.setattr(lg_react, "enrich_question", fake_enrich_question)
+    monkeypatch.setattr(lg_react, "get_react_subgraph", fake_get_react_subgraph)
+    monkeypatch.setattr(lg_react, "react_judge_model", judge_model)
+
+    result = _run(
+        lg_react.execute_react(
+            AgentState(messages=[HumanMessage(content="帮我查订单")]),
+            config={},
+        )
+    )
+
+    assert [message.content for message in result["messages"]] == [
+        "正在综合分析...",
+        "亲～这个问题回答不了哦～",
+    ]
+    assert "[tool] 订单状态：已发货" in judge_model.messages[0][1]["content"]
+
+
 def test_execute_react_retries_on_step_exhaustion_and_returns_fallback(monkeypatch) -> None:
     monkeypatch.setattr(lg_react, "REACT_MAX_ATTEMPTS", 2)
     subgraph = FakeCompiledSubgraph(
         {"messages": [AIMessage(content="Need more steps before finish")]}
     )
-    async def fake_enrich_question(*args):
+    async def fake_enrich_question(*_args):
         return "帮我查订单"
 
     async def fake_get_react_subgraph():

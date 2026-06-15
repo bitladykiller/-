@@ -10,7 +10,7 @@ returned entities into their own business objects.
 """
 
 import logging
-from typing import Any, Dict, List
+from typing import Any
 
 from pymilvus import AnnSearchRequest, MilvusClient, RRFRanker
 
@@ -37,7 +37,7 @@ class MilvusHybridSearchCore:
         dense_field: str = "embedding",
         sparse_field: str = "sparse_vector",
         dense_metric_type: str = "COSINE",
-        dense_search_params: Dict[str, Any] | None = None,
+        dense_search_params: dict[str, Any] | None = None,
         hybrid_rrf_k: int = 60,
     ) -> None:
         self.milvus_client = milvus_client
@@ -55,10 +55,10 @@ class MilvusHybridSearchCore:
         *,
         limit: int,
         filter_expr: str | None = None,
-        output_fields: List[str] | None = None,
+        output_fields: list[str],
         score_threshold: float | None = None,
         search_limit: int | None = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Run native Milvus hybrid search with dense + BM25 sparse retrieval.
 
         Falls back to dense-only search when sparse encoding or hybrid search is
@@ -89,7 +89,7 @@ class MilvusHybridSearchCore:
             expr=filter_expr,
         )
 
-        sparse_query: Dict[int, float] = {}
+        sparse_query: dict[int, float] = {}
         try:
             from pymilvus.model.sparse.bm25.tokenizers import build_default_analyzer
 
@@ -123,7 +123,7 @@ class MilvusHybridSearchCore:
                     reqs=[dense_req, sparse_req],
                     ranker=RRFRanker(k=self.hybrid_rrf_k),
                     limit=limit,
-                    output_fields=output_fields or [],
+                    output_fields=output_fields,
                 )
             except Exception as exc:
                 logger.warning(
@@ -138,21 +138,24 @@ class MilvusHybridSearchCore:
                 data=[query_vector],
                 filter=filter_expr,
                 limit=limit,
-                output_fields=output_fields or [],
+                output_fields=output_fields,
             )
 
         if not raw or not raw[0]:
             return []
 
-        normalized: List[Dict[str, Any]] = []
+        normalized: list[dict[str, Any]] = []
         for item in raw[0]:
             score = float(item.get("distance", 0.0))
             if score_threshold is not None and score < score_threshold:
                 continue
+            entity = item.get("entity", {})
+            if not isinstance(entity, dict):
+                continue
             normalized.append(
                 {
                     "score": score,
-                    "entity": item.get("entity", {}),
+                    "entity": entity,
                 }
             )
         return normalized

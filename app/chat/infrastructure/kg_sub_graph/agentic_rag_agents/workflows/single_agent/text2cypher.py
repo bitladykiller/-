@@ -34,10 +34,10 @@ from ...components.text2cypher.validation.validators import (
 
 
 class CypherState(TypedDict):
-    task: Annotated[list, add]
+    task: str
+    params: dict[str, str]
     statement: str
     errors: list[str]
-    records: list[dict[str, Any]]
     next_action_cypher: str
     attempts: int
     steps: Annotated[list[str], add]
@@ -52,9 +52,9 @@ def create_text2cypher_agent(
     llm: BaseChatModel,
     graph: Neo4jGraph,
     get_examples: Callable[[str, int], str],
+    predefined_cypher_dict: dict[str, str],
+    query_descriptions: dict[str, str],
     llm_cypher_validation: bool = True,
-    predefined_cypher_dict: dict[str, str] | None = None,
-    query_descriptions: dict[str, str] | None = None,
 ) -> CompiledStateGraph:
     """Create a Text2Cypher agent with predefined template matching.
 
@@ -169,59 +169,50 @@ def create_text2cypher_agent(
         ]
     )
 
-    if predefined_cypher_dict:
-        matcher = _VectorQueryMatcher(
-            predefined_cypher_dict,
-            query_descriptions
-            or {
-                query_name: query_name.replace("_", " ")
-                for query_name in predefined_cypher_dict
-            },
-        )
+    matcher = _VectorQueryMatcher(
+        predefined_cypher_dict,
+        query_descriptions,
+    )
 
-        async def predefined_match(state: CypherState) -> dict:
-            task = state.get("task", "")
-            normalized_task = str(task[0] if isinstance(task, list) else task)
-            matches = matcher.match_query(normalized_task, top_k=1)
-            if not matches or matches[0]["similarity"] <= 0.6:
-                return {
-                    "steps": ["predefined_match"],
-                    "next_action_cypher": "generate",
-                }
-
-            best_match = matches[0]
-            try:
-                params = matcher.extract_parameters(
-                    normalized_task,
-                    best_match["query_name"],
-                    llm=llm,
-                )
-                records = graph.query(
-                    best_match["cypher"],
-                    params={key: str(value) for key, value in params.items()},
-                )
-            except Exception:
-                records = []
-
+    async def predefined_match(state: CypherState) -> dict:
+        normalized_task = state["task"]
+        matches = matcher.match_query(normalized_task, top_k=1)
+        if not matches or matches[0]["similarity"] <= 0.6:
             return {
-                "statement": best_match["cypher"],
-                "records": records,
                 "steps": ["predefined_match"],
-                "next_action_cypher": "execute_cypher",
+                "next_action_cypher": "generate_cypher",
             }
 
-        text2cypher_graph_builder.add_node("predefined_match", predefined_match)
-        text2cypher_graph_builder.add_edge(START, "predefined_match")
+        best_match = matches[0]
+        params = matcher.extract_parameters(
+            normalized_task,
+            best_match["query_name"],
+            llm=llm,
+        )
+
+        return {
+            "params": {key: str(value) for key, value in params.items()},
+            "statement": best_match["cypher"],
+            "errors": [],
+            "steps": ["predefined_match"],
+            "next_action_cypher": "execute_cypher",
+        }
+
+    text2cypher_graph_builder.add_node("predefined_match", predefined_match)
+    text2cypher_graph_builder.add_edge(START, "predefined_match")
 
     async def execute_cypher(state: CypherState) -> dict[str, list[dict[str, Any]] | list[str]]:
         """执行 Cypher 查询并回填统一输出结构。"""
-        records = graph.query(state.get("statement", ""))
-        steps = list(state.get("steps", []))
+        records = graph.query(
+            state["statement"],
+            params=state["params"],
+        )
+        steps = list(state["steps"])
         steps.append("execute_cypher")
         output_state = {
-            "task": state.get("task", []),
-            "statement": state.get("statement", ""),
-            "errors": state.get("errors", []),
+            "task": state["task"],
+            "statement": state["statement"],
+            "errors": state["errors"],
             "records": records or [
                 {"error": "I couldn't find any relevant information in the database."}
             ],
@@ -235,51 +226,53 @@ def create_text2cypher_agent(
     # LLM generation + validation + correction
     async def generate_cypher(state: CypherState) -> dict[str, Any]:
         text2cypher_chain = generation_prompt | llm | StrOutputParser()
-        task = state.get("task", "")
-        normalized_task = task[0] if isinstance(task, list) else task
-        examples = get_examples(normalized_task, 3)
+        examples = get_examples(state["task"], 3)
         generated_cypher = await text2cypher_chain.ainvoke(
             {
-                "question": state.get("task", ""),
+                "question": state["task"],
                 "fewshot_examples": examples,
                 "schema": graph.schema,
             }
         )
-        return {"statement": generated_cypher, "steps": ["generate_cypher"]}
+        return {
+            "attempts": 0,
+            "params": {},
+            "statement": generated_cypher,
+            "steps": ["generate_cypher"],
+        }
 
     async def validate_cypher(state: CypherState) -> dict[str, Any]:
-        generation_attempt = state.get("attempts", 0) + 1
+        generation_attempt = state["attempts"] + 1
         errors: list[str] = []
         mapping_errors: list[str] = []
 
         syntax_error = validate_cypher_query_syntax(
-            graph=graph, cypher_statement=state.get("statement", "")
+            graph=graph, cypher_statement=state["statement"]
         )
         errors.extend(syntax_error)
 
-        write_errors = validate_no_writes_in_cypher_query(state.get("statement", ""))
+        write_errors = validate_no_writes_in_cypher_query(state["statement"])
         errors.extend(write_errors)
 
         corrected_cypher = correct_cypher_query_relationship_direction(
-            graph=graph, cypher_statement=state.get("statement", "")
+            graph=graph, cypher_statement=state["statement"]
         )
 
-        if llm is not None and llm_cypher_validation:
+        if llm_cypher_validation:
             validate_cypher_chain = validation_prompt | llm.with_structured_output(
                 ValidateCypherOutput
             )
             llm_errors = await validate_cypher_query_with_llm(
                 validate_cypher_chain=validate_cypher_chain,
-                question=state.get("task", ""),
+                question=state["task"],
                 graph=graph,
-                cypher_statement=state.get("statement", ""),
+                cypher_statement=state["statement"],
             )
-            errors.extend(llm_errors.get("errors", []))
-            mapping_errors.extend(llm_errors.get("mapping_errors", []))
-
-        if not llm_cypher_validation:
+            errors.extend(llm_errors["errors"])
+            mapping_errors.extend(llm_errors["mapping_errors"])
+        else:
             cypher_errors = validate_cypher_query_with_schema(
-                graph=graph, cypher_statement=state.get("statement", "")
+                graph=graph, cypher_statement=state["statement"]
             )
             errors.extend(cypher_errors)
 
@@ -302,9 +295,9 @@ def create_text2cypher_agent(
         correct_cypher_chain = correction_prompt | llm | StrOutputParser()
         corrected_cypher = await correct_cypher_chain.ainvoke(
             {
-                "question": state.get("task"),
-                "errors": state.get("errors"),
-                "cypher": state.get("statement"),
+                "question": state["task"],
+                "errors": state["errors"],
+                "cypher": state["statement"],
                 "schema": graph.schema,
             }
         )
@@ -319,31 +312,19 @@ def create_text2cypher_agent(
     text2cypher_graph_builder.add_node("correct_cypher", correct_cypher)
     text2cypher_graph_builder.add_node("execute_cypher", execute_cypher)
 
-    if predefined_cypher_dict:
-        text2cypher_graph_builder.add_conditional_edges(
-            "predefined_match",
-            lambda state: (
-                "execute_cypher"
-                if state.get("records") is not None
-                else "generate_cypher"
-            ),
-            {
-                "execute_cypher": "execute_cypher",
-                "generate_cypher": "generate_cypher",
-            },
-        )
-    else:
-        text2cypher_graph_builder.add_edge(START, "generate_cypher")
+    text2cypher_graph_builder.add_conditional_edges(
+        "predefined_match",
+        lambda state: state["next_action_cypher"],
+        {
+            "execute_cypher": "execute_cypher",
+            "generate_cypher": "generate_cypher",
+        },
+    )
 
     text2cypher_graph_builder.add_edge("generate_cypher", "validate_cypher")
     text2cypher_graph_builder.add_conditional_edges(
         "validate_cypher",
-        lambda state: (
-            state.get("next_action_cypher")
-            if state.get("next_action_cypher")
-            in {"correct_cypher", "execute_cypher", "__end__"}
-            else "__end__"
-        ),
+        lambda state: state["next_action_cypher"],
     )
     text2cypher_graph_builder.add_edge("correct_cypher", "validate_cypher")
     text2cypher_graph_builder.add_edge("execute_cypher", END)

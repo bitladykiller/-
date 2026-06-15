@@ -31,24 +31,17 @@ class MilvusDocRetriever(Retriever):
         errors: list[str] = []
         try:
             results = await self._searcher.search(task)
-            records = (
-                [
-                    {
-                        "chunk_type": result.get("chunk_type", "text"),
-                        "section_path": result.get("section_path", ""),
-                        "source_file": result.get("source_file", ""),
-                        "raw_text": result.get("raw_text", ""),
-                        "rrf_score": result.get("rrf_score"),
-                        "rerank_score": result.get("rerank_score"),
-                    }
-                    for result in results[:5]
-                ]
-                if results
-                else []
-            )
-        except ImportError:
-            records = [{"message": "文档检索模块未安装。请先上传文档建立知识库。"}]
-            errors.append("rag_doc_parser 模块未安装")
+            records = [
+                {
+                    "chunk_type": result["chunk_type"],
+                    "section_path": result["section_path"],
+                    "source_file": result["source_file"],
+                    "raw_text": result["raw_text"],
+                    "rrf_score": result["rrf_score"],
+                    "rerank_score": result.get("rerank_score"),
+                }
+                for result in results[:5]
+            ]
         except Exception as exc:
             records = [{"message": "文档检索暂时不可用。"}]
             errors.append(str(exc))
@@ -71,34 +64,13 @@ class KnowledgeGraphRetriever(Retriever):
         """查询 Neo4j 知识图谱。"""
 
         raw_result = await self._t2c_agent.ainvoke({"task": task})
-        if "records" in raw_result:
-            raw_records = raw_result.get("records")
-            if raw_records is None:
-                records = []
-            elif isinstance(raw_records, list):
-                records = raw_records
-            elif isinstance(raw_records, dict):
-                records = [raw_records] if raw_records else []
-            else:
-                records = [{"value": raw_records}]
-        else:
-            records: list[dict[str, Any]] = []
-            for cypher in raw_result.get("cyphers", []):
-                cypher_records = cypher.get("records")
-                if cypher_records is None:
-                    continue
-                if isinstance(cypher_records, list):
-                    records.extend(cypher_records)
-                elif isinstance(cypher_records, dict):
-                    if cypher_records:
-                        records.append(cypher_records)
-                else:
-                    records.append({"value": cypher_records})
+        cyphers = raw_result["cyphers"]
+        records = [record for cypher in cyphers for record in cypher["records"]]
+        errors = [error for cypher in cyphers for error in cypher["errors"]]
 
         return {
             "task": task,
             "records": records,
-            "errors": raw_result.get("errors", []),
-            "steps": raw_result.get("steps", []),
-            "raw": raw_result,
+            "errors": errors,
+            "steps": raw_result["steps"],
         }

@@ -73,11 +73,7 @@ class RedisShortTermMemory:
         """写入一条短期消息，并维护滑动窗口。"""
         try:
             key = self._build_session_keys(tenant_id, user_id, session_id)["messages"]
-            score = (
-                message.created_at
-                if message.created_at > 1000000000000
-                else int(time.time() * 1000)
-            )
+            score = int(time.time() * 1000)
             await self.redis.zadd(
                 key,
                 {compress_message(message): score},
@@ -136,11 +132,7 @@ class RedisShortTermMemory:
             raw = await self.redis.get(key)
             if not raw:
                 return None
-            text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
-            data = json.loads(text)
-            if not isinstance(data, dict):
-                return None
-            return SessionSummary(**data)
+            return SessionSummary(**json.loads(raw))
         except Exception as exc:
             logger.debug(f"[stm] 读取会话摘要失败: {exc}")
             return None
@@ -152,10 +144,7 @@ class RedisShortTermMemory:
             raw = await self.redis.get(key)
             if not raw:
                 return SessionMeta()
-            text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
-            data = json.loads(text)
-            if isinstance(data, dict):
-                return SessionMeta(**data)
+            return SessionMeta(**json.loads(raw))
         except Exception as exc:
             logger.debug(f"[stm] 读取会话元信息失败: {exc}")
         return SessionMeta()

@@ -4,6 +4,7 @@ from app.knowledge.domain.schemas import SessionSummary
 from app.knowledge.infrastructure.orchestration.memory_extractor import (
     MemoryExtractor,
 )
+from langchain_core.messages import AIMessage
 
 
 class FakeLLMClient:
@@ -16,16 +17,6 @@ class FakeLLMClient:
         return self.response
 
 
-class FakeResponseObject:
-    def __init__(self, content) -> None:
-        self.content = content
-
-
-class FakeTextPart:
-    def __init__(self, text: str) -> None:
-        self.text = text
-
-
 def _run(awaitable):
     return asyncio.run(awaitable)
 
@@ -33,13 +24,18 @@ def _run(awaitable):
 def test_memory_extractor_extract_supports_list_content_response() -> None:
     extractor = MemoryExtractor(
         FakeLLMClient(
-            FakeResponseObject(
-                [
-                    {"text": "前置说明"},
-                    '{"semantic":[{"memory_type":"issue_history","content":"用户手机号13812345678反馈门铃总是掉线","reason":"含长期问题"}],',
-                    FakeTextPart('"profile":{"preferred_brand":"  apple "}}'),
-                    {"text": "}"},
-                    {"other": "ignored"},
+            AIMessage(
+                content=[
+                    {"type": "text", "text": "前置说明"},
+                    {
+                        "type": "text",
+                        "text": (
+                            '{"semantic":[{"memory_type":"issue_history",'
+                            '"content":"用户手机号13812345678反馈门铃总是掉线",'
+                            '"reason":"含长期问题"}],"profile":{"preferred_brand":"  apple "}}'
+                        ),
+                    },
+                    {"type": "tool_call", "name": "ignored", "args": {}},
                 ]
             )
         )
@@ -65,7 +61,7 @@ def test_memory_extractor_extract_supports_list_content_response() -> None:
 
 
 def test_memory_extractor_extract_returns_empty_for_invalid_payload() -> None:
-    extractor = MemoryExtractor(FakeLLMClient("没有 JSON"))
+    extractor = MemoryExtractor(FakeLLMClient(AIMessage(content="没有 JSON")))
 
     semantic, profile = _run(
         extractor.extract(
@@ -81,12 +77,14 @@ def test_memory_extractor_extract_returns_empty_for_invalid_payload() -> None:
 def test_memory_extractor_extract_masks_and_filters_semantic_items() -> None:
     extractor = MemoryExtractor(
         FakeLLMClient(
-            FakeResponseObject(
+            AIMessage(
+                content=(
                 '{"semantic":['
                 '{"memory_type":"issue_history","content":"用户手机号13812345678，身份证100000000000000000，银行卡6222021234567890，邮箱abc@example.com"},'
                 '{"memory_type":"solution_note","content":"谢谢"},'
                 '{"memory_type":"invalid_type","content":"这条类型无效但内容很长很长"}'
                 '],"profile":{}}'
+                )
             )
         )
     )
@@ -112,8 +110,10 @@ def test_memory_extractor_extract_masks_and_filters_semantic_items() -> None:
 
 def test_memory_extractor_extract_returns_semantic_and_normalized_profile() -> None:
     llm_client = FakeLLMClient(
-        FakeResponseObject(
+        AIMessage(
+            content=(
             '说明：{"semantic":[{"memory_type":"solution_note","content":"联系 aaa@example.com 后问题已解决","reason":"已验证"}],"profile":{"preferred_brand":"  apple ","tags":["极客","极客",""],"facts":[{"key":" pet ","value":" cat "} ]}}'
+            )
         )
     )
     extractor = MemoryExtractor(llm_client)

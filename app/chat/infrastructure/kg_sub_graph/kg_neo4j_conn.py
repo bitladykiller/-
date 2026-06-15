@@ -13,9 +13,9 @@
 import logging
 import time
 
-from langchain_neo4j import Neo4jGraph
 from app.shared.core.config import settings
 from app.shared.core.logger import get_logger
+from langchain_neo4j import Neo4jGraph
 
 logging.getLogger("neo4j").setLevel(logging.ERROR)
 logging.getLogger("langchain_neo4j").setLevel(logging.ERROR)
@@ -73,17 +73,16 @@ def get_neo4j_graph() -> Neo4jGraph | None:
         logger.error("[neo4j] 连接失败，KG 查询将不可用", exc_info=True)
         return None
 
-    if _cached_graph is not None:
-        # 创建后立即健康检查，确保连接可用
-        try:
-            _cached_graph.query("RETURN 1")
-            _last_health_check_ts = now
-            return _cached_graph
-        except Exception:
-            logger.warning("[neo4j] 健康检查失败，连接可能已断开")
+    # 创建后立即健康检查，确保连接可用
+    try:
+        _cached_graph.query("RETURN 1")
+        _last_health_check_ts = now
+        return _cached_graph
+    except Exception:
+        logger.warning("[neo4j] 健康检查失败，连接可能已断开")
 
-        # 连接创建成功但健康检查失败（罕见）
-        logger.error("[neo4j] 新建连接健康检查失败")
-        _cached_graph = None
+    # 连接创建成功但健康检查失败（罕见）
+    logger.error("[neo4j] 新建连接健康检查失败")
+    _cached_graph = None
 
     return None

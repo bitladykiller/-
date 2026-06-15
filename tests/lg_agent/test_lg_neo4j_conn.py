@@ -25,8 +25,8 @@ class FakeLogger:
     def warning(self, message: str) -> None:
         self.warnings.append(message)
 
-    def error(self, message: str, *args, **kwargs) -> None:
-        self.errors.append((message, kwargs.get("exc_info", False)))
+    def error(self, message: str, *_args, **_kwargs) -> None:
+        self.errors.append((message, _kwargs.get("exc_info", False)))
 
 
 def test_get_neo4j_graph_creates_and_caches_healthy_connection(monkeypatch) -> None:

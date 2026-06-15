@@ -211,7 +211,7 @@ class SimpleLongTermMemory:
         try:
             now_ts = int(time.time())
             last_hit_at = now_ts
-            hit_count = (memory.hit_count or 0) + 1
+            hit_count = memory.hit_count + 1
             update_record: dict[str, Any] = {
                 "memory_id": memory.memory_id,
                 "updated_at": now_ts,
@@ -342,31 +342,10 @@ class SimpleLongTermMemory:
             )
             search_results: list[MemorySearchResult] = []
             for hit in hits:
-                entity = hit.get("entity")
-                if not isinstance(entity, dict):
-                    continue
-                payload: dict[str, Any] = {
-                    "memory_id": "",
-                    "tenant_id": "",
-                    "user_id": "",
-                    "memory_type": "",
-                    "content": "",
-                    "created_at": 0,
-                    "updated_at": 0,
-                    "last_hit_at": 0,
-                    "hit_count": 0,
-                    "is_deleted": False,
-                }
-                payload.update(
-                    {
-                        key: value
-                        for key, value in entity.items()
-                        if key in payload and value is not None
-                    }
-                )
+                entity = hit["entity"]
                 search_results.append(
                     MemorySearchResult(
-                        memory=LongTermMemory(**payload),
+                        memory=LongTermMemory(**entity),
                     )
                 )
             return search_results

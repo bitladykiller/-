@@ -12,30 +12,28 @@
 import asyncio
 import json
 
-from langchain_core.messages import AIMessage
-from langchain_core.tools import tool
-from langchain_core.runnables import RunnableConfig
-from langgraph.graph.state import CompiledStateGraph
-from langgraph.prebuilt import create_react_agent
-
 from app.chat.infrastructure.graph.state import AgentState
+from app.chat.infrastructure.kg_sub_graph.kg_neo4j_conn import get_neo4j_graph
+from app.chat.infrastructure.memory_bridge.context import enrich_question
+from app.chat.infrastructure.modeling.models import (
+    ReactAnswerCheckOutput,
+    react_judge_model,
+    react_model,
+)
+from app.chat.infrastructure.modeling.prompts import (
+    REACT_ANSWER_CHECK_PROMPT,
+    REACT_SYSTEM_PROMPT,
+)
 from app.chat.infrastructure.retrievers.retriever_contracts import (
     KG_RETRIEVER_NAME,
     RAG_RETRIEVER_NAME,
 )
 from app.chat.infrastructure.retrievers.retriever_runtime import get_retriever
-from app.chat.infrastructure.modeling.prompts import (
-    REACT_SYSTEM_PROMPT,
-    REACT_ANSWER_CHECK_PROMPT,
-)
-from app.chat.infrastructure.modeling.models import (
-    react_model,
-    react_judge_model,
-    ReactAnswerCheckOutput,
-)
-from app.chat.infrastructure.memory_bridge.context import enrich_question
-from app.chat.infrastructure.kg_sub_graph.kg_neo4j_conn import get_neo4j_graph
-
+from langchain_core.messages import AIMessage, ChatMessage
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import tool
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.prebuilt import create_react_agent
 
 REACT_MAX_ATTEMPTS = 5
 REACT_RECURSION_LIMIT = 11
@@ -57,20 +55,16 @@ async def get_react_subgraph() -> CompiledStateGraph:
                 @tool
                 async def neo4j_query(task: str) -> str:
                     """查询 Neo4j 知识图谱，获取商品、订单、客户等结构化数据。"""
-                    if kg is None:
-                        return json.dumps({"error": "知识图谱服务不可用"}, ensure_ascii=False)
                     return json.dumps(
-                        (await kg.search(task)).get("records", []),
+                        (await kg.search(task))["records"],
                         ensure_ascii=False,
                     )
 
                 @tool
                 async def rag_search(query: str) -> str:
                     """检索文档知识库，获取售后政策、保修条款等非结构化信息。"""
-                    if rag is None:
-                        return json.dumps({"error": "文档检索服务不可用"}, ensure_ascii=False)
                     return json.dumps(
-                        (await rag.search(query)).get("records", []),
+                        (await rag.search(query))["records"],
                         ensure_ascii=False,
                     )
 
@@ -110,7 +104,7 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
     q = await enrich_question(
         state,
         config,
-        state.messages[-1].content if state.messages else "",
+        state.messages[-1].content,
     )
 
     sg = await get_react_subgraph()
@@ -133,24 +127,19 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
             )
 
         result = await sg.ainvoke({"messages": react_messages}, config=subgraph_config)
-        result_messages = result.get("messages", [])
+        result_messages = result["messages"]
         if not result_messages:
             last_answer = "未能确定回答～"
         else:
-            last_content = getattr(result_messages[-1], "content", "")
-            last_answer = str(last_content) if last_content else "未能确定回答～"
+            last_answer = str(result_messages[-1].text) or "未能确定回答～"
 
         if "need more steps" in last_answer.lower():
             insufficiency_reason = "单次 ReAct 内部步数耗尽，仍未得到足够答案。"
         else:
             transcript_lines: list[str] = []
             for message in result_messages[-20:]:
-                role = getattr(message, "type", None) or getattr(
-                    message,
-                    "role",
-                    "assistant",
-                )
-                content = getattr(message, "content", "")
+                role = message.role if isinstance(message, ChatMessage) else message.type
+                content = str(message.text)
                 if content:
                     transcript_lines.append(f"[{role}] {content}")
             transcript = "\n".join(transcript_lines)

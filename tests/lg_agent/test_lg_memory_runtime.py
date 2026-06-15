@@ -178,8 +178,8 @@ def test_get_memory_middleware_logs_and_returns_none_on_failure(monkeypatch) -> 
     monkeypatch.setattr(lg_memory_runtime, "_memory_middleware_instance", None)
 
     class FakeLogger:
-        def error(self, message: str, *args, **kwargs) -> None:
-            messages.append((message, kwargs.get("exc_info", False)))
+        def error(self, message: str, *_args, **_kwargs) -> None:
+            messages.append((message, _kwargs.get("exc_info", False)))
 
     install_fake_runtime_dependencies(monkeypatch, fail_memory_middleware=True)
     monkeypatch.setattr(lg_memory_runtime, "logger", FakeLogger())

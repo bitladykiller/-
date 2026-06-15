@@ -90,9 +90,10 @@ def test_create_text2cypher_agent_falls_back_to_generation_when_predefined_miss(
         get_examples=example_retriever.get_examples,
         llm_cypher_validation=False,
         predefined_cypher_dict={"query_a": "MATCH (n) RETURN n"},
+        query_descriptions={"query_a": "query a"},
     )
 
-    result = _run(agent.ainvoke({"task": ["查询订单"]}))
+    result = _run(agent.ainvoke({"task": "查询订单"}))
 
     assert matcher.match_calls == [("查询订单", 1)]
     assert example_retriever.calls == [("查询订单", 3)]
@@ -122,7 +123,7 @@ def test_create_text2cypher_agent_uses_fallback_record_when_execute_returns_empt
             }
         ],
     )
-    graph = FakeGraph(query_results=[[], []])
+    graph = FakeGraph(query_results=[[]])
 
     monkeypatch.setattr(
         text2cypher,
@@ -135,16 +136,14 @@ def test_create_text2cypher_agent_uses_fallback_record_when_execute_returns_empt
         graph=graph,
         get_examples=lambda _query, _k: "",
         predefined_cypher_dict={"query_a": "MATCH (n) RETURN n"},
+        query_descriptions={"query_a": "query a"},
     )
 
-    result = _run(agent.ainvoke({"task": ["查询订单"]}))
+    result = _run(agent.ainvoke({"task": "查询订单"}))
 
     assert matcher.extract_calls == [("查询订单", "query_a", llm)]
     assert result["cyphers"][0]["records"] == [
         {"error": "I couldn't find any relevant information in the database."}
     ]
     assert result["cyphers"][0]["steps"] == ["predefined_match", "execute_cypher"]
-    assert graph.calls == [
-        ("MATCH (n) RETURN n", {}),
-        ("MATCH (n) RETURN n", None),
-    ]
+    assert graph.calls == [("MATCH (n) RETURN n", {})]

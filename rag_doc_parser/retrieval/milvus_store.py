@@ -151,8 +151,6 @@ class MilvusStore:
         Returns:
             1024 维浮点数列表。
         """
-        if self.embedding_model is None:
-            raise RuntimeError("embedding_model 未设置，无法生成向量")
         return self.embedding_model.embed_query(text)
 
     async def insert_chunks(self, chunks: list[Any]) -> int:
@@ -213,10 +211,10 @@ class MilvusStore:
         for hit in hits:
             entity = hit["entity"]
             formatted.append({
-                "source_file": entity.get("source_file", ""),
-                "chunk_type": entity.get("chunk_type", ""),
-                "section_path": entity.get("section_path", ""),
-                "raw_text": entity.get("raw_text", ""),
+                "source_file": entity["source_file"],
+                "chunk_type": entity["chunk_type"],
+                "section_path": entity["section_path"],
+                "raw_text": entity["raw_text"],
                 "rrf_score": hit["score"],
             })
         return formatted

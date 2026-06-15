@@ -20,7 +20,7 @@ from app.chat.infrastructure.retrievers.retriever_contracts import (
     Retriever,
 )
 
-_registry: dict[str, Retriever] | None = None
+_registry: dict[str, Retriever] = {}
 _registry_lock: asyncio.Lock = asyncio.Lock()
 _cypher_example_retriever: Any | None = None
 _t2c_agent: Any | None = None
@@ -28,57 +28,64 @@ _t2c_agent: Any | None = None
 
 async def get_retriever(name: str):
     """获取检索器。确保 registry 已初始化。"""
-    global _registry, _cypher_example_retriever, _t2c_agent
+    global _cypher_example_retriever, _t2c_agent
 
-    if _registry is None:
-        _registry = {}
     registry = _registry
-    if KG_RETRIEVER_NAME not in registry or RAG_RETRIEVER_NAME not in registry:
-        async with _registry_lock:
-            if _registry is None:
-                _registry = {}
-            registry = _registry
+    if name in registry:
+        return registry[name]
+
+    async with _registry_lock:
+        registry = _registry
+
+        if name == KG_RETRIEVER_NAME:
             if KG_RETRIEVER_NAME not in registry:
                 from app.chat.infrastructure.kg_sub_graph.kg_neo4j_conn import (
                     get_neo4j_graph,
                 )
 
                 neo4j_graph = get_neo4j_graph()
-                if neo4j_graph is not None:
-                    if _cypher_example_retriever is None:
-                        from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.retrievers.cypher_examples.northwind_retriever import (
-                            NorthwindCypherRetriever,
-                        )
+                if neo4j_graph is None:
+                    return None
 
-                        _cypher_example_retriever = NorthwindCypherRetriever()
-
-                    if _t2c_agent is None:
-                        from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.cypher_dict import (
-                            QUERY_DESCRIPTIONS,
-                            predefined_cypher_dict,
-                        )
-                        from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.workflows.single_agent.text2cypher import (
-                            create_text2cypher_agent,
-                        )
-                        from app.chat.infrastructure.modeling.models import cypher_model
-
-                        _t2c_agent = create_text2cypher_agent(
-                            llm=cypher_model,
-                            graph=neo4j_graph,
-                            get_examples=_cypher_example_retriever.get_examples,
-                            predefined_cypher_dict=predefined_cypher_dict,
-                            query_descriptions=QUERY_DESCRIPTIONS,
-                        )
-
-                    from app.chat.infrastructure.retrievers.retriever_implementations import (
-                        KnowledgeGraphRetriever,
+                if _cypher_example_retriever is None:
+                    from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.retrievers.cypher_examples.northwind_retriever import (
+                        NorthwindCypherRetriever,
                     )
 
-                    registry[KG_RETRIEVER_NAME] = KnowledgeGraphRetriever(_t2c_agent)
+                    _cypher_example_retriever = NorthwindCypherRetriever()
+
+                if _t2c_agent is None:
+                    from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.cypher_dict import (
+                        QUERY_DESCRIPTIONS,
+                        predefined_cypher_dict,
+                    )
+                    from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.workflows.single_agent.text2cypher import (
+                        create_text2cypher_agent,
+                    )
+                    from app.chat.infrastructure.modeling.models import cypher_model
+
+                    _t2c_agent = create_text2cypher_agent(
+                        llm=cypher_model,
+                        graph=neo4j_graph,
+                        get_examples=_cypher_example_retriever.get_examples,
+                        predefined_cypher_dict=predefined_cypher_dict,
+                        query_descriptions=QUERY_DESCRIPTIONS,
+                    )
+
+                from app.chat.infrastructure.retrievers.retriever_implementations import (
+                    KnowledgeGraphRetriever,
+                )
+
+                registry[KG_RETRIEVER_NAME] = KnowledgeGraphRetriever(_t2c_agent)
+            return registry[KG_RETRIEVER_NAME]
+
+        if name == RAG_RETRIEVER_NAME:
             if RAG_RETRIEVER_NAME not in registry:
                 from app.chat.infrastructure.retrievers.retriever_implementations import (
                     MilvusDocRetriever,
                 )
 
                 registry[RAG_RETRIEVER_NAME] = MilvusDocRetriever()
-    return registry.get(name)
+            return registry[RAG_RETRIEVER_NAME]
+
+    raise KeyError(f"unknown retriever: {name}")

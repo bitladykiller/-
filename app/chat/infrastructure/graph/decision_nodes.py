@@ -14,9 +14,6 @@
 
 from typing import Literal
 
-from langchain_core.messages import AIMessage, BaseMessage
-from langchain_core.runnables import RunnableConfig
-
 from app.chat.infrastructure.graph.execution_utils import (
     ainvoke_structured_question_output,
 )
@@ -43,6 +40,8 @@ from app.chat.infrastructure.modeling.prompts import (
     RETRIEVAL_PLAN_ROUTER_PROMPT,
     ROUTER_SYSTEM_PROMPT,
 )
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.runnables import RunnableConfig
 
 
 async def analyze_and_route_query(state: AgentState, *, config: RunnableConfig) -> dict:
@@ -71,7 +70,7 @@ async def respond_to_general_query(
 ) -> dict[str, list[BaseMessage]]:
     """处理通用查询：闲聊、追问等。注入记忆上下文增强回复。"""
     system_prompt = GENERAL_QUERY_SYSTEM_PROMPT.format(logic=state.router["logic"])
-    user_message = state.messages[-1].content if state.messages else ""
+    user_message = state.messages[-1].content
     memory_state = await load_memory_state(state, config, user_message)
     if memory_state is not None:
         memory_context = build_memory_context(
@@ -94,7 +93,7 @@ async def guardrails_node(
 ) -> dict[str, list[BaseMessage] | str]:
     """守卫节点：检查问题是否在业务范围内，拦截恶意输入。"""
     _ = config
-    question = state.messages[-1].content if state.messages else ""
+    question = state.messages[-1].content
     wrapped_question = wrap_user_message(question)
     guardrails_output = await ainvoke_structured_question_output(
         system_prompt=GUARDRAILS_SYSTEM_PROMPT,
@@ -133,7 +132,7 @@ async def retrieval_plan_route(
 ) -> dict:
     """根据问题特征选择最优检索策略。"""
     _ = config
-    question = state.messages[-1].content if state.messages else ""
+    question = state.messages[-1].content
     wrapped_question = wrap_user_message(question)
     output = await ainvoke_structured_question_output(
         system_prompt=RETRIEVAL_PLAN_ROUTER_PROMPT,
@@ -157,11 +156,10 @@ def retrieval_plan_edge(
     "execute_react",
 ]:
     """根据检索计划路由到对应的执行节点。"""
-    plan_name = (state.retrieval_plan or {}).get("plan")
     return {
         "GRAPH_ONLY": "execute_graph_only",
         "RAG_ONLY": "execute_rag_only",
         "PARALLEL": "execute_parallel",
         "GRAPH_THEN_RAG": "execute_then",
         "AGENT_REACT": "execute_react",
-    }.get(plan_name or "AGENT_REACT", "execute_react")
+    }[state.retrieval_plan["plan"]]

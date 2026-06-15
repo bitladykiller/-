@@ -153,7 +153,7 @@ class MemoryMiddleware:
                 messages_text = "\n".join(
                     f"[{message.role}]: {message.content}"
                     for message in old_messages
-                    if getattr(message, "role", None) and getattr(message, "content", None)
+                    if message.role and message.content
                 )
                 prompt = f"""你是对话摘要助手。请将以下对话历史压缩为一段简洁的摘要。
 
@@ -172,8 +172,7 @@ class MemoryMiddleware:
 
 只输出JSON，不要其他内容。"""
                 response = await self.memory_extractor.llm_client.ainvoke(prompt)
-                content = getattr(response, "content", response)
-                return content if isinstance(content, str) else str(content)
+                return str(response.text)
 
             compressed = await self.redis_stm.compress_session_memory(
                 tenant_id,
@@ -205,7 +204,7 @@ class MemoryMiddleware:
                     )
 
                 uid = int(user_id) if user_id and user_id.isdigit() else 0
-                if uid > 0 and profile and isinstance(profile, dict):
+                if uid > 0 and profile:
                     try:
                         from app.user.application.user_profile_service import (
                             upsert_profile_data,
@@ -222,11 +221,8 @@ class MemoryMiddleware:
             self._warn_once("compress", "[memory] 记忆压缩失败")
 
         if long_term_memories:
-            try:
-                for result in long_term_memories:
-                    try:
-                        await self.milvus_ltm.update_memory_hit_info(result.memory)
-                    except Exception:
-                        continue
-            except Exception:
-                self._warn_once("ltm_hit_update", "[memory] LTM 命中统计刷新失败")
+            for result in long_term_memories:
+                try:
+                    await self.milvus_ltm.update_memory_hit_info(result.memory)
+                except Exception:
+                    continue

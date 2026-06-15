@@ -1,7 +1,7 @@
 """LangGraph 消息辅助函数。
 
 职责：
-- 统一兼容 dict / LangChain Message 两类消息输入
+- 负责 LangChain 消息对象到模型输入消息的转换
 - 负责 user 消息安全包装与标准消息列表构造
 
 边界：
@@ -11,7 +11,8 @@
 
 import html
 from collections.abc import Sequence
-from typing import Any
+
+from langchain_core.messages import AnyMessage, ChatMessage
 
 
 def wrap_user_message(raw_input: str) -> str:
@@ -22,19 +23,17 @@ def wrap_user_message(raw_input: str) -> str:
 
 def build_safe_messages(
     system_prompt: str,
-    messages: Sequence[Any],
+    messages: Sequence[AnyMessage],
 ) -> list[dict[str, str]]:
     """构建安全消息列表，对 user 消息做 XML 隔离防注入。"""
     safe: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     for message in messages:
-        if isinstance(message, dict):
-            role = str(message.get("role", "") or "")
-            content = str(message.get("content", "") or "")
-        else:
-            role = str(
-                getattr(message, "type", None) or getattr(message, "role", None) or ""
-            )
-            content = str(getattr(message, "content", "") or "")
+        raw_role = message.role if isinstance(message, ChatMessage) else message.type
+        role = {
+            "human": "user",
+            "ai": "assistant",
+        }.get(raw_role, raw_role)
+        content = str(message.content or "")
         if role == "user":
             safe.append({"role": "user", "content": wrap_user_message(content)})
             continue

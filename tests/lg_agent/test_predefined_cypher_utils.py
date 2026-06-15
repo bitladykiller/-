@@ -1,6 +1,6 @@
-import numpy as np
-
 import app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.utils as predefined_utils
+import numpy as np
+from langchain_core.messages import AIMessage
 
 
 class FakeLLM:
@@ -10,7 +10,7 @@ class FakeLLM:
 
     def invoke(self, prompt):
         self.prompts.append(prompt)
-        return type("Response", (), {"content": self.content})()
+        return AIMessage(content=self.content)
 
 
 def test_vector_query_matcher_embed_texts_uses_payload_and_fallback(monkeypatch) -> None:
@@ -46,7 +46,7 @@ def test_vector_query_matcher_embed_texts_uses_payload_and_fallback(monkeypatch)
     monkeypatch.setattr(
         predefined_utils.requests,
         "post",
-        lambda *args, **kwargs: FakeResponse({}),
+        lambda *_args, **_kwargs: FakeResponse({}),
     )
     assert matcher._embed_texts(["a", "b"]) == [
         [0.0] * 1024,
@@ -79,10 +79,6 @@ def test_vector_query_matcher_parameter_extraction_and_factory(monkeypatch) -> N
     )
 
     assert matcher.query_descriptions == {"product_price_query": "product price query"}
-    assert matcher.extract_parameters("查询 小米门锁 的价格", "product_price_query") == {
-        "product_name": "小米门锁"
-    }
-
     llm = FakeLLM('说明 {"product_name":"智能门锁Pro"} 尾部')
     assert matcher.extract_parameters(
         "这个产品多少钱",

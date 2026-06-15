@@ -18,24 +18,22 @@ DOCUMENT_MAGIC_SIGNATURES: dict[str, tuple[bytes, ...]] = {
 async def process_file(
     file_info: dict[str, Any],
 ) -> dict[str, Any]:
-    """处理上传文件并写入检索索引。"""
+    """处理上传文件并写入检索索引。
+
+    当前只接受上传路由生成的 `file_info` 契约：
+    - `path`: 非空字符串
+    - `user_id`: `int`
+    """
     raw_path = file_info.get("path")
-    if isinstance(raw_path, Path):
-        path = raw_path
-    elif isinstance(raw_path, str) and raw_path.strip():
-        path = Path(raw_path.strip())
-    else:
-        path = None
+    if not isinstance(raw_path, str) or not raw_path:
+        return {"status": "error", "message": "文件不存在"}
+    path = Path(raw_path)
 
-    raw_user_id = file_info.get("user_id", 0)
-    if isinstance(raw_user_id, int) and not isinstance(raw_user_id, bool):
-        user_id = raw_user_id
-    elif isinstance(raw_user_id, str) and raw_user_id.isdigit():
-        user_id = int(raw_user_id)
-    else:
-        user_id = 0
+    user_id = file_info.get("user_id")
+    if not isinstance(user_id, int) or isinstance(user_id, bool):
+        return {"status": "error", "message": "非法用户标识"}
 
-    if path is None or not path.exists():
+    if not path.exists():
         return {"status": "error", "message": "文件不存在"}
 
     ext = path.suffix.lower()

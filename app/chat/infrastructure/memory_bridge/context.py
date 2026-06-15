@@ -70,17 +70,12 @@ def build_memory_context(
             if isinstance(value, str) and value:
                 profile_lines.append(f"{label}: {value}")
 
-        normalized_tags = [
-            tag for tag in user_profile.get("tags", []) if isinstance(tag, str) and tag
-        ]
-        if normalized_tags:
-            profile_lines.append(f"标签: {', '.join(normalized_tags)}")
+        tags = user_profile.get("tags") or []
+        if tags:
+            profile_lines.append(f"标签: {', '.join(tags)}")
 
         for fact in user_profile.get("facts", []):
-            key = fact.get("key")
-            value = fact.get("value")
-            if isinstance(key, str) and key and isinstance(value, str) and value:
-                profile_lines.append(f"{key}: {value}")
+            profile_lines.append(f"{fact['key']}: {fact['value']}")
         user_profile_text = "\n".join(profile_lines)
 
     long_term_memory_text = ""
@@ -138,8 +133,7 @@ async def load_memory_state(
         return None
 
     try:
-        raw_configurable = config.get("configurable", {})
-        configurable = raw_configurable if isinstance(raw_configurable, dict) else {}
+        configurable = config.get("configurable", {})
         tenant_id = configurable.get("tenant_id")
         user_id = configurable.get("user_id")
         thread_id = configurable.get("thread_id")

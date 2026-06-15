@@ -1,7 +1,5 @@
 """主图中的响应后处理节点实现。"""
 
-from langchain_core.runnables import RunnableConfig
-
 from app.chat.infrastructure.graph.state import AgentState
 from app.chat.infrastructure.memory_bridge.context import (
     _DEFAULT_SESSION_ID,
@@ -10,8 +8,21 @@ from app.chat.infrastructure.memory_bridge.context import (
     get_memory_middleware,
 )
 from app.shared.core.logger import get_logger
+from langchain_core.messages import AnyMessage, ChatMessage
+from langchain_core.runnables import RunnableConfig
 
 logger = get_logger(__name__)
+
+
+def _extract_message_fields(message: AnyMessage) -> tuple[str, str]:
+    """把 LangChain 消息对象收口为统一的 role/content。"""
+    raw_role = message.role if isinstance(message, ChatMessage) else message.type
+    role = {
+        "human": "user",
+        "ai": "assistant",
+    }.get(raw_role, raw_role)
+    content = str(message.content or "")
+    return role, content
 
 
 async def after_response(state: AgentState, *, config: RunnableConfig) -> dict:
@@ -21,8 +32,7 @@ async def after_response(state: AgentState, *, config: RunnableConfig) -> dict:
         return {}
 
     try:
-        raw_configurable = config.get("configurable", {})
-        configurable = raw_configurable if isinstance(raw_configurable, dict) else {}
+        configurable = config.get("configurable", {})
         tenant_id = configurable.get("tenant_id")
         user_id = configurable.get("user_id")
         thread_id = configurable.get("thread_id")
@@ -30,19 +40,12 @@ async def after_response(state: AgentState, *, config: RunnableConfig) -> dict:
         assistant_message = ""
         assistant_fallback = ""
         for message in reversed(state.messages):
-            if isinstance(message, dict):
-                role = str(message.get("role", "") or "")
-                content = str(message.get("content", "") or "")
-            else:
-                role = str(
-                    getattr(message, "type", None) or getattr(message, "role", None) or ""
-                )
-                content = str(getattr(message, "content", "") or "")
+            role, content = _extract_message_fields(message)
 
-            if not user_message and role in {"human", "user"}:
+            if not user_message and role == "user":
                 user_message = content
 
-            if not assistant_message and role in {"ai", "assistant"}:
+            if not assistant_message and role == "assistant":
                 if not assistant_fallback:
                     assistant_fallback = content
                 if content and "正在" in content:

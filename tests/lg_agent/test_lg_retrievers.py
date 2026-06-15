@@ -126,8 +126,7 @@ def test_milvus_doc_retriever_search_returns_fallback_record_on_error() -> None:
 def test_knowledge_graph_retriever_wraps_text2cypher_output() -> None:
     t2c_agent = FakeT2CAgent(
         {
-            "cyphers": [{"records": [{"name": "Alice"}]}],
-            "errors": [],
+            "cyphers": [{"records": [{"name": "Alice"}], "errors": []}],
             "steps": ["text2cypher"],
         }
     )
@@ -138,45 +137,33 @@ def test_knowledge_graph_retriever_wraps_text2cypher_output() -> None:
     assert t2c_agent.calls == [{"task": "查用户"}]
     assert result["task"] == "查用户"
     assert result["records"] == [{"name": "Alice"}]
+    assert result["errors"] == []
     assert result["steps"] == ["text2cypher"]
 
 
-def test_knowledge_graph_retriever_normalizes_records_and_cyphers() -> None:
+def test_knowledge_graph_retriever_flattens_cypher_payload() -> None:
     retriever = retriever_implementations.KnowledgeGraphRetriever(
         FakeT2CAgent(
             {
-                "records": {"name": "alice"},
-                "errors": ["warn"],
+                "cyphers": [
+                    {"records": [{"id": 1}], "errors": ["warn-1"]},
+                    {"records": [{"id": 2}], "errors": []},
+                    {"records": [], "errors": ["warn-2"]},
+                ]
+                ,
                 "steps": ["kg"],
             }
         )
     )
-    cypher_retriever = retriever_implementations.KnowledgeGraphRetriever(
-        FakeT2CAgent(
-            {
-                "cyphers": [
-                    {"records": [{"id": 1}]},
-                    {"records": {"id": 2}},
-                ]
-            }
-        )
-    )
 
-    record_payload = _run(retriever.search("查用户"))
-    cypher_payload = _run(cypher_retriever.search("查订单"))
+    payload = _run(retriever.search("查订单"))
 
-    assert record_payload == {
-        "task": "查用户",
-        "records": [{"name": "alice"}],
-        "errors": ["warn"],
+    assert payload == {
+        "task": "查订单",
+        "records": [{"id": 1}, {"id": 2}],
+        "errors": ["warn-1", "warn-2"],
         "steps": ["kg"],
-        "raw": {
-            "records": {"name": "alice"},
-            "errors": ["warn"],
-            "steps": ["kg"],
-        },
     }
-    assert cypher_payload["records"] == [{"id": 1}, {"id": 2}]
 
 
 def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
@@ -269,3 +256,40 @@ def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
             "query_descriptions": {"query_a": "desc"},
         },
     }
+
+
+def test_get_retriever_does_not_touch_kg_runtime_when_only_rag_is_requested(monkeypatch) -> None:
+    import app.chat.infrastructure.kg_sub_graph.kg_neo4j_conn as kg_neo4j_conn
+
+    monkeypatch.setattr(retriever_runtime, "_registry", {})
+    monkeypatch.setattr(retriever_runtime, "_cypher_example_retriever", None)
+    monkeypatch.setattr(retriever_runtime, "_t2c_agent", None)
+
+    kg_graph_calls = {"count": 0}
+
+    def fake_get_neo4j_graph():
+        kg_graph_calls["count"] += 1
+        return object()
+
+    monkeypatch.setattr(kg_neo4j_conn, "get_neo4j_graph", fake_get_neo4j_graph)
+    monkeypatch.setattr(
+        retriever_implementations,
+        "MilvusDocRetriever",
+        FakeRagRetriever,
+    )
+
+    rag = _run(retriever_runtime.get_retriever(RAG_RETRIEVER_NAME))
+
+    assert isinstance(rag, FakeRagRetriever)
+    assert kg_graph_calls == {"count": 0}
+
+
+def test_get_retriever_raises_for_unknown_name(monkeypatch) -> None:
+    monkeypatch.setattr(retriever_runtime, "_registry", {})
+
+    try:
+        _run(retriever_runtime.get_retriever("unknown"))
+    except KeyError as exc:
+        assert str(exc) == "'unknown retriever: unknown'"
+    else:  # pragma: no cover - test contract guard
+        raise AssertionError("expected KeyError")

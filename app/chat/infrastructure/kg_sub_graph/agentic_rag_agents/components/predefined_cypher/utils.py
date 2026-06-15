@@ -12,20 +12,9 @@ from typing import Any
 
 import numpy as np
 import requests
-from sklearn.metrics.pairwise import cosine_similarity
-
 from app.shared.core.config import settings
 from app.shared.core.json_utils import extract_first_json_object
-
-_PARAM_PATTERNS: dict[str, re.Pattern[str]] = {
-    "product_name": re.compile(
-        r"(?:关于|查询|找|有关)\s*([\w\s\u4e00-\u9fff-]+?)\s*(?:的|是|多少)"
-    ),
-    "category_name": re.compile(
-        r"(?:类别|分类|种类|类型)\s*([\w\s\u4e00-\u9fff-]+?)\s*(?:的|是|有)"
-    ),
-    "order_id": re.compile(r"订单\s*([0-9]+)"),
-}
+from sklearn.metrics.pairwise import cosine_similarity
 
 
 class _VectorQueryMatcher:
@@ -120,7 +109,7 @@ class _VectorQueryMatcher:
         self,
         user_question: str,
         query_name: str,
-        llm=None,
+        llm,
     ) -> dict[str, str]:
         """从用户问题中提取参数。"""
         # 检查查询是否存在
@@ -132,48 +121,34 @@ class _VectorQueryMatcher:
 
         # 提取参数列表
         param_names = re.findall(r"\$(\w+)", cypher_template)
+        from langchain_core.prompts import ChatPromptTemplate
 
-        # 使用LLM提取参数（如果提供）
-        if llm is not None:
-            from langchain_core.prompts import ChatPromptTemplate
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    """你是参数提取专家。你的任务是从用户问题中提取指定参数。
+        只返回JSON格式的参数值，不要添加任何解释。
+        如果无法提取某个参数，则该参数值为空字符串。""",
+                ),
+                (
+                    "human",
+                    f"""
+        用户问题: {user_question}
+        查询类型: {query_name}
+        需要提取的参数: {', '.join(param_names)}
 
-            prompt = ChatPromptTemplate.from_messages(
-                [
-                    (
-                        "system",
-                        """你是参数提取专家。你的任务是从用户问题中提取指定参数。
-            只返回JSON格式的参数值，不要添加任何解释。
-            如果无法提取某个参数，则该参数值为空字符串。""",
-                    ),
-                    (
-                        "human",
-                        f"""
-            用户问题: {user_question}
-            查询类型: {query_name}
-            需要提取的参数: {', '.join(param_names)}
-
-            请提取这些参数并以JSON格式返回，格式如: {{"参数名": "参数值", ...}}
-            """,
-                    ),
-                ]
-            )
-            response = llm.invoke(prompt)
-            try:
-                payload = extract_first_json_object(getattr(response, "content", ""))
-                if payload is None:
-                    return {}
-                parsed = json.loads(payload)
-                return parsed if isinstance(parsed, dict) else {}
-            except Exception:
+        请提取这些参数并以JSON格式返回，格式如: {{"参数名": "参数值", ...}}
+        """,
+                ),
+            ]
+        )
+        response = llm.invoke(prompt)
+        try:
+            payload = extract_first_json_object(str(response.text))
+            if payload is None:
                 return {}
-
-        # 使用简单规则进行参数提取
-        params: dict[str, str] = {}
-        for param_name in param_names:
-            pattern = _PARAM_PATTERNS.get(param_name)
-            if pattern is None:
-                continue
-            match = pattern.search(user_question)
-            if match:
-                params[param_name] = match.group(1).strip()
-        return params
+            parsed = json.loads(payload)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}

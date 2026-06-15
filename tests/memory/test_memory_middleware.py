@@ -11,6 +11,7 @@ from app.knowledge.domain.schemas import (
     SessionSummary,
 )
 from app.knowledge.infrastructure.orchestration.memory_middleware import MemoryMiddleware
+from langchain_core.messages import AIMessage
 
 
 class FakeLogger:
@@ -48,25 +49,25 @@ class FakeRedisShortTermMemory:
         self.compress_calls = 0
         self.summary_callback_result: str | None = None
 
-    async def get_summary(self, tenant_id: str, user_id: str, session_id: str) -> SessionSummary:
+    async def get_summary(self, tenant_id: str, user_id: str, _session_id: str) -> SessionSummary:
         return self.summary
 
     async def get_recent_messages(
         self,
         tenant_id: str,
         user_id: str,
-        session_id: str,
+        _session_id: str,
     ) -> list[MessageRecord]:
         return self.recent_messages
 
-    async def get_meta(self, tenant_id: str, user_id: str, session_id: str) -> SessionMeta:
+    async def get_meta(self, tenant_id: str, user_id: str, _session_id: str) -> SessionMeta:
         return self.meta
 
     async def append_message(
         self,
         tenant_id: str,
         user_id: str,
-        session_id: str,
+        _session_id: str,
         message: MessageRecord,
     ) -> None:
         self.appended_messages.append(message)
@@ -75,22 +76,19 @@ class FakeRedisShortTermMemory:
         self,
         tenant_id: str,
         user_id: str,
-        session_id: str,
+        _session_id: str,
         meta: SessionMeta,
     ) -> None:
         self.saved_meta = meta.model_copy(deep=True)
 
-    async def refresh_ttl(self, tenant_id: str, user_id: str, session_id: str) -> None:
+    async def refresh_ttl(self, tenant_id: str, user_id: str, _session_id: str) -> None:
         self.refresh_calls += 1
-
-    async def get_message_count(self, tenant_id: str, user_id: str, session_id: str) -> int:
-        return len(self.appended_messages)
 
     async def compress_session_memory(
         self,
         tenant_id: str,
         user_id: str,
-        session_id: str,
+        _session_id: str,
         summary_compressor,
     ) -> bool:
         self.compress_calls += 1
@@ -149,9 +147,9 @@ class FakeLLMClient:
     def __init__(self) -> None:
         self.prompts: list[str] = []
 
-    async def ainvoke(self, prompt: str) -> str:
+    async def ainvoke(self, prompt: str) -> AIMessage:
         self.prompts.append(prompt)
-        return '{"content":"压缩摘要"}'
+        return AIMessage(content='{"content":"压缩摘要"}')
 
 
 class FakeMemoryExtractor:
@@ -223,7 +221,12 @@ def test_before_agent_loads_all_memory_layers(monkeypatch) -> None:
 
 def test_before_agent_degrades_and_warns_once_on_memory_load_failures(monkeypatch) -> None:
     class BrokenRedisShortTermMemory(FakeRedisShortTermMemory):
-        async def get_summary(self, tenant_id: str, user_id: str, session_id: str) -> SessionSummary:
+        async def get_summary(
+            self,
+            tenant_id: str,
+            user_id: str,
+            _session_id: str,
+        ) -> SessionSummary:
             raise RuntimeError("redis failed")
 
     class BrokenLongTermMemory(FakeLongTermMemory):

@@ -1,12 +1,11 @@
 import asyncio
 from types import SimpleNamespace
 
-from langchain_core.messages import AIMessage, HumanMessage
-
 import app.chat.infrastructure.graph.decision_nodes as lg_decision_nodes
 import app.chat.infrastructure.graph.lifecycle_nodes as lg_nodes
 import app.chat.infrastructure.graph.retrieval_nodes as lg_retrieval_nodes
 from app.chat.infrastructure.graph.state import AgentState
+from langchain_core.messages import AIMessage, HumanMessage
 
 
 class FakeMemoryMiddleware:
@@ -23,6 +22,7 @@ class FakeMemoryMiddleware:
         assistant_message: str,
         long_term_memories=None,
     ) -> None:
+        _ = long_term_memories
         self.calls.append(
             {
                 "tenant_id": tenant_id,
@@ -68,9 +68,7 @@ def test_route_edges_map_state_to_expected_node_names() -> None:
     assert lg_decision_nodes.guardrails_edge(state) == "retrieval_plan_route"
     assert lg_decision_nodes.retrieval_plan_edge(state) == "execute_then"
 
-    state.retrieval_plan = {"logic": "", "plan": "UNKNOWN"}
-    assert lg_decision_nodes.retrieval_plan_edge(state) == "execute_react"
-    state.retrieval_plan = None
+    state.retrieval_plan = {"logic": "", "plan": "AGENT_REACT"}
     assert lg_decision_nodes.retrieval_plan_edge(state) == "execute_react"
 
 
@@ -218,14 +216,14 @@ def test_after_response_writes_latest_user_and_final_assistant_message(monkeypat
     ]
 
 
-def test_after_response_supports_dict_messages_and_falls_back_to_progress_message(
+def test_after_response_falls_back_to_progress_message(
     monkeypatch,
 ) -> None:
     middleware = FakeMemoryMiddleware()
     state = AgentState(
         messages=[
-            {"role": "user", "content": "帮我查一下订单"},
-            {"role": "assistant", "content": "正在查询..."},
+            HumanMessage(content="帮我查一下订单"),
+            AIMessage(content="正在查询..."),
         ]
     )
 
@@ -374,11 +372,26 @@ def test_execute_then_injects_graph_records_into_rag_query(monkeypatch) -> None:
     }
 
 
-def test_execute_rag_only_returns_unavailable_message_when_retriever_missing(monkeypatch) -> None:
+def test_execute_rag_only_builds_summary_from_rag_records(monkeypatch) -> None:
+    retriever = FakeRetriever("rag", {"records": [{"doc": "refund-policy"}]})
+
     async def fake_get_retriever(_name: str):
-        return None
+        return retriever
+
+    async def fake_enrich_question(_state, _config, user_message: str) -> str:
+        assert user_message == "查售后政策"
+        return "查售后政策"
+
+    async def fake_summarize_and_build_response(query, records, **kwargs) -> dict:
+        return {"query": query, "records": records, **kwargs}
 
     monkeypatch.setattr(lg_retrieval_nodes, "get_retriever", fake_get_retriever)
+    monkeypatch.setattr(lg_retrieval_nodes, "enrich_question", fake_enrich_question)
+    monkeypatch.setattr(
+        lg_retrieval_nodes,
+        "summarize_and_build_response",
+        fake_summarize_and_build_response,
+    )
 
     result = _run(
         lg_retrieval_nodes.execute_rag_only(
@@ -387,4 +400,10 @@ def test_execute_rag_only_returns_unavailable_message_when_retriever_missing(mon
         )
     )
 
-    assert [message.content for message in result["messages"]] == ["文档检索服务暂不可用。"]
+    assert retriever.queries == ["查售后政策"]
+    assert result == {
+        "query": "查售后政策",
+        "records": [{"doc": "refund-policy"}],
+        "progress_message": "正在检索文档...",
+        "fallback": "未在文档中找到相关信息～",
+    }

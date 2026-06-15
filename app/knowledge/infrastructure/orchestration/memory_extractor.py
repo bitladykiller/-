@@ -103,25 +103,7 @@ class MemoryExtractor:
 }}
 只输出JSON，不要其他内容。"""
             response = await self.llm_client.ainvoke(prompt)
-            content = getattr(response, "content", response)
-            if isinstance(content, str):
-                raw = content
-            elif isinstance(content, list):
-                text_parts: list[str] = []
-                for item in content:
-                    if isinstance(item, str):
-                        part = item
-                    elif isinstance(item, dict):
-                        text = item.get("text")
-                        part = text if isinstance(text, str) else ""
-                    else:
-                        text = getattr(item, "text", None)
-                        part = text if isinstance(text, str) else ""
-                    if part:
-                        text_parts.append(part)
-                raw = "\n".join(text_parts)
-            else:
-                raw = str(content)
+            raw = str(response.text)
 
             try:
                 payload = extract_first_json_object(raw)

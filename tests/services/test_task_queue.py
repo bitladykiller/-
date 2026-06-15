@@ -12,6 +12,7 @@ class FakeTaskStore:
         self.fail_on_close = fail_on_close
 
     async def set(self, key: str, value: str, ex: int | None = None) -> None:
+        _ = ex
         self.values[key] = value
 
     async def get(self, key: str) -> str | None:

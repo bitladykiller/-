@@ -65,6 +65,12 @@ def test_process_file_returns_error_for_missing_source() -> None:
     assert result == {"status": "error", "message": "文件不存在"}
 
 
+def test_process_file_rejects_invalid_user_id() -> None:
+    result = _run(process_file({"path": "/tmp/demo.pdf", "user_id": "1"}))
+
+    assert result == {"status": "error", "message": "非法用户标识"}
+
+
 def test_process_file_returns_error_for_unsupported_extension(tmp_path: Path) -> None:
     file_path = tmp_path / "demo.txt"
     file_path.write_text("hello", encoding="utf-8")
@@ -136,7 +142,7 @@ def test_process_file_indexes_parsed_chunks(monkeypatch, tmp_path: Path) -> None
     )
 
     result = _run(
-        process_file({"path": f"  {file_path}  ", "user_id": "9"})
+        process_file({"path": str(file_path), "user_id": 9})
     )
 
     assert indexer.indexed_chunks == chunks
@@ -151,7 +157,7 @@ def test_process_file_indexes_parsed_chunks(monkeypatch, tmp_path: Path) -> None
     assert len(captured_doc_ids[0]) == len("upload_9_") + 8
 
 
-def test_process_file_generates_default_doc_id(monkeypatch, tmp_path: Path) -> None:
+def test_process_file_generates_doc_id_from_upload_metadata(monkeypatch, tmp_path: Path) -> None:
     file_path = tmp_path / "demo.pdf"
     file_path.write_bytes(b"%PDF-1.7")
 
@@ -164,7 +170,7 @@ def test_process_file_generates_default_doc_id(monkeypatch, tmp_path: Path) -> N
     )
 
     result = _run(
-        process_file({"path": f" {file_path} ", "user_id": "5"})
+        process_file({"path": str(file_path), "user_id": 5})
     )
 
     assert len(captured_doc_ids) == 1
