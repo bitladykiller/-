@@ -18,7 +18,6 @@ from app.chat.application.document_formats import (
     supports_document_indexing,
 )
 from app.knowledge.application.indexing_service import process_file
-from app.knowledge.application.indexing_contracts import UploadFileInfo
 from app.chat.application.task_queue import TaskStatusPayload, get_task_manager
 
 logger = get_logger(__name__)
@@ -36,32 +35,13 @@ _TASK_NOT_FOUND_DETAIL = "任务不存在: {task_id}"
 _UPLOAD_ACCEPTED_MESSAGE = "文件已上传，后台正在解析索引。请通过 task_id 查询进度。"
 
 
-class StoredUploadFileInfo(UploadFileInfo, total=False):
-    """上传成功后在 API 层和任务层共享的文件元信息。"""
-
-    filename: str
-    original_name: str | None
-    size: int
-    type: str | None
-    user_uuid: str
-    upload_time: str
-    directory: str
-
-
-class UploadAcceptedResponse(StoredUploadFileInfo, total=False):
-    """上传接口的成功返回结构。"""
-
-    task_id: str
-    message: str
-
-
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
     user_id: int = Form(...),
-) -> UploadAcceptedResponse:
+) -> dict[str, object]:
     """上传文档并异步解析索引。"""
-    async def operation() -> UploadAcceptedResponse:
+    async def operation() -> dict[str, object]:
         extension = get_document_extension(file.filename)
         if not supports_document_indexing(extension):
             raise HTTPException(
@@ -92,7 +72,7 @@ async def upload_file(
             )
 
         file_path.write_bytes(content)
-        file_info: StoredUploadFileInfo = {
+        file_info = {
             "filename": file_path.name,
             "original_name": file.filename,
             "size": len(content),

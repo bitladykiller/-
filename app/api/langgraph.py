@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import AsyncIterator, Mapping
-from typing import Any, TypeAlias
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Form
 from fastapi.responses import StreamingResponse
@@ -27,9 +27,6 @@ from app.chat.infrastructure.graph.state import InputState
 
 router = APIRouter(tags=["langgraph"])
 
-_ChunkMetadata: TypeAlias = Mapping[str, Any]
-_GraphStreamChunk: TypeAlias = tuple[Any, _ChunkMetadata]
-GraphStream: TypeAlias = AsyncIterator[_GraphStreamChunk]
 _SSE_MEDIA_TYPE = "text/event-stream"
 _CONVERSATION_ID_HEADER = "X-Conversation-ID"
 _RESEARCH_PLAN_TAG = "research_plan"
@@ -46,7 +43,7 @@ async def langgraph_query(
     """LangGraph Agent 查询接口。"""
     try:
         thread_id = conversation_id or str(uuid.uuid4())
-        graph_stream: GraphStream = graph.astream(
+        graph_stream: AsyncIterator[tuple[Any, Mapping[str, Any]]] = graph.astream(
             input=InputState(messages=[HumanMessage(content=query)]),
             stream_mode=STREAM_MODE_MESSAGES,
             config={
