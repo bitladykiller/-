@@ -32,7 +32,6 @@ ModelRole = Literal[
     "react",
     "react_judge",
 ]
-ModelFactory: TypeAlias = Callable[[float], Any]
 ModelResolver: TypeAlias = Callable[[ModelRole, float], Any]
 
 MODEL_TEMPERATURES: dict[ModelRole, float] = {
@@ -77,34 +76,6 @@ class LazyModelProxy:
 
     def __repr__(self) -> str:
         return self.__str__()
-
-
-def _resolve_model_factory() -> ModelFactory:
-    """根据 `AGENT_SERVICE` 选择当前运行时要用的模型工厂。"""
-    if settings.AGENT_SERVICE == "deepseek":
-        def create_model(temperature: float) -> Any:
-            from langchain_deepseek import ChatDeepSeek
-
-            return ChatDeepSeek(
-                api_key=settings.DEEPSEEK_API_KEY,
-                model_name=settings.DEEPSEEK_MODEL,
-                temperature=temperature,
-            )
-
-        return create_model
-
-    def create_model(temperature: float) -> Any:
-        from langchain_ollama import ChatOllama
-
-        return ChatOllama(
-            model=settings.OLLAMA_AGENT_MODEL,
-            base_url=settings.OLLAMA_BASE_URL,
-            temperature=temperature,
-        )
-
-    return create_model
-
-
 # ================================================================== #
 # 懒初始化模型单例 — 首次访问时创建，避免 import 时连接 LLM 服务
 # ================================================================== #
@@ -121,7 +92,22 @@ def _get_model(name: ModelRole, temperature: float) -> Any:
     """
     if name not in _models_cache:
         logger.info("初始化 LLM 模型 | name=%s | temperature=%s", name, temperature)
-        _models_cache[name] = _resolve_model_factory()(temperature)
+        if settings.AGENT_SERVICE == "deepseek":
+            from langchain_deepseek import ChatDeepSeek
+
+            _models_cache[name] = ChatDeepSeek(
+                api_key=settings.DEEPSEEK_API_KEY,
+                model_name=settings.DEEPSEEK_MODEL,
+                temperature=temperature,
+            )
+        else:
+            from langchain_ollama import ChatOllama
+
+            _models_cache[name] = ChatOllama(
+                model=settings.OLLAMA_AGENT_MODEL,
+                base_url=settings.OLLAMA_BASE_URL,
+                temperature=temperature,
+            )
     return _models_cache[name]
 
 
@@ -183,7 +169,6 @@ __all__ = [
     "GuardrailsDecision",
     "LazyModelProxy",
     "MODEL_TEMPERATURES",
-    "ModelFactory",
     "ModelRole",
     "ReactAnswerCheckOutput",
     "RetrievalPlanOutput",

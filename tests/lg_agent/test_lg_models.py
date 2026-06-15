@@ -21,7 +21,8 @@ class AwaitableDummyModel:
         return _resolve().__await__()
 
 
-def test_resolve_model_factory_uses_provider_specific_client(monkeypatch) -> None:
+def test_get_model_uses_provider_specific_client(monkeypatch) -> None:
+    lg_models._models_cache.clear()
     deepseek_calls: list[dict] = []
     ollama_calls: list[dict] = []
 
@@ -49,10 +50,11 @@ def test_resolve_model_factory_uses_provider_specific_client(monkeypatch) -> Non
     monkeypatch.setattr(lg_models.settings, "OLLAMA_BASE_URL", "http://ollama.local")
 
     monkeypatch.setattr(lg_models.settings, "AGENT_SERVICE", "deepseek")
-    lg_models._resolve_model_factory()(0.3)
+    lg_models._get_model("agent", 0.3)
+    lg_models._models_cache.clear()
 
     monkeypatch.setattr(lg_models.settings, "AGENT_SERVICE", "ollama")
-    lg_models._resolve_model_factory()(0.6)
+    lg_models._get_model("router", 0.6)
 
     assert deepseek_calls == [
         {
@@ -68,23 +70,37 @@ def test_resolve_model_factory_uses_provider_specific_client(monkeypatch) -> Non
             "temperature": 0.6,
         }
     ]
+    lg_models._models_cache.clear()
 
 
 def test_get_model_caches_instances_by_role(monkeypatch) -> None:
     lg_models._models_cache.clear()
-    created: list[tuple[str, float]] = []
+    created: list[dict] = []
 
-    def fake_factory(temperature: float):
-        created.append(("created", temperature))
-        return {"temperature": temperature}
+    class FakeOllama:
+        def __init__(self, **kwargs) -> None:
+            created.append(kwargs)
 
-    monkeypatch.setattr(lg_models, "_resolve_model_factory", lambda: fake_factory)
+    monkeypatch.setitem(
+        sys.modules,
+        "langchain_ollama",
+        SimpleNamespace(ChatOllama=FakeOllama),
+    )
+    monkeypatch.setattr(lg_models.settings, "AGENT_SERVICE", "ollama")
+    monkeypatch.setattr(lg_models.settings, "OLLAMA_AGENT_MODEL", "qwen3")
+    monkeypatch.setattr(lg_models.settings, "OLLAMA_BASE_URL", "http://ollama.local")
 
     first = lg_models._get_model("agent", 0.7)
     second = lg_models._get_model("agent", 0.7)
 
     assert first is second
-    assert created == [("created", 0.7)]
+    assert created == [
+        {
+            "model": "qwen3",
+            "base_url": "http://ollama.local",
+            "temperature": 0.7,
+        }
+    ]
     lg_models._models_cache.clear()
 
 
