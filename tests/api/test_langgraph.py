@@ -1,12 +1,7 @@
 import asyncio
 
 from app.api import langgraph as langgraph_api
-
-
-class FakeChunk:
-    def __init__(self, content: str, additional_kwargs=None) -> None:
-        self.content = content
-        self.additional_kwargs = additional_kwargs or {}
+from langchain_core.messages import AIMessageChunk
 
 
 async def _collect_response_body(response) -> str:
@@ -18,11 +13,10 @@ async def _collect_response_body(response) -> str:
 
 def test_langgraph_query_builds_streaming_response(monkeypatch) -> None:
     async def fake_graph_stream():
-        yield FakeChunk("推荐这款"), {}
-        yield FakeChunk("忽略", {"tool_calls": [{"id": "1"}]}), {}
-        yield FakeChunk("忽略", {}), {"tags": ["research_plan", 1]}
-        yield FakeChunk("正常输出", ["bad"]), {}
-        yield FakeChunk(""), {}
+        yield AIMessageChunk(content="推荐这款"), {}
+        yield AIMessageChunk(content="忽略", additional_kwargs={"tool_calls": [{"id": "1"}]}), {}
+        yield AIMessageChunk(content="忽略"), {"tags": ["research_plan"]}
+        yield AIMessageChunk(content=""), {}
 
     async def scenario() -> None:
         monkeypatch.setattr(langgraph_api.uuid, "uuid4", lambda: "thread-1")
@@ -47,9 +41,6 @@ def test_langgraph_query_builds_streaming_response(monkeypatch) -> None:
         )
 
         assert response.headers["X-Conversation-ID"] == "thread-1"
-        assert await _collect_response_body(response) == (
-            'data: "推荐这款"\n\n'
-            'data: "正常输出"\n\n'
-        )
+        assert await _collect_response_body(response) == 'data: "推荐这款"\n\n'
 
     asyncio.run(scenario())

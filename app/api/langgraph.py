@@ -13,15 +13,14 @@
 
 import json
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator
 from typing import Any
-
-from fastapi import APIRouter, HTTPException, Form
-from fastapi.responses import StreamingResponse
-from langchain_core.messages import HumanMessage
 
 from app.chat.infrastructure.graph.builder import graph
 from app.chat.infrastructure.graph.state import InputState
+from fastapi import APIRouter, Form, HTTPException
+from fastapi.responses import StreamingResponse
+from langchain_core.messages import HumanMessage
 
 router = APIRouter(tags=["langgraph"])
 
@@ -35,7 +34,7 @@ async def langgraph_query(
     """LangGraph Agent 查询接口。"""
     try:
         thread_id = conversation_id or str(uuid.uuid4())
-        graph_stream: AsyncIterator[tuple[Any, Mapping[str, Any]]] = graph.astream(
+        graph_stream: AsyncIterator[tuple[Any, dict[str, Any]]] = graph.astream(
             input=InputState(messages=[HumanMessage(content=query)]),
             stream_mode="messages",
             config={
@@ -48,17 +47,9 @@ async def langgraph_query(
 
         async def response_stream():
             async for chunk, metadata in graph_stream:
-                content = getattr(chunk, "content", None)
-                additional_kwargs = getattr(chunk, "additional_kwargs", {}) or {}
-                if not isinstance(additional_kwargs, Mapping):
-                    additional_kwargs = {}
-
-                raw_tags = metadata.get("tags", [])
-                tags = (
-                    [tag for tag in raw_tags if isinstance(tag, str)]
-                    if isinstance(raw_tags, list)
-                    else []
-                )
+                content = chunk.content
+                additional_kwargs = chunk.additional_kwargs
+                tags = metadata.get("tags", [])
                 if (
                     not content
                     or additional_kwargs.get("tool_calls")

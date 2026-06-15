@@ -11,10 +11,16 @@
 """
 
 import asyncio
+from typing import TYPE_CHECKING
 
 from app.shared.core.config import settings
 from app.shared.core.config_models import ServiceType
 from app.shared.core.logger import get_logger
+
+if TYPE_CHECKING:
+    from app.knowledge.infrastructure.orchestration.memory_middleware import (
+        MemoryMiddleware,
+    )
 
 logger = get_logger(__name__)
 
@@ -31,7 +37,6 @@ async def get_memory_middleware() -> "MemoryMiddleware | None":
             return _memory_middleware_instance
         try:
             import redis.asyncio as redis
-            from pymilvus import MilvusClient
             from app.knowledge.infrastructure.ltm.simple_long_term_memory import (
                 SimpleLongTermMemory,
             )
@@ -44,6 +49,7 @@ async def get_memory_middleware() -> "MemoryMiddleware | None":
             from app.knowledge.infrastructure.stm.redis_short_term_memory import (
                 RedisShortTermMemory,
             )
+            from pymilvus import MilvusClient
 
             if settings.EMBEDDING_TYPE == "ollama":
                 from langchain_ollama import OllamaEmbeddings
@@ -103,7 +109,7 @@ async def close_memory_middleware() -> None:
     except Exception:
         pass
     try:
-        milvus_client = getattr(middleware.milvus_ltm, "milvus_client", None)
+        milvus_client = middleware.milvus_ltm.milvus_client
         if milvus_client:
             milvus_client.close()
     except Exception:

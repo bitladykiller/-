@@ -86,7 +86,7 @@ class MemoryMiddleware:
 
                 memory_state.user_profile = await get_profile(
                     uid,
-                    redis_client=getattr(self.redis_stm, "redis", None),
+                    redis_client=self.redis_stm.redis,
                 )
             except Exception:
                 self._warn_once("user_profile", "[memory] 用户画像读取失败，降级为空画像")
@@ -213,7 +213,7 @@ class MemoryMiddleware:
                         await upsert_profile_data(
                             user_id=uid,
                             profile=profile,
-                            redis_client=getattr(self.redis_stm, "redis", None),
+                            redis_client=self.redis_stm.redis,
                         )
                     except Exception as exc:
                         logger.debug(f"[memory] 用户画像更新失败(user_id={user_id}): {exc}")
