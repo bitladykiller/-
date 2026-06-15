@@ -213,9 +213,7 @@ def create_text2cypher_agent(
             "task": state["task"],
             "statement": state["statement"],
             "errors": state["errors"],
-            "records": records or [
-                {"error": "I couldn't find any relevant information in the database."}
-            ],
+            "records": records,
             "steps": steps,
         }
         return {

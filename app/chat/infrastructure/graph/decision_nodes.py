@@ -46,7 +46,6 @@ from langchain_core.runnables import RunnableConfig
 
 async def analyze_and_route_query(state: AgentState, *, config: RunnableConfig) -> dict:
     """分析用户输入，路由到通用回复或知识库检索。"""
-    _ = config
     messages = build_safe_messages(ROUTER_SYSTEM_PROMPT, state.messages)
     response: Router = await router_model.with_structured_output(Router).ainvoke(
         messages
@@ -92,7 +91,6 @@ async def guardrails_node(
     config: RunnableConfig,
 ) -> dict[str, list[BaseMessage] | str]:
     """守卫节点：检查问题是否在业务范围内，拦截恶意输入。"""
-    _ = config
     question = state.messages[-1].content
     wrapped_question = wrap_user_message(question)
     guardrails_output = await ainvoke_structured_question_output(
@@ -131,7 +129,6 @@ async def retrieval_plan_route(
     config: RunnableConfig,
 ) -> dict:
     """根据问题特征选择最优检索策略。"""
-    _ = config
     question = state.messages[-1].content
     wrapped_question = wrap_user_message(question)
     output = await ainvoke_structured_question_output(

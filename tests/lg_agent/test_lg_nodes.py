@@ -407,3 +407,40 @@ def test_execute_rag_only_builds_summary_from_rag_records(monkeypatch) -> None:
         "progress_message": "正在检索文档...",
         "fallback": "未在文档中找到相关信息～",
     }
+
+
+def test_execute_graph_only_keeps_empty_records_for_summary_fallback(monkeypatch) -> None:
+    retriever = FakeRetriever("kg", {"records": []})
+
+    async def fake_get_retriever(_name: str):
+        return retriever
+
+    async def fake_enrich_question(_state, _config, user_message: str) -> str:
+        assert user_message == "查一下库存"
+        return "查一下库存"
+
+    async def fake_summarize_and_build_response(query, records, **kwargs) -> dict:
+        return {"query": query, "records": records, **kwargs}
+
+    monkeypatch.setattr(lg_retrieval_nodes, "get_retriever", fake_get_retriever)
+    monkeypatch.setattr(lg_retrieval_nodes, "enrich_question", fake_enrich_question)
+    monkeypatch.setattr(
+        lg_retrieval_nodes,
+        "summarize_and_build_response",
+        fake_summarize_and_build_response,
+    )
+
+    result = _run(
+        lg_retrieval_nodes.execute_graph_only(
+            AgentState(messages=[HumanMessage(content="查一下库存")]),
+            config={},
+        )
+    )
+
+    assert retriever.queries == ["查一下库存"]
+    assert result == {
+        "query": "查一下库存",
+        "records": [],
+        "progress_message": "正在查询...",
+        "fallback": "未查询到相关信息，请确认后重新咨询～",
+    }

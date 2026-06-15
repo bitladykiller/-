@@ -110,7 +110,7 @@ def test_create_text2cypher_agent_falls_back_to_generation_when_predefined_miss(
     ]
 
 
-def test_create_text2cypher_agent_uses_fallback_record_when_execute_returns_empty(
+def test_create_text2cypher_agent_keeps_empty_records_when_execute_returns_empty(
     monkeypatch,
 ) -> None:
     llm = object()
@@ -142,8 +142,6 @@ def test_create_text2cypher_agent_uses_fallback_record_when_execute_returns_empt
     result = _run(agent.ainvoke({"task": "查询订单"}))
 
     assert matcher.extract_calls == [("查询订单", "query_a", llm)]
-    assert result["cyphers"][0]["records"] == [
-        {"error": "I couldn't find any relevant information in the database."}
-    ]
+    assert result["cyphers"][0]["records"] == []
     assert result["cyphers"][0]["steps"] == ["predefined_match", "execute_cypher"]
     assert graph.calls == [("MATCH (n) RETURN n", {})]
