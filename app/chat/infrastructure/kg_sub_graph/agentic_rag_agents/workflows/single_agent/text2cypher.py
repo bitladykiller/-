@@ -149,34 +149,6 @@ _VALIDATION_PROMPT = ChatPromptTemplate.from_messages(
     ]
 )
 
-
-def _create_text2cypher_generation_node(
-    llm: BaseChatModel,
-    graph: Neo4jGraph,
-    cypher_example_retriever: CypherExampleRetriever,
-):
-    """构造仅供本工作流使用的 Cypher 生成节点。"""
-    text2cypher_chain = _GENERATION_PROMPT | llm | StrOutputParser()
-
-    async def generate_cypher(state: CypherInputState) -> dict[str, Any]:
-        task = state.get("task", "")
-        normalized_task = task[0] if isinstance(task, list) else task
-        examples = cypher_example_retriever.get_examples(
-            query=normalized_task,
-            k=3,
-        )
-        generated_cypher = await text2cypher_chain.ainvoke(
-            {
-                "question": state.get("task", ""),
-                "fewshot_examples": examples,
-                "schema": graph.schema,
-            }
-        )
-        return {"statement": generated_cypher, "steps": ["generate_cypher"]}
-
-    return generate_cypher
-
-
 def _create_text2cypher_validation_node(
     graph: Neo4jGraph,
     llm: BaseChatModel | None = None,
@@ -335,9 +307,23 @@ def create_text2cypher_agent(
         }
 
     # LLM generation + validation + correction
-    generate_cypher = _create_text2cypher_generation_node(
-        llm=llm, graph=graph, cypher_example_retriever=cypher_example_retriever
-    )
+    async def generate_cypher(state: CypherInputState) -> dict[str, Any]:
+        text2cypher_chain = _GENERATION_PROMPT | llm | StrOutputParser()
+        task = state.get("task", "")
+        normalized_task = task[0] if isinstance(task, list) else task
+        examples = cypher_example_retriever.get_examples(
+            query=normalized_task,
+            k=3,
+        )
+        generated_cypher = await text2cypher_chain.ainvoke(
+            {
+                "question": state.get("task", ""),
+                "fewshot_examples": examples,
+                "schema": graph.schema,
+            }
+        )
+        return {"statement": generated_cypher, "steps": ["generate_cypher"]}
+
     validate_cypher = _create_text2cypher_validation_node(
         llm=llm,
         graph=graph,

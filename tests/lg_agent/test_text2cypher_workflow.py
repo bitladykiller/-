@@ -24,6 +24,16 @@ class FakeMatcher:
         return self.params
 
 
+class FakeExampleRetriever:
+    def __init__(self, examples: str) -> None:
+        self.examples = examples
+        self.calls: list[tuple[str, int]] = []
+
+    def get_examples(self, query: str, k: int = 5) -> str:
+        self.calls.append((query, k))
+        return self.examples
+
+
 class FakeGraph:
     schema = "fake-schema"
 
@@ -56,23 +66,14 @@ def test_create_text2cypher_agent_falls_back_to_generation_when_predefined_miss(
 ) -> None:
     matcher = FakeMatcher(matches=[])
     graph = FakeGraph(query_results=[[{"id": 1}]])
-    generation_calls: list[dict] = []
+    example_retriever = FakeExampleRetriever("Question: 样例\nCypher: MATCH example")
+    generation_inputs: list[object] = []
 
     monkeypatch.setattr(
         text2cypher,
         "create_vector_query_matcher",
         lambda *_args, **_kwargs: matcher,
     )
-
-    def fake_generation_node(*_args, **_kwargs):
-        async def generate(state):
-            generation_calls.append(state)
-            return {
-                "statement": "MATCH (n) RETURN n",
-                "steps": ["generate_cypher"],
-            }
-
-        return generate
 
     def fake_validation_node(*_args, **_kwargs):
         async def validate(state):
@@ -88,26 +89,26 @@ def test_create_text2cypher_agent_falls_back_to_generation_when_predefined_miss(
 
     monkeypatch.setattr(
         text2cypher,
-        "_create_text2cypher_generation_node",
-        fake_generation_node,
-    )
-    monkeypatch.setattr(
-        text2cypher,
         "_create_text2cypher_validation_node",
         fake_validation_node,
     )
 
+    def fake_llm(prompt_value):
+        generation_inputs.append(prompt_value)
+        return "MATCH (n) RETURN n"
+
     agent = text2cypher.create_text2cypher_agent(
-        llm=object(),
+        llm=fake_llm,
         graph=graph,
-        cypher_example_retriever=object(),
+        cypher_example_retriever=example_retriever,
         predefined_cypher_dict={"query_a": "MATCH (n) RETURN n"},
     )
 
     result = _run(agent.ainvoke({"task": ["查询订单"]}))
 
     assert matcher.match_calls == [("查询订单", 1)]
-    assert len(generation_calls) == 1
+    assert example_retriever.calls == [("查询订单", 3)]
+    assert len(generation_inputs) == 1
     assert result["cyphers"][0]["statement"] == "MATCH (n) RETURN n"
     assert result["cyphers"][0]["records"] == [{"id": 1}]
     assert result["cyphers"][0]["steps"] == [
@@ -137,11 +138,6 @@ def test_create_text2cypher_agent_uses_fallback_record_when_execute_returns_empt
         text2cypher,
         "create_vector_query_matcher",
         lambda *_args, **_kwargs: matcher,
-    )
-    monkeypatch.setattr(
-        text2cypher,
-        "_create_text2cypher_generation_node",
-        lambda *_args, **_kwargs: _unexpected_node("should not generate"),
     )
     monkeypatch.setattr(
         text2cypher,
