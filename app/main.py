@@ -12,7 +12,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Protocol
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,16 +33,10 @@ setup_logging()
 logger = get_logger(__name__)
 
 
-class InfoLogger(Protocol):
-    """入口装配 helper 所需的最小日志接口。"""
-
-    def info(self, msg: str, *args: object, **kwargs: object) -> object: ...
-
-
 def build_lifespan(
-    runtime_logger: InfoLogger,
+    runtime_logger: Any,
     *,
-    warm_up: Callable[[InfoLogger], Awaitable[None]] | None = None,
+    warm_up: Callable[[Any], Awaitable[None]] | None = None,
     close_runtime: Callable[[], Awaitable[None]] | None = None,
 ) -> Callable[[FastAPI], object]:
     """构造 FastAPI lifespan 处理器。"""
@@ -75,9 +69,10 @@ def build_lifespan(
 
     return lifespan
 
+
 def create_app(
     *,
-    runtime_logger: InfoLogger = logger,
+    runtime_logger: Any = logger,
     app_api_router: APIRouter = api_router,
     static_dir: Path = STATIC_DIR,
     health_status: str = HEALTH_STATUS,
@@ -130,7 +125,6 @@ app = create_app()
 __all__ = [
     "APP_TITLE",
     "HEALTH_STATUS",
-    "InfoLogger",
     "OPEN_CORS_HEADERS",
     "OPEN_CORS_METHODS",
     "OPEN_CORS_ORIGINS",

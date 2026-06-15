@@ -55,14 +55,6 @@ TaskCoroutine: TypeAlias = Coroutine[Any, Any, TaskResult]
 TaskCallable: TypeAlias = Callable[..., TaskCoroutine]
 
 
-class TaskLogger(Protocol):
-    """任务队列日志对象的最小接口。"""
-
-    def info(self, msg: str, *args: Any, **kwargs: Any) -> Any: ...
-
-    def error(self, msg: str, *args: Any, **kwargs: Any) -> Any: ...
-
-
 class TaskStore(Protocol):
     """任务状态存储后端的最小接口。"""
 
@@ -133,7 +125,7 @@ async def write_task_status(
 
 async def run_task_with_status_updates(
     redis_client: TaskStore,
-    logger: TaskLogger,
+    logger: Any,
     task_id: str,
     coro_func: TaskCallable,
     *args: Any,

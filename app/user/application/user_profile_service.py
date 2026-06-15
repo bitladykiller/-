@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Protocol
+from typing import Any
 
 from app.shared.core.database import AsyncSessionLocal
 from app.knowledge.domain.schemas import UserProfileData, UserProfilePayload
@@ -30,19 +30,9 @@ CACHE_TTL = 1800  # 30 分钟
 CACHE_PREFIX = "user:profile"
 
 
-class ProfileCache(Protocol):
-    """用户画像缓存客户端的最小接口。"""
-
-    async def get(self, key: str) -> str | bytes | None: ...
-
-    async def setex(self, key: str, ttl: int, value: str) -> Any: ...
-
-    async def delete(self, key: str) -> Any: ...
-
-
 async def get_profile(
     user_id: int,
-    redis_client: ProfileCache | None = None,
+    redis_client: Any | None = None,
 ) -> UserProfilePayload:
     """获取用户画像，优先读 Redis，未命中再查 MySQL。"""
     cache_key = f"{CACHE_PREFIX}:{user_id}"
@@ -70,7 +60,7 @@ async def get_profile(
 async def upsert_profile_data(
     user_id: int,
     profile: UserProfileData,
-    redis_client: ProfileCache | None = None,
+    redis_client: Any | None = None,
 ) -> bool:
     """批量回写结构化画像，统一处理主字段和 facts。"""
     if not profile:
@@ -97,7 +87,6 @@ async def upsert_profile_data(
 __all__ = [
     "CACHE_PREFIX",
     "CACHE_TTL",
-    "ProfileCache",
     "get_profile",
     "upsert_profile_data",
 ]
