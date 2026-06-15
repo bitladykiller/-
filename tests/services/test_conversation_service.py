@@ -1,9 +1,8 @@
 import asyncio
 from datetime import datetime
 
-import pytest
-
 import app.chat.application.conversation_service as conversation_service
+import pytest
 from app.user.infrastructure.models.conversation import Conversation, DialogueType
 
 
