@@ -1,6 +1,7 @@
 import asyncio
 
 from app.api import langgraph as langgraph_api
+from fastapi import HTTPException
 from langchain_core.messages import AIMessageChunk
 
 
@@ -42,5 +43,27 @@ def test_langgraph_query_builds_streaming_response(monkeypatch) -> None:
 
         assert response.headers["X-Conversation-ID"] == "thread-1"
         assert await _collect_response_body(response) == 'data: "推荐这款"\n\n'
+
+    asyncio.run(scenario())
+
+
+def test_langgraph_query_wraps_unexpected_setup_error(monkeypatch) -> None:
+    def broken_astream(**_kwargs):
+        raise RuntimeError("boom")
+
+    async def scenario() -> None:
+        monkeypatch.setattr(langgraph_api.graph, "astream", broken_astream)
+
+        try:
+            await langgraph_api.langgraph_query(
+                query="空调推荐",
+                user_id=3,
+                conversation_id="thread-1",
+            )
+        except HTTPException as exc:
+            assert exc.status_code == 500
+            assert exc.detail == "Internal server error"
+        else:
+            raise AssertionError("expected HTTPException")
 
     asyncio.run(scenario())

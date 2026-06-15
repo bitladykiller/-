@@ -16,13 +16,16 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
+from app.api.route_utils import run_route_action
 from app.chat.infrastructure.graph.builder import graph
 from app.chat.infrastructure.graph.state import InputState
-from fastapi import APIRouter, Form, HTTPException
+from app.shared.core.logger import get_logger
+from fastapi import APIRouter, Form
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 
 router = APIRouter(tags=["langgraph"])
+logger = get_logger(__name__)
 
 
 @router.post("/langgraph/query")
@@ -32,7 +35,7 @@ async def langgraph_query(
     conversation_id: str | None = Form(None),
 ) -> StreamingResponse:
     """LangGraph Agent 查询接口。"""
-    try:
+    async def operation() -> StreamingResponse:
         thread_id = conversation_id or str(uuid.uuid4())
         graph_stream: AsyncIterator[tuple[Any, dict[str, Any]]] = graph.astream(
             input=InputState(messages=[HumanMessage(content=query)]),
@@ -61,5 +64,11 @@ async def langgraph_query(
         response = StreamingResponse(response_stream(), media_type="text/event-stream")
         response.headers["X-Conversation-ID"] = thread_id
         return response
-    except Exception:
-        raise HTTPException(status_code=500, detail="Internal server error")
+
+    return await run_route_action(
+        "langgraph_query",
+        operation(),
+        logger=logger,
+        user_id=user_id,
+        conversation_id=conversation_id,
+    )
