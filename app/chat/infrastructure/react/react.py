@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
-from typing import Any, cast
+from typing import Any
 
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
@@ -67,38 +67,6 @@ async def get_react_subgraph(
             if _react_subgraph is None:
                 _react_subgraph = await builder()
     return _react_subgraph
-
-
-async def _judge_react_answer(
-    question: str,
-    result_messages: list[Any],
-    candidate_answer: str,
-) -> ReactAnswerCheckOutput:
-    """调用裁判模型判断候选答案是否已经足够。"""
-    transcript_lines: list[str] = []
-    for message in result_messages[-_REACT_TRANSCRIPT_WINDOW:]:
-        role = getattr(message, "type", None) or getattr(message, "role", "assistant")
-        content = getattr(message, "content", "")
-        if content:
-            transcript_lines.append(f"[{role}] {content}")
-    transcript = "\n".join(transcript_lines)
-    check_messages = [
-        {"role": "system", "content": REACT_ANSWER_CHECK_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                f"用户问题：{question}\n\n"
-                f"ReAct 过程记录：\n{transcript}\n\n"
-                f"当前候选答案：{candidate_answer}"
-            ),
-        },
-    ]
-    return cast(
-        ReactAnswerCheckOutput,
-        await react_judge_model.with_structured_output(
-            ReactAnswerCheckOutput
-        ).ainvoke(check_messages),
-    )
 
 
 async def _build_react_subgraph() -> CompiledStateGraph:
@@ -195,7 +163,32 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
         if _REACT_STEP_EXHAUSTED_MARKER in last_answer.lower():
             insufficiency_reason = REACT_STEP_EXHAUSTED_REASON
         else:
-            check = await _judge_react_answer(q, result_messages, last_answer)
+            transcript_lines: list[str] = []
+            for message in result_messages[-_REACT_TRANSCRIPT_WINDOW:]:
+                role = getattr(message, "type", None) or getattr(
+                    message,
+                    "role",
+                    "assistant",
+                )
+                content = getattr(message, "content", "")
+                if content:
+                    transcript_lines.append(f"[{role}] {content}")
+            transcript = "\n".join(transcript_lines)
+            check = await react_judge_model.with_structured_output(
+                ReactAnswerCheckOutput
+            ).ainvoke(
+                [
+                    {"role": "system", "content": REACT_ANSWER_CHECK_PROMPT},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"用户问题：{q}\n\n"
+                            f"ReAct 过程记录：\n{transcript}\n\n"
+                            f"当前候选答案：{last_answer}"
+                        ),
+                    },
+                ]
+            )
             if check.decision == "sufficient":
                 return {
                     "messages": [
