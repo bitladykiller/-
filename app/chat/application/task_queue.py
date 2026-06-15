@@ -19,7 +19,7 @@ from collections.abc import Callable
 from collections.abc import Coroutine
 from datetime import datetime
 from enum import Enum
-from typing import Any, Protocol, TypeAlias, TypedDict
+from typing import Any, Protocol, TypedDict
 
 import redis.asyncio as aioredis
 
@@ -49,10 +49,6 @@ class TaskStatusPayload(TypedDict, total=False):
     updated_at: str
     result: Any
     error: str
-
-TaskResult: TypeAlias = Any
-TaskCoroutine: TypeAlias = Coroutine[Any, Any, TaskResult]
-TaskCallable: TypeAlias = Callable[..., TaskCoroutine]
 
 
 class TaskStore(Protocol):
@@ -127,7 +123,7 @@ async def run_task_with_status_updates(
     redis_client: TaskStore,
     logger: Any,
     task_id: str,
-    coro_func: TaskCallable,
+    coro_func: Callable[..., Coroutine[Any, Any, Any]],
     *args: Any,
     **kwargs: Any,
 ) -> None:
@@ -162,7 +158,7 @@ class _TaskManager:
 
     async def submit(
         self,
-        coro_func: TaskCallable,
+        coro_func: Callable[..., Coroutine[Any, Any, Any]],
         *args: Any,
         **kwargs: Any,
     ) -> str:

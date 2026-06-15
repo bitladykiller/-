@@ -10,18 +10,17 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import Any
 
 from app.shared.core.logger import get_logger
 
 logger = get_logger(__name__)
-PromptMapping: TypeAlias = dict[str, str]
 
 
 def load_prompts_from_yaml(
     logger: Any,
     yaml_path: Path,
-) -> PromptMapping:
+) -> dict[str, str]:
     """从指定 YAML 文件加载 Prompt 覆盖值。"""
     if not yaml_path.exists():
         logger.info("prompts.yaml 不存在，使用内置默认 Prompt")
@@ -166,7 +165,7 @@ _DEFAULT_REACT_ANSWER_CHECK = """你是 ReAct 最终答案校验器，负责判�
 只输出结构化结果，不要输出额外解释。
 """
 
-DEFAULT_PROMPTS: PromptMapping = {
+DEFAULT_PROMPTS: dict[str, str] = {
     "router_system": _DEFAULT_ROUTER_SYSTEM,
     "retrieval_plan_router": _DEFAULT_RETRIEVAL_PLAN_ROUTER,
     "general_query": _DEFAULT_GENERAL_QUERY,

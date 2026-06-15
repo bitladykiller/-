@@ -5,7 +5,9 @@
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 import uuid
 
 from app.chat.application.document_formats import (
@@ -13,9 +15,7 @@ from app.chat.application.document_formats import (
     supports_document_indexing,
 )
 from app.knowledge.application.indexing_contracts import (
-    DocIDFactory,
     IndexingResult,
-    PipelineLoader,
     UploadFileInfo,
 )
 
@@ -44,8 +44,11 @@ def _default_doc_id_factory(user_id: int) -> str:
 async def process_file(
     file_info: UploadFileInfo,
     *,
-    pipeline_loader: PipelineLoader = _default_pipeline_loader,
-    doc_id_factory: DocIDFactory = _default_doc_id_factory,
+    pipeline_loader: Callable[
+        [],
+        tuple[Callable[..., list[dict[str, Any]]], Any],
+    ] = _default_pipeline_loader,
+    doc_id_factory: Callable[[int], str] = _default_doc_id_factory,
 ) -> IndexingResult:
     """处理上传文件并写入检索索引。"""
     raw_path = file_info.get("path")
