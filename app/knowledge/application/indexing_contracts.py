@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any, Protocol, TypeAlias, TypedDict
 
 ChunkRecord: TypeAlias = dict[str, Any]
@@ -14,13 +13,6 @@ class UploadFileInfo(TypedDict, total=False):
     """上传接口传给索引服务的最小字段契约。"""
 
     path: str
-    user_id: int
-
-
-class ResolvedUploadSource(TypedDict):
-    """索引服务内部使用的规范化源文件信息。"""
-
-    path: Path
     user_id: int
 
 
@@ -57,6 +49,5 @@ __all__ = [
     "IndexingResult",
     "ParsedChunks",
     "PipelineLoader",
-    "ResolvedUploadSource",
     "UploadFileInfo",
 ]

@@ -17,9 +17,7 @@ from app.chat.application.document_formats import (
     get_document_extension,
     supports_document_indexing,
 )
-from app.knowledge.application.indexing_service import (
-    IndexingService,
-)
+from app.knowledge.application.indexing_service import process_file
 from app.knowledge.application.indexing_contracts import UploadFileInfo
 from app.chat.application.task_queue import TaskStatusPayload, get_task_manager
 
@@ -106,7 +104,7 @@ async def upload_file(
             "directory": upload_dir.as_posix(),
         }
         task_manager = await get_task_manager()
-        task_id = await task_manager.submit(IndexingService().process_file, file_info)
+        task_id = await task_manager.submit(process_file, file_info)
         return {
             **file_info,
             "task_id": task_id,

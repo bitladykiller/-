@@ -136,7 +136,9 @@ def test_upload_file_writes_file_and_returns_stable_metadata(
         "original_name": "manual.pdf",
         "size": len(b"%PDF-1.7"),
         "type": "application/pdf",
-        "path": (tmp_path / "user-uuid" / "20260102_030405" / "manual_20260102_030405.pdf").as_posix(),
+        "path": (
+            tmp_path / "user-uuid" / "20260102_030405" / "manual_20260102_030405.pdf"
+        ).as_posix(),
         "user_id": 3,
         "user_uuid": "user-uuid",
         "upload_time": "20260102_030405",
@@ -150,10 +152,11 @@ def test_upload_file_writes_file_and_returns_stable_metadata(
     }
     assert len(manager.submit_calls) == 1
     submitted_func, submitted_args = manager.submit_calls[0]
-    assert submitted_func.__self__.__class__ is upload_api.IndexingService
-    assert submitted_func.__name__ == "process_file"
+    assert submitted_func is upload_api.process_file
     assert submitted_args == (file_info,)
-    assert (tmp_path / "user-uuid" / "20260102_030405" / "manual_20260102_030405.pdf").read_bytes() == b"%PDF-1.7"
+    assert (
+        tmp_path / "user-uuid" / "20260102_030405" / "manual_20260102_030405.pdf"
+    ).read_bytes() == b"%PDF-1.7"
 
 
 def test_get_upload_status_or_raise_returns_status_and_raises_404(monkeypatch) -> None:

@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 
-from app.knowledge.application.indexing_service import IndexingService
+from app.knowledge.application.indexing_service import process_file
 
 
 class FakeChunkIndexer:
@@ -20,8 +20,7 @@ def _run(awaitable):
 
 
 def test_process_file_returns_error_for_missing_source() -> None:
-    service = IndexingService()
-    result = _run(service.process_file({"path": "", "user_id": 1}))
+    result = _run(process_file({"path": "", "user_id": 1}))
 
     assert result == {"status": "error", "message": "文件不存在"}
 
@@ -30,10 +29,7 @@ def test_process_file_returns_error_for_unsupported_extension(tmp_path: Path) ->
     file_path = tmp_path / "demo.txt"
     file_path.write_text("hello", encoding="utf-8")
 
-    service = IndexingService()
-    result = _run(
-        service.process_file({"path": str(file_path), "user_id": 1})
-    )
+    result = _run(process_file({"path": str(file_path), "user_id": 1}))
 
     assert result == {"status": "error", "message": "不支持的文件类型: .txt"}
 
@@ -45,9 +41,8 @@ def test_process_file_returns_warning_when_dependency_missing(tmp_path: Path) ->
     def raise_import_error():
         raise ImportError("rag_doc_parser missing")
 
-    service = IndexingService(pipeline_loader=raise_import_error)
     file_info = {"path": str(file_path), "user_id": 3}
-    result = _run(service.process_file(file_info))
+    result = _run(process_file(file_info, pipeline_loader=raise_import_error))
 
     assert result == {
         "status": "warning",
@@ -65,12 +60,12 @@ def test_process_file_returns_empty_document_result(tmp_path: Path) -> None:
     def load_pipeline():
         return lambda path, *, doc_id: [], indexer
 
-    service = IndexingService(
-        pipeline_loader=load_pipeline,
-        doc_id_factory=lambda user_id: f"doc-{user_id}",
-    )
     result = _run(
-        service.process_file({"path": str(file_path), "user_id": 8})
+        process_file(
+            {"path": str(file_path), "user_id": 8},
+            pipeline_loader=load_pipeline,
+            doc_id_factory=lambda user_id: f"doc-{user_id}",
+        )
     )
 
     assert result == {
@@ -90,12 +85,12 @@ def test_process_file_indexes_parsed_chunks(tmp_path: Path) -> None:
     def load_pipeline():
         return lambda path, *, doc_id: chunks, indexer
 
-    service = IndexingService(
-        pipeline_loader=load_pipeline,
-        doc_id_factory=lambda user_id: f"doc-{user_id}",
-    )
     result = _run(
-        service.process_file({"path": f"  {file_path}  ", "user_id": "9"})
+        process_file(
+            {"path": f"  {file_path}  ", "user_id": "9"},
+            pipeline_loader=load_pipeline,
+            doc_id_factory=lambda user_id: f"doc-{user_id}",
+        )
     )
 
     assert indexer.indexed_chunks == chunks
@@ -121,9 +116,11 @@ def test_process_file_uses_default_doc_id_factory(tmp_path: Path) -> None:
 
         return parse_document, indexer
 
-    service = IndexingService(pipeline_loader=load_pipeline)
     result = _run(
-        service.process_file({"path": f" {file_path} ", "user_id": "5"})
+        process_file(
+            {"path": f" {file_path} ", "user_id": "5"},
+            pipeline_loader=load_pipeline,
+        )
     )
 
     assert len(captured_doc_ids) == 1

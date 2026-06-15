@@ -27,84 +27,76 @@ _EMPTY_DOCUMENT_MESSAGE = "文档无有效内容"
 _MISSING_DEPENDENCY_MESSAGE = "rag_doc_parser 模块未安装，文档已保存但未索引"
 
 
-class IndexingService:
-    """文档索引服务。"""
+def _default_pipeline_loader() -> tuple:
+    """延迟导入解析函数和检索索引器，降低模块 import 成本。"""
+    from rag_doc_parser.pipeline import parse_document
+    from rag_doc_parser.retrieval.config import RetrievalConfig
+    from rag_doc_parser.retrieval.hybrid_search import HybridSearcher
 
-    def __init__(
-        self,
-        *,
-        pipeline_loader: PipelineLoader | None = None,
-        doc_id_factory: DocIDFactory | None = None,
-    ) -> None:
-        if pipeline_loader is None:
-            def default_pipeline_loader() -> tuple:
-                """延迟导入解析函数和检索索引器，降低模块 import 成本。"""
-                from rag_doc_parser.pipeline import parse_document
-                from rag_doc_parser.retrieval.config import RetrievalConfig
-                from rag_doc_parser.retrieval.hybrid_search import HybridSearcher
+    return parse_document, HybridSearcher(RetrievalConfig())
 
-                return parse_document, HybridSearcher(RetrievalConfig())
 
-            self._pipeline_loader = default_pipeline_loader
-        else:
-            self._pipeline_loader = pipeline_loader
+def _default_doc_id_factory(user_id: int) -> str:
+    """生成上传文档默认 doc_id。"""
+    return f"upload_{user_id}_{uuid.uuid4().hex[:8]}"
 
-        if doc_id_factory is None:
-            self._doc_id_factory = lambda user_id: f"upload_{user_id}_{uuid.uuid4().hex[:8]}"
-        else:
-            self._doc_id_factory = doc_id_factory
 
-    async def process_file(self, file_info: UploadFileInfo) -> IndexingResult:
-        """处理上传文件并写入检索索引。"""
-        raw_path = file_info.get("path")
-        if isinstance(raw_path, Path):
-            path = raw_path
-        elif isinstance(raw_path, str) and raw_path.strip():
-            path = Path(raw_path.strip())
-        else:
-            path = None
+async def process_file(
+    file_info: UploadFileInfo,
+    *,
+    pipeline_loader: PipelineLoader = _default_pipeline_loader,
+    doc_id_factory: DocIDFactory = _default_doc_id_factory,
+) -> IndexingResult:
+    """处理上传文件并写入检索索引。"""
+    raw_path = file_info.get("path")
+    if isinstance(raw_path, Path):
+        path = raw_path
+    elif isinstance(raw_path, str) and raw_path.strip():
+        path = Path(raw_path.strip())
+    else:
+        path = None
 
-        raw_user_id = file_info.get("user_id", 0)
-        if isinstance(raw_user_id, int) and not isinstance(raw_user_id, bool):
-            user_id = raw_user_id
-        elif isinstance(raw_user_id, str) and raw_user_id.isdigit():
-            user_id = int(raw_user_id)
-        else:
-            user_id = 0
+    raw_user_id = file_info.get("user_id", 0)
+    if isinstance(raw_user_id, int) and not isinstance(raw_user_id, bool):
+        user_id = raw_user_id
+    elif isinstance(raw_user_id, str) and raw_user_id.isdigit():
+        user_id = int(raw_user_id)
+    else:
+        user_id = 0
 
-        if path is None or not path.exists():
-            return {"status": STATUS_ERROR, "message": FILE_NOT_FOUND_MESSAGE}
+    if path is None or not path.exists():
+        return {"status": STATUS_ERROR, "message": FILE_NOT_FOUND_MESSAGE}
 
-        ext = get_document_extension(path)
-        if not supports_document_indexing(ext):
-            return {"status": STATUS_ERROR, "message": f"不支持的文件类型: {ext}"}
+    ext = get_document_extension(path)
+    if not supports_document_indexing(ext):
+        return {"status": STATUS_ERROR, "message": f"不支持的文件类型: {ext}"}
 
-        try:
-            parse_document, searcher = self._pipeline_loader()
-            doc_id = self._doc_id_factory(user_id)
-            chunks = parse_document(str(path), doc_id=doc_id)
-            if not chunks:
-                return {
-                    "status": STATUS_SUCCESS,
-                    "chunks": 0,
-                    "message": _EMPTY_DOCUMENT_MESSAGE,
-                }
-
-            count = await searcher.index(chunks)
+    try:
+        parse_document, searcher = pipeline_loader()
+        doc_id = doc_id_factory(user_id)
+        chunks = parse_document(str(path), doc_id=doc_id)
+        if not chunks:
             return {
                 "status": STATUS_SUCCESS,
-                "chunks": count,
-                "doc_id": doc_id,
-                "source_file": str(path),
+                "chunks": 0,
+                "message": _EMPTY_DOCUMENT_MESSAGE,
             }
-        except ImportError:
-            return {
-                "status": _STATUS_WARNING,
-                "message": _MISSING_DEPENDENCY_MESSAGE,
-                "file_info": file_info,
-            }
-        except Exception as exc:
-            return {"status": STATUS_ERROR, "message": str(exc)}
+
+        count = await searcher.index(chunks)
+        return {
+            "status": STATUS_SUCCESS,
+            "chunks": count,
+            "doc_id": doc_id,
+            "source_file": str(path),
+        }
+    except ImportError:
+        return {
+            "status": _STATUS_WARNING,
+            "message": _MISSING_DEPENDENCY_MESSAGE,
+            "file_info": file_info,
+        }
+    except Exception as exc:
+        return {"status": STATUS_ERROR, "message": str(exc)}
 
 
-__all__ = ["IndexingService"]
+__all__ = ["process_file"]
