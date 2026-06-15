@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any, AsyncContextManager, TypeVar, TypedDict
+from typing import Any, AsyncContextManager, TypedDict
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +20,6 @@ from app.shared.core.logger import format_log_context, get_logger
 from app.user.infrastructure.models.conversation import Conversation, DialogueType
 
 logger = get_logger(__name__)
-OperationResult = TypeVar("OperationResult")
 _DEFAULT_CONVERSATION_TITLE = "新会话"
 
 
@@ -38,10 +37,10 @@ async def run_db_operation(
     session_factory: Callable[[], AsyncContextManager[AsyncSession]],
     logger: Any,
     action_name: str,
-    operation: Callable[..., Awaitable[OperationResult]],
+    operation: Callable[..., Awaitable[Any]],
     *operation_args: object,
     **context: object,
-) -> OperationResult:
+) -> Any:
     """统一封装数据库 session 生命周期和异常日志。"""
     try:
         async with session_factory() as db:

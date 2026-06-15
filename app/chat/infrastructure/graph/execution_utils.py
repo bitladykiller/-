@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Any
 
 from langchain_core.messages import AIMessage
 from langchain_core.output_parsers import StrOutputParser
@@ -52,22 +52,13 @@ _SUMMARIZE_PROMPT = ChatPromptTemplate.from_messages(
 )
 
 
-class RetrieverResult(TypedDict, total=False):
-    """检索器标准输出结构。"""
-
-    task: str
-    records: list[dict[str, Any]]
-    errors: list[Any]
-    steps: list[Any]
-
-
-def records_from_result(result: RetrieverResult) -> list[dict[str, Any]]:
+def records_from_result(result: dict[str, Any]) -> list[dict[str, Any]]:
     """从统一 Retriever 结果中安全提取 records 列表。"""
     records = result.get("records", [])
     return records if isinstance(records, list) else []
 
 
-def merge_retriever_records(*results: RetrieverResult) -> list[dict[str, Any]]:
+def merge_retriever_records(*results: dict[str, Any]) -> list[dict[str, Any]]:
     """按顺序合并多个检索结果中的 records。"""
     merged_records: list[dict[str, Any]] = []
     for result in results:
@@ -78,7 +69,7 @@ def merge_retriever_records(*results: RetrieverResult) -> list[dict[str, Any]]:
 async def search_retriever(
     retriever: Retriever | None,
     query: str,
-) -> RetrieverResult:
+) -> dict[str, Any]:
     """执行检索；检索器缺失时返回空结果占位。"""
     if retriever is None:
         return {

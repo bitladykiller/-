@@ -157,14 +157,6 @@ def has_dedup_match(
     return max_score >= similarity_threshold
 
 
-class _HitUpdatePlan(TypedDict):
-    """长期记忆命中后的更新计划。"""
-
-    hit_count: int
-    last_hit_at: int
-    update_record: MilvusRecord
-
-
 def build_new_memory_insert_record(
     *,
     tenant_id: str,
@@ -193,7 +185,7 @@ def build_hit_update_plan(
     memory: LongTermMemory,
     update_config: dict[str, Any],
     now_ts: int,
-) -> _HitUpdatePlan:
+) -> dict[str, Any]:
     """根据命中更新策略生成 partial upsert payload。"""
     last_hit_at = now_ts if update_config["update_last_hit_at"] else memory.last_hit_at
     hit_count = (
