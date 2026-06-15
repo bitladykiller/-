@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Literal, Optional, Set, Union
+from typing import Dict, List, Literal, Set
 
 from .models import CypherValidationTask, Neo4jStructuredSchemaPropertyNumber
 
@@ -48,16 +48,29 @@ def validate_property_names_with_enum(
     node_or_rel: ValidationScope,
 ) -> List[str]:
     """验证属性名是否存在于 schema 枚举中。"""
+    _assert_validation_scope(node_or_rel)
+
     errors: list[str] = []
     for task in tasks:
-        error = _validate_property_with_enum(
-            enum_dict=enum_dict,
-            labels_or_types=task.parsed_labels_or_types,
-            node_or_rel=node_or_rel,
-            property_name=task.property_name,
-        )
-        if error:
-            errors.append(error)
+        labels_or_types = task.parsed_labels_or_types
+        if len(labels_or_types) > 1:
+            raise ValueError(
+                f"Invalid combination of `labels_or_types` and `and_or`: {labels_or_types} | None"
+            )
+
+        invalid_labels_or_types: list[str] = []
+        for label_or_type in labels_or_types:
+            enum = enum_dict.get(label_or_type)
+            if enum is None:
+                continue
+            if task.property_name not in enum:
+                invalid_labels_or_types.append(label_or_type)
+
+        if invalid_labels_or_types:
+            errors.append(
+                f"{node_or_rel} {labels_or_types} does not have the property "
+                f"{task.property_name} in the graph database."
+            )
     return errors
 
 
@@ -67,17 +80,34 @@ def validate_property_values_with_enum(
     node_or_rel: ValidationScope,
 ) -> List[str]:
     """验证字符串属性值是否落在 schema 枚举范围内。"""
+    _assert_validation_scope(node_or_rel)
+
     errors: list[str] = []
     for task in tasks:
-        error = _validate_property_value_with_enum(
-            enum_dict=enum_dict,
-            labels_or_types=task.parsed_labels_or_types,
-            node_or_rel=node_or_rel,
-            property_name=task.property_name,
-            property_value=str(task.property_value),
-        )
-        if error:
-            errors.append(error)
+        labels_or_types = task.parsed_labels_or_types
+        if len(labels_or_types) > 1:
+            raise ValueError(
+                f"Invalid combination of `labels_or_types` and `and_or`: {labels_or_types} | None"
+            )
+
+        invalid_labels_or_types: list[str] = []
+        for label_or_type in labels_or_types:
+            props = enum_dict.get(label_or_type)
+            if props is None:
+                continue
+
+            enum = props.get(task.property_name)
+            if enum is None:
+                continue
+
+            if str(task.property_value) not in enum:
+                invalid_labels_or_types.append(label_or_type)
+
+        if invalid_labels_or_types:
+            errors.append(
+                f"{node_or_rel} {labels_or_types} with property {task.property_name} = "
+                f"{task.property_value} not found in graph database."
+            )
     return errors
 
 
@@ -87,166 +117,36 @@ def validate_property_values_with_range(
     node_or_rel: ValidationScope,
 ) -> List[str]:
     """验证数值属性是否落在 schema 范围内。"""
+    _assert_validation_scope(node_or_rel)
+
     errors: list[str] = []
     for task in tasks:
-        error = _validate_property_value_with_range(
-            enum_dict=enum_dict,
-            labels_or_types=task.parsed_labels_or_types,
-            node_or_rel=node_or_rel,
-            property_name=task.property_name,
-            property_value=task.property_value,
-        )
-        if error:
-            errors.append(error)
+        invalid_labels_or_types: list[tuple[str, Neo4jStructuredSchemaPropertyNumber]] = []
+        labels_or_types = task.parsed_labels_or_types
+
+        for label_or_type in labels_or_types:
+            props = enum_dict.get(label_or_type)
+            if props is None:
+                continue
+
+            prop_range = props.get(task.property_name)
+            if prop_range is None:
+                continue
+
+            if (
+                float(task.property_value) < prop_range.min
+                or float(task.property_value) > prop_range.max
+            ):
+                invalid_labels_or_types.append((label_or_type, prop_range))
+
+        if invalid_labels_or_types:
+            example_label, example_prop = invalid_labels_or_types[0]
+            errors.append(
+                f"{node_or_rel} {example_label} has property {task.property_name} = "
+                f"{task.property_value} which is out of range "
+                f"{example_prop.min} to {example_prop.max} in graph database."
+            )
     return errors
-
-
-def _validate_property_value_with_enum(
-    enum_dict: Dict[str, Dict[str, Set[str]]],
-    labels_or_types: List[str],
-    property_name: str,
-    node_or_rel: ValidationScope,
-    property_value: str,
-    and_or: Optional[Literal["and", "or"]] = None,
-) -> Optional[str]:
-    """验证属性值是否存在于 schema 提供的字符串枚举中。"""
-    _assert_validation_scope(node_or_rel)
-
-    if and_or is None and len(labels_or_types) > 1:
-        raise ValueError(
-            f"Invalid combination of `labels_or_types` and `and_or`: {labels_or_types} | {and_or}"
-        )
-
-    invalid_labels_or_types: list[str] = []
-    for label_or_type in labels_or_types:
-        props = enum_dict.get(label_or_type)
-        if props is None:
-            continue
-
-        enum = props.get(property_name)
-        if enum is None:
-            continue
-
-        if property_value not in enum:
-            invalid_labels_or_types.append(label_or_type)
-
-    if and_or is None and invalid_labels_or_types:
-        return (
-            f"{node_or_rel} {labels_or_types} with property {property_name} = "
-            f"{property_value} not found in graph database."
-        )
-    if (
-        and_or == "and"
-        and 0 < len(invalid_labels_or_types) <= len(labels_or_types)
-    ):
-        return (
-            f"{node_or_rel}(s) {invalid_labels_or_types} with property {property_name} = "
-            f"{property_value} not found in graph database."
-        )
-    if and_or == "or" and len(invalid_labels_or_types) == len(labels_or_types):
-        return (
-            f"None of {node_or_rel}s {labels_or_types} have property {property_name} = "
-            f"{property_value} in graph database."
-        )
-    return None
-
-
-def _validate_property_value_with_range(
-    enum_dict: Dict[str, Dict[str, Neo4jStructuredSchemaPropertyNumber]],
-    labels_or_types: List[str],
-    property_name: str,
-    node_or_rel: ValidationScope,
-    property_value: Union[int, float],
-    and_or: Optional[Literal["and", "or"]] = None,
-) -> Optional[str]:
-    """验证属性值是否落在 schema 给出的数值范围内。"""
-    _assert_validation_scope(node_or_rel)
-
-    invalid_labels_or_types: list[tuple[str, Neo4jStructuredSchemaPropertyNumber]] = []
-    error_message_invalid_labels_or_types: list[str] = []
-
-    for label_or_type in labels_or_types:
-        props = enum_dict.get(label_or_type)
-        if props is None:
-            continue
-
-        prop_range = props.get(property_name)
-        if prop_range is None:
-            continue
-
-        if float(property_value) < prop_range.min or float(property_value) > prop_range.max:
-            invalid_labels_or_types.append((label_or_type, prop_range))
-
-    for label_or_type, prop_range in invalid_labels_or_types:
-        error_message_invalid_labels_or_types.append(
-            f"{label_or_type} with property {prop_range.property} range "
-            f"{prop_range.min} to {prop_range.max}"
-        )
-
-    if and_or is None and invalid_labels_or_types:
-        example_label, example_prop = invalid_labels_or_types[0]
-        return (
-            f"{node_or_rel} {example_label} has property {property_name} = {property_value} "
-            f"which is out of range {example_prop.min} to {example_prop.max} in graph database."
-        )
-    if (
-        and_or == "and"
-        and 0 < len(invalid_labels_or_types) <= len(labels_or_types)
-    ):
-        return (
-            f"{node_or_rel}(s) {', '.join(error_message_invalid_labels_or_types)} have "
-            f"property {property_name} = {property_value} which is out of range in graph database."
-        )
-    if and_or == "or" and len(invalid_labels_or_types) == len(labels_or_types):
-        return (
-            f"All of {node_or_rel}s {', '.join(error_message_invalid_labels_or_types)} have "
-            f"property {property_name} = {property_value} which is out of range in graph database."
-        )
-    return None
-
-
-def _validate_property_with_enum(
-    enum_dict: Dict[str, Set[str]],
-    labels_or_types: List[str],
-    property_name: str,
-    node_or_rel: ValidationScope,
-    and_or: Optional[Literal["and", "or"]] = None,
-) -> Optional[str]:
-    """验证属性名是否存在于 schema 提供的属性集合中。"""
-    _assert_validation_scope(node_or_rel)
-
-    if and_or is None and len(labels_or_types) > 1:
-        raise ValueError(
-            f"Invalid combination of `labels_or_types` and `and_or`: {labels_or_types} | {and_or}"
-        )
-
-    invalid_labels_or_types: list[str] = []
-    for label_or_type in labels_or_types:
-        enum = enum_dict.get(label_or_type)
-        if enum is None:
-            continue
-        if property_name not in enum:
-            invalid_labels_or_types.append(label_or_type)
-
-    if and_or is None and invalid_labels_or_types:
-        return (
-            f"{node_or_rel} {labels_or_types} does not have the property "
-            f"{property_name} in the graph database."
-        )
-    if (
-        and_or == "and"
-        and 0 < len(invalid_labels_or_types) <= len(labels_or_types)
-    ):
-        return (
-            f"{node_or_rel}(s) {invalid_labels_or_types} do(es) not have the property "
-            f"{property_name} in the graph database."
-        )
-    if and_or == "or" and len(invalid_labels_or_types) == len(labels_or_types):
-        return (
-            f"None of {node_or_rel}s {labels_or_types} have the property "
-            f"{property_name} in the graph database."
-        )
-    return None
 
 
 def _assert_validation_scope(node_or_rel: str) -> None:
