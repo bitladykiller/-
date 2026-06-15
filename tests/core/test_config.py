@@ -1,12 +1,10 @@
 import pytest
 
 import app.shared.core.config as config_module
-from app.shared.core.config import (
-    ServiceType,
-)
 from app.shared.core.config_models import (
     BusinessSettings,
     InfrastructureSettings,
+    ServiceType,
 )
 
 

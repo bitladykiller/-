@@ -16,7 +16,8 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from app.shared.core.config import ServiceType, settings
+from app.shared.core.config import settings
+from app.shared.core.config_models import ServiceType
 from app.shared.core.logger import get_logger
 
 if TYPE_CHECKING:

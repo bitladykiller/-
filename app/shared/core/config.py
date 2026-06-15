@@ -17,7 +17,6 @@ from app.shared.core.config_models import (
     BusinessSettings,
     InfrastructureSettings,
     ProjectBaseSettings,
-    ServiceType,
 )
 
 
@@ -68,6 +67,5 @@ class _Settings:
 settings = _Settings()
 
 __all__ = [
-    "ServiceType",
     "settings",
 ]
