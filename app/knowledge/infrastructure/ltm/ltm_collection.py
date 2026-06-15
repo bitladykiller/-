@@ -19,7 +19,6 @@ from typing import Any, TypeAlias
 from pymilvus import DataType, Function, FunctionType
 
 MilvusRecord: TypeAlias = dict[str, Any]
-MilvusSearchGroups: TypeAlias = list[list[MilvusRecord]]
 
 MEMORY_OUTPUT_FIELDS = [
     "memory_id",
@@ -128,7 +127,7 @@ def search_records(
     *,
     limit: int,
     output_fields: list[str],
-) -> MilvusSearchGroups:
+) -> list[list[MilvusRecord]]:
     """统一封装 Milvus 原生向量 search。"""
     return milvus_client.search(
         collection_name=collection_name,

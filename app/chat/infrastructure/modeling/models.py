@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Literal, TypeAlias
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -32,7 +32,6 @@ ModelRole = Literal[
     "react",
     "react_judge",
 ]
-ModelResolver: TypeAlias = Callable[[ModelRole, float], Any]
 
 MODEL_TEMPERATURES: dict[ModelRole, float] = {
     "agent": 0.7,
@@ -54,7 +53,7 @@ class LazyModelProxy:
         self,
         name: ModelRole,
         temperature: float,
-        resolver: ModelResolver,
+        resolver: Callable[[ModelRole, float], Any],
     ) -> None:
         self._name = name
         self._temperature = temperature
@@ -76,6 +75,8 @@ class LazyModelProxy:
 
     def __repr__(self) -> str:
         return self.__str__()
+
+
 # ================================================================== #
 # 懒初始化模型单例 — 首次访问时创建，避免 import 时连接 LLM 服务
 # ================================================================== #

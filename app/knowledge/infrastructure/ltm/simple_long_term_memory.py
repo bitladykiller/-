@@ -44,7 +44,6 @@ logger = get_logger(__name__)
 SEARCH_LOG_PREVIEW_LIMIT = 100
 EMBEDDING_LOG_PREVIEW_LIMIT = 200
 HYBRID_SEARCH_LIMIT_MULTIPLIER = 2
-_MilvusHit: TypeAlias = Mapping[str, Any]
 
 
 def entity_to_memory(entity: Mapping[str, Any]) -> LongTermMemory:
@@ -128,7 +127,9 @@ def build_partial_update_record(
     return record
 
 
-def search_results_from_hits(hits: Sequence[_MilvusHit]) -> list[MemorySearchResult]:
+def search_results_from_hits(
+    hits: Sequence[Mapping[str, Any]],
+) -> list[MemorySearchResult]:
     """把检索命中统一转换为领域层搜索结果。"""
     search_results: list[MemorySearchResult] = []
     for hit in hits:

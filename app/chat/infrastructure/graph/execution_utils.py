@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from typing import Any, TypedDict, TypeAlias
+from typing import Any, TypedDict
 
 from langchain_core.messages import AIMessage
 from langchain_core.output_parsers import StrOutputParser
@@ -20,7 +20,6 @@ from langchain_core.prompts import ChatPromptTemplate
 from app.chat.infrastructure.graph.message_utils import build_progress_response
 from app.chat.infrastructure.retrievers.retriever_contracts import Retriever
 
-RetrieverRecord: TypeAlias = dict[str, Any]
 _summarize_chain = None
 
 _SUMMARIZE_PROMPT = ChatPromptTemplate.from_messages(
@@ -57,20 +56,20 @@ class RetrieverResult(TypedDict, total=False):
     """检索器标准输出结构。"""
 
     task: str
-    records: list[RetrieverRecord]
+    records: list[dict[str, Any]]
     errors: list[Any]
     steps: list[Any]
 
 
-def records_from_result(result: RetrieverResult) -> list[RetrieverRecord]:
+def records_from_result(result: RetrieverResult) -> list[dict[str, Any]]:
     """从统一 Retriever 结果中安全提取 records 列表。"""
     records = result.get("records", [])
     return records if isinstance(records, list) else []
 
 
-def merge_retriever_records(*results: RetrieverResult) -> list[RetrieverRecord]:
+def merge_retriever_records(*results: RetrieverResult) -> list[dict[str, Any]]:
     """按顺序合并多个检索结果中的 records。"""
-    merged_records: list[RetrieverRecord] = []
+    merged_records: list[dict[str, Any]] = []
     for result in results:
         merged_records.extend(records_from_result(result))
     return merged_records
@@ -110,7 +109,7 @@ async def ainvoke_structured_question_output(
 
 async def summarize_and_build_response(
     query: str,
-    records: list[RetrieverRecord],
+    records: list[dict[str, Any]],
     *,
     progress_message: str,
     fallback: str = "未查询到相关信息～",
