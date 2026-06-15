@@ -5,21 +5,21 @@
 - 不执行 `drop_all`
 
 这样容器重启时不会把 MySQL 里的会话和画像数据清空。
+这个模块只供 Docker Compose 启动链路内部调用，不保留独立脚本入口。
 """
 from __future__ import annotations
 
-import asyncio
-
-from app.scripts.db_script_support import prepare_db_models, run_metadata_operations
+import importlib
 
 
 async def create_all_tables() -> None:
     """创建当前项目实际使用的表结构。"""
-    await run_metadata_operations("create_all")
+    from app.shared.core.database import Base, engine
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
 
-prepare_db_models()
-
-
-if __name__ == "__main__":
-    asyncio.run(create_all_tables())
+# 导入模型以触发 SQLAlchemy metadata 注册。
+importlib.import_module("app.user.infrastructure.models.user")
+importlib.import_module("app.user.infrastructure.models.conversation")

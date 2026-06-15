@@ -77,17 +77,6 @@ def test_merge_retriever_records_preserves_order() -> None:
     ]
 
 
-def test_query_builders_add_strategy_context() -> None:
-    assert "结构化数据" in lg_execution_utils.build_graph_only_query("查询空调价格")
-    assert "文档知识" in lg_execution_utils.build_rag_only_query("保修政策是什么")
-    query = lg_execution_utils.build_graph_then_rag_query(
-        "洗衣机保修多久",
-        [{"product": "X1"}],
-    )
-    assert "已知信息" in query
-    assert "洗衣机保修多久" in query
-
-
 def test_search_retriever_delegates_to_retriever() -> None:
     retriever = FakeRetriever({"records": [{"id": 1}]})
 
@@ -98,13 +87,8 @@ def test_search_retriever_delegates_to_retriever() -> None:
 
 
 def test_summarize_and_build_response_uses_summary_result(monkeypatch) -> None:
-    async def fake_summarize_records(query: str, records: list[dict], fallback: str) -> str:
-        assert query == "预算 3000"
-        assert records == [{"product": "A1"}]
-        assert fallback == "无结果"
-        return "推荐 A1"
-
-    monkeypatch.setattr(lg_execution_utils, "summarize_records", fake_summarize_records)
+    chain = FakeChain("推荐 A1")
+    monkeypatch.setattr(lg_execution_utils, "_summarize_chain", chain)
 
     payload = _run(
         lg_execution_utils.summarize_and_build_response(
@@ -118,6 +102,27 @@ def test_summarize_and_build_response_uses_summary_result(monkeypatch) -> None:
     assert [message.content for message in payload["messages"]] == [
         "正在查询...",
         "推荐 A1",
+    ]
+    assert chain.payloads == [
+        {"question": "预算 3000", "results": [[{"product": "A1"}]]}
+    ]
+
+
+def test_summarize_and_build_response_returns_fallback_for_empty_records(monkeypatch) -> None:
+    monkeypatch.setattr(lg_execution_utils, "_summarize_chain", None)
+
+    payload = _run(
+        lg_execution_utils.summarize_and_build_response(
+            "预算 3000",
+            [],
+            progress_message="正在查询...",
+            fallback="无结果",
+        )
+    )
+
+    assert [message.content for message in payload["messages"]] == [
+        "正在查询...",
+        "无结果",
     ]
 
 

@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable
-from typing import Protocol, TypeVar, TypedDict
+from typing import Protocol, TypeVar
 
 from fastapi import HTTPException
 
@@ -21,21 +21,10 @@ INTERNAL_SERVER_ERROR_DETAIL = "Internal server error"
 ApiResult = TypeVar("ApiResult")
 
 
-class MessageResponse(TypedDict):
-    """简单消息响应。"""
-
-    message: str
-
-
 class ErrorLogger(Protocol):
     """满足 API 包装器所需最小能力的日志接口。"""
 
     def error(self, msg: str, *args: object, **kwargs: object) -> object: ...
-
-
-def build_message_response(message: str) -> MessageResponse:
-    """统一构造简单消息响应。"""
-    return {"message": message}
 
 
 async def run_api_action(

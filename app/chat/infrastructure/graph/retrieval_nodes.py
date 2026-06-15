@@ -18,9 +18,6 @@ from langchain_core.runnables import RunnableConfig
 
 from app.chat.domain.utils import no_neo4j_response, question_from_state
 from app.chat.infrastructure.graph.execution_utils import (
-    build_graph_only_query,
-    build_graph_then_rag_query,
-    build_rag_only_query,
     merge_retriever_records,
     records_from_result,
     search_retriever,
@@ -78,9 +75,11 @@ async def execute_parallel(state: AgentState, *, config: RunnableConfig) -> dict
     rag = await get_retriever(RAG_RETRIEVER_NAME)
 
     query = await enrich_question(state, config, question_from_state(state))
+    graph_query = query + "（仅查询结构化数据：价格、库存、订单等）"
+    rag_query = query + "（仅查询文档知识：售后政策、保修条款等）"
     neo_result, rag_result = await asyncio.gather(
-        search_retriever(kg, build_graph_only_query(query)),
-        search_retriever(rag, build_rag_only_query(query)),
+        search_retriever(kg, graph_query),
+        search_retriever(rag, rag_query),
     )
 
     all_records = merge_retriever_records(neo_result, rag_result)
@@ -101,9 +100,10 @@ async def execute_then(state: AgentState, *, config: RunnableConfig) -> dict:
     query = await enrich_question(state, config, question_from_state(state))
     neo_result = await search_retriever(kg, query)
     neo_records = records_from_result(neo_result)
+    rag_query = f"已知信息：{neo_records}\n\n查询：{query}"
     rag_result = await search_retriever(
         rag,
-        build_graph_then_rag_query(query, neo_records),
+        rag_query,
     )
     all_records = merge_retriever_records(neo_result, rag_result)
     return await summarize_and_build_response(

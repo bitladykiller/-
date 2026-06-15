@@ -1,5 +1,4 @@
 from app.chat.infrastructure.memory_bridge.context import (
-    build_enriched_question,
     build_memory_context,
 )
 from app.knowledge.domain.schemas import (
@@ -70,24 +69,3 @@ def test_build_memory_context_orders_sections_by_priority() -> None:
 
 def test_build_memory_context_returns_empty_when_all_inputs_empty() -> None:
     assert build_memory_context(None, [], [], None) == ""
-
-
-def test_build_enriched_question_injects_context_before_question() -> None:
-    memory_state = AgentMemoryState(
-        session_summary=SessionSummary(content="用户在看洗衣机"),
-        recent_messages=[],
-        long_term_memories=[],
-        user_profile={"preferred_category": "洗衣机"},
-    )
-
-    enriched = build_enriched_question("预算 3000 左右有什么推荐？", memory_state)
-
-    assert "【记忆说明】" in enriched
-    assert "偏好品类: 洗衣机" in enriched
-    assert enriched.endswith("用户当前问题：预算 3000 左右有什么推荐？")
-
-
-def test_build_enriched_question_returns_original_when_context_empty() -> None:
-    memory_state = AgentMemoryState()
-
-    assert build_enriched_question("你好", memory_state) == "你好"

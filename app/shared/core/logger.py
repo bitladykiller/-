@@ -44,34 +44,6 @@ def format_log_context(**context: object) -> str:
     return " ".join(parts)
 
 
-def configure_noisy_loggers(level: int = logging.WARNING) -> None:
-    """抑制第三方库的冗余日志输出。"""
-    for logger_name in _NOISY_LOGGERS:
-        logging.getLogger(logger_name).setLevel(level)
-
-
-def configure_root_logger(
-    root: logging.Logger,
-    *,
-    level: int,
-    format_str: str,
-    date_format: str,
-) -> None:
-    """对目标 root logger 应用统一级别和 handler 策略。"""
-    root.setLevel(level)
-    has_stream_handler = any(
-        isinstance(handler, logging.StreamHandler)
-        and not isinstance(handler, logging.FileHandler)
-        for handler in root.handlers
-    )
-    if has_stream_handler:
-        return
-
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter(format_str, datefmt=date_format))
-    root.addHandler(handler)
-
-
 def setup_logging(
     level: int = logging.INFO,
     format_str: str = LOG_FORMAT,
@@ -89,13 +61,19 @@ def setup_logging(
         return
 
     root = logging.getLogger()
-    configure_root_logger(
-        root,
-        level=level,
-        format_str=format_str,
-        date_format=date_format,
+    root.setLevel(level)
+    has_stream_handler = any(
+        isinstance(handler, logging.StreamHandler)
+        and not isinstance(handler, logging.FileHandler)
+        for handler in root.handlers
     )
-    configure_noisy_loggers()
+    if not has_stream_handler:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter(format_str, datefmt=date_format))
+        root.addHandler(handler)
+
+    for logger_name in _NOISY_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
     _logging_initialized = True
 

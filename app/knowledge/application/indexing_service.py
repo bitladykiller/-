@@ -27,20 +27,6 @@ _EMPTY_DOCUMENT_MESSAGE = "文档无有效内容"
 _MISSING_DEPENDENCY_MESSAGE = "rag_doc_parser 模块未安装，文档已保存但未索引"
 
 
-def load_pipeline_dependencies() -> tuple:
-    """延迟导入解析函数和检索索引器，降低模块 import 成本。"""
-    from rag_doc_parser.pipeline import parse_document
-    from rag_doc_parser.retrieval.config import RetrievalConfig
-    from rag_doc_parser.retrieval.hybrid_search import HybridSearcher
-
-    return parse_document, HybridSearcher(RetrievalConfig())
-
-
-def build_doc_id(user_id: int) -> str:
-    """为上传文档生成稳定前缀的临时 doc_id。"""
-    return f"upload_{user_id}_{uuid.uuid4().hex[:8]}"
-
-
 class IndexingService:
     """文档索引服务。"""
 
@@ -50,8 +36,23 @@ class IndexingService:
         pipeline_loader: PipelineLoader | None = None,
         doc_id_factory: DocIDFactory | None = None,
     ) -> None:
-        self._pipeline_loader = pipeline_loader or load_pipeline_dependencies
-        self._doc_id_factory = doc_id_factory or build_doc_id
+        if pipeline_loader is None:
+            def default_pipeline_loader() -> tuple:
+                """延迟导入解析函数和检索索引器，降低模块 import 成本。"""
+                from rag_doc_parser.pipeline import parse_document
+                from rag_doc_parser.retrieval.config import RetrievalConfig
+                from rag_doc_parser.retrieval.hybrid_search import HybridSearcher
+
+                return parse_document, HybridSearcher(RetrievalConfig())
+
+            self._pipeline_loader = default_pipeline_loader
+        else:
+            self._pipeline_loader = pipeline_loader
+
+        if doc_id_factory is None:
+            self._doc_id_factory = lambda user_id: f"upload_{user_id}_{uuid.uuid4().hex[:8]}"
+        else:
+            self._doc_id_factory = doc_id_factory
 
     async def process_file(self, file_info: UploadFileInfo) -> IndexingResult:
         """处理上传文件并写入检索索引。"""

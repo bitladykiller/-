@@ -2,7 +2,6 @@
 
 职责：
 - 统一检索结果的空值占位、records 提取与多路合并
-- 提供图检索 / 文档检索的查询改写样板
 - 封装结构化输出链与摘要回复样板
 
 边界：
@@ -75,24 +74,6 @@ def merge_retriever_records(*results: RetrieverResult) -> list[RetrieverRecord]:
     return merged_records
 
 
-def build_graph_only_query(question: str) -> str:
-    """给图检索构造更聚焦的结构化查询提示。"""
-    return question + "（仅查询结构化数据：价格、库存、订单等）"
-
-
-def build_rag_only_query(question: str) -> str:
-    """给文档检索构造更聚焦的知识型查询提示。"""
-    return question + "（仅查询文档知识：售后政策、保修条款等）"
-
-
-def build_graph_then_rag_query(
-    question: str,
-    graph_records: list[RetrieverRecord],
-) -> str:
-    """把图检索结果拼进后续文档检索查询。"""
-    return f"已知信息：{graph_records}\n\n查询：{question}"
-
-
 async def search_retriever(
     retriever: Retriever | None,
     query: str,
@@ -125,14 +106,16 @@ async def ainvoke_structured_question_output(
     return await chain.ainvoke({"question": question})
 
 
-async def summarize_records(
+async def summarize_and_build_response(
     query: str,
     records: list[RetrieverRecord],
+    *,
+    progress_message: str,
     fallback: str = "未查询到相关信息～",
-) -> str:
-    """根据检索结果生成摘要，空结果时直接返回 fallback。"""
+) -> MessagePayload:
+    """统一执行摘要生成，并返回“两段式”进度响应。"""
     if not records:
-        return fallback
+        return build_progress_response(progress_message, fallback)
 
     global _summarize_chain
     if _summarize_chain is None:
@@ -144,16 +127,4 @@ async def summarize_records(
         "question": query,
         "results": [records],
     })
-    return summary or fallback
-
-
-async def summarize_and_build_response(
-    query: str,
-    records: list[RetrieverRecord],
-    *,
-    progress_message: str,
-    fallback: str = "未查询到相关信息～",
-) -> MessagePayload:
-    """统一执行摘要生成，并返回“两段式”进度响应。"""
-    summary = await summarize_records(query, records, fallback)
-    return build_progress_response(progress_message, summary)
+    return build_progress_response(progress_message, summary or fallback)

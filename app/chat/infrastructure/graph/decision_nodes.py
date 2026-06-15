@@ -71,30 +71,6 @@ SCOPE_DESCRIPTION = """
 """
 
 
-async def build_general_query_system_prompt(
-    *,
-    state: AgentState,
-    config: RunnableConfig,
-    general_query_system_prompt: str,
-) -> str:
-    """构造 general 节点的系统提示词，并按需注入记忆上下文。"""
-    system_prompt = general_query_system_prompt.format(logic=state.router["logic"])
-    user_message = question_from_state(state)
-    memory_state = await load_memory_state(state, config, user_message)
-    if memory_state is None:
-        return system_prompt
-
-    memory_context = build_memory_context(
-        memory_state.session_summary,
-        memory_state.recent_messages,
-        memory_state.long_term_memories,
-        memory_state.user_profile,
-    )
-    if not memory_context:
-        return system_prompt
-    return system_prompt + memory_context
-
-
 async def analyze_and_route_query(state: AgentState, *, config: RunnableConfig) -> dict:
     """分析用户输入，路由到通用回复或知识库检索。"""
     _ = config
@@ -118,11 +94,18 @@ async def respond_to_general_query(
     config: RunnableConfig,
 ) -> dict[str, list[BaseMessage]]:
     """处理通用查询：闲聊、追问等。注入记忆上下文增强回复。"""
-    system_prompt = await build_general_query_system_prompt(
-        state=state,
-        config=config,
-        general_query_system_prompt=GENERAL_QUERY_SYSTEM_PROMPT,
-    )
+    system_prompt = GENERAL_QUERY_SYSTEM_PROMPT.format(logic=state.router["logic"])
+    user_message = question_from_state(state)
+    memory_state = await load_memory_state(state, config, user_message)
+    if memory_state is not None:
+        memory_context = build_memory_context(
+            memory_state.session_summary,
+            memory_state.recent_messages,
+            memory_state.long_term_memories,
+            memory_state.user_profile,
+        )
+        if memory_context:
+            system_prompt += memory_context
     messages = build_safe_messages(system_prompt, state.messages)
     response = await agent_model.ainvoke(messages)
     return {"messages": [response]}
@@ -187,7 +170,6 @@ def retrieval_plan_edge(state: AgentState) -> RetrievalEdgeName:
 
 __all__ = [
     "analyze_and_route_query",
-    "build_general_query_system_prompt",
     "guardrails_edge",
     "guardrails_node",
     "respond_to_general_query",

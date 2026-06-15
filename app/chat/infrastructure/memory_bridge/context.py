@@ -56,44 +56,6 @@ _MEMORY_SECTION_TITLES = {
 _MEMORY_INSTRUCTIONS = "【记忆说明】当以下信息来源存在矛盾时，优先信任 P0 > P1 > P2 > P3。"
 
 
-def build_memory_section(title: str, body: str) -> str:
-    """把段落标题和正文拼成统一分段格式。"""
-    if not body:
-        return ""
-    return f"[{title}]\n{body}"
-
-
-def format_recent_messages(recent_messages: list[MessageRecord]) -> str:
-    """格式化最近对话记录，供 P0 记忆段落使用。"""
-    lines: list[str] = []
-    for message in recent_messages:
-        role = _RECENT_MESSAGE_ROLE_LABELS.get(message.role, message.role)
-        lines.append(f"[{role}]: {message.content}")
-    return "\n".join(lines)
-
-
-def format_user_profile(user_profile: UserProfileData) -> str:
-    """格式化结构化用户画像，供 P1 记忆段落使用。"""
-    profile_lines: list[str] = []
-    for field_name, label in _USER_PROFILE_TEXT_LABELS.items():
-        value = user_profile.get(field_name)
-        if isinstance(value, str) and value:
-            profile_lines.append(f"{label}: {value}")
-
-    normalized_tags = [
-        tag for tag in user_profile.get("tags", []) if isinstance(tag, str) and tag
-    ]
-    if normalized_tags:
-        profile_lines.append(f"标签: {', '.join(normalized_tags)}")
-
-    for fact in user_profile.get("facts", []):
-        key = fact.get("key")
-        value = fact.get("value")
-        if isinstance(key, str) and key and isinstance(value, str) and value:
-            profile_lines.append(f"{key}: {value}")
-    return "\n".join(profile_lines)
-
-
 def build_memory_context(
     session_summary: SessionSummary | None,
     recent_messages: list[MessageRecord],
@@ -101,15 +63,44 @@ def build_memory_context(
     user_profile: UserProfileData | None = None,
 ) -> str:
     """组装带优先级的记忆上下文字符串，用于注入 system prompt。"""
+    def build_memory_section(title: str, body: str) -> str:
+        """把段落标题和正文拼成统一分段格式。"""
+        if not body:
+            return ""
+        return f"[{title}]\n{body}"
+
+    recent_message_lines: list[str] = []
+    for message in recent_messages:
+        role = _RECENT_MESSAGE_ROLE_LABELS.get(message.role, message.role)
+        recent_message_lines.append(f"[{role}]: {message.content}")
+
+    user_profile_text = ""
+    if user_profile:
+        profile_lines: list[str] = []
+        for field_name, label in _USER_PROFILE_TEXT_LABELS.items():
+            value = user_profile.get(field_name)
+            if isinstance(value, str) and value:
+                profile_lines.append(f"{label}: {value}")
+
+        normalized_tags = [
+            tag for tag in user_profile.get("tags", []) if isinstance(tag, str) and tag
+        ]
+        if normalized_tags:
+            profile_lines.append(f"标签: {', '.join(normalized_tags)}")
+
+        for fact in user_profile.get("facts", []):
+            key = fact.get("key")
+            value = fact.get("value")
+            if isinstance(key, str) and key and isinstance(value, str) and value:
+                profile_lines.append(f"{key}: {value}")
+        user_profile_text = "\n".join(profile_lines)
+
     parts = [
         build_memory_section(
             _MEMORY_SECTION_TITLES["recent_messages"],
-            format_recent_messages(recent_messages),
+            "\n".join(recent_message_lines),
         ),
-        build_memory_section(
-            _MEMORY_SECTION_TITLES["user_profile"],
-            format_user_profile(user_profile) if user_profile else "",
-        ),
+        build_memory_section(_MEMORY_SECTION_TITLES["user_profile"], user_profile_text),
         build_memory_section(
             _MEMORY_SECTION_TITLES["session_summary"],
             build_summary_injection_prompt(session_summary),
@@ -119,25 +110,10 @@ def build_memory_context(
             build_memory_injection_prompt(long_term_memories),
         ),
     ]
-    parts = [section for section in parts if section and section.strip()]
+    parts = [section for section in parts if section.strip()]
     if not parts:
         return ""
     return _MEMORY_INSTRUCTIONS + "\n\n" + "\n\n".join(parts)
-
-
-def build_enriched_question(
-    question: str,
-    memory_state: AgentMemoryState,
-) -> str:
-    """把记忆上下文注入到用户问题前。"""
-    context = build_memory_context(
-        memory_state.session_summary,
-        memory_state.recent_messages,
-        memory_state.long_term_memories,
-        memory_state.user_profile,
-    )
-    return f"{context}\n\n用户当前问题：{question}" if context else question
-
 
 def configurable_scope(config: RunnableConfig) -> tuple[str, str, str]:
     """统一读取当前请求的 tenant / user / session 标识。"""
@@ -191,11 +167,16 @@ async def enrich_question(
     if mem is None:
         return question
 
-    return build_enriched_question(question, mem)
+    context = build_memory_context(
+        mem.session_summary,
+        mem.recent_messages,
+        mem.long_term_memories,
+        mem.user_profile,
+    )
+    return f"{context}\n\n用户当前问题：{question}" if context else question
 
 
 __all__ = [
-    "build_enriched_question",
     "build_memory_context",
     "configurable_scope",
     "enrich_question",

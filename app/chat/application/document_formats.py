@@ -27,8 +27,3 @@ def get_document_extension(filename: str | Path | None) -> str:
 def supports_document_indexing(extension: str) -> bool:
     """判断扩展名是否在当前上传+索引链路支持范围内。"""
     return extension in INDEXABLE_DOCUMENT_EXTENSIONS
-
-
-def document_magic_signatures(extension: str) -> tuple[bytes, ...]:
-    """返回扩展名对应的魔数签名；无定义时返回空元组。"""
-    return DOCUMENT_MAGIC_SIGNATURES.get(extension, ())

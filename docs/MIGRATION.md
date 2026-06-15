@@ -38,7 +38,7 @@ from app.knowledge.domain.schemas import AgentMemoryState
 ```python
 from app.user.infrastructure.models.user import User
 from app.user.infrastructure.models.conversation import Conversation
-from app.user.application.user_profile_service import UserProfileService
+from app.user.application.user_profile_service import get_profile, upsert_profile_data
 ```
 
 ## 3. 已移除的旧路径

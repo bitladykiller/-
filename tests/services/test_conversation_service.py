@@ -134,7 +134,7 @@ def test_create_conversation_delegates_to_run_db_operation(monkeypatch) -> None:
 
     monkeypatch.setattr(conversation_service, "run_db_operation", fake_run_db_operation)
 
-    result = _run(conversation_service.ConversationService.create_conversation(5))
+    result = _run(conversation_service.create_conversation(5))
 
     assert result == 123
     assert captured == {
@@ -166,7 +166,7 @@ def test_get_user_conversations_delegates_to_fetch_operation(monkeypatch) -> Non
 
     monkeypatch.setattr(conversation_service, "run_db_operation", fake_run_db_operation)
 
-    result = _run(conversation_service.ConversationService.get_user_conversations(8))
+    result = _run(conversation_service.get_user_conversations(8))
 
     assert result == [{"id": 1}]
 
@@ -189,8 +189,8 @@ def test_delete_and_rename_delegate_to_expected_record_operations(monkeypatch) -
 
     monkeypatch.setattr(conversation_service, "run_db_operation", fake_run_db_operation)
 
-    _run(conversation_service.ConversationService.delete_conversation(9))
-    _run(conversation_service.ConversationService.update_conversation_name(9, "售后跟进"))
+    _run(conversation_service.delete_conversation(9))
+    _run(conversation_service.update_conversation_name(9, "售后跟进"))
 
     assert calls == [
         (

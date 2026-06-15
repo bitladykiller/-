@@ -59,7 +59,7 @@ deepseek_agent/
 
 - 建表
 - 重置表
-- 启动辅助脚本
+- Compose 启动链路内部辅助脚本
 
 ## 3. 依赖方向
 
@@ -84,4 +84,4 @@ docker compose up -d --build
 ```
 
 项目当前只保留 Docker Compose 启动。
-容器启动前会执行 `python -m app.scripts.bootstrap_compose_db`。
+容器启动前会自动执行建表步骤。

@@ -5,12 +5,8 @@ import types
 import app.chat.application.task_queue as task_queue_module
 from app.chat.application.task_queue import (
     TaskStatus,
-    build_task_status_payload,
-    dump_task_status_payload,
     load_task_status_payload,
-    read_task_status,
     run_task_with_status_updates,
-    spawn_tracked_task,
     write_task_status,
 )
 
@@ -46,13 +42,16 @@ class FakeLogger:
 
 
 def test_task_status_payload_round_trip() -> None:
-    payload = build_task_status_payload(
-        "task-1",
-        TaskStatus.COMPLETED,
-        result={"ok": True},
-    )
+    payload = {
+        "task_id": "task-1",
+        "status": TaskStatus.COMPLETED.value,
+        "updated_at": "2026-01-02T03:04:05",
+        "result": {"ok": True},
+    }
 
-    loaded = load_task_status_payload(dump_task_status_payload(payload))
+    loaded = load_task_status_payload(
+        '{"task_id": "task-1", "status": "completed", "updated_at": "2026-01-02T03:04:05", "result": {"ok": true}}'
+    )
 
     assert loaded is not None
     assert loaded["task_id"] == "task-1"
@@ -78,7 +77,7 @@ def test_write_and_read_task_status_round_trip() -> None:
 
         raw = await store.get("task:doc_parse:task-2")
         assert raw is not None
-        payload = await read_task_status(store, "task-2")
+        payload = load_task_status_payload(raw)
         assert payload is not None
         assert payload["task_id"] == "task-2"
         assert payload["status"] == "running"
@@ -86,25 +85,29 @@ def test_write_and_read_task_status_round_trip() -> None:
     asyncio.run(scenario())
 
 
-def test_spawn_tracked_task_registers_named_background_task() -> None:
+def test_task_manager_submit_registers_named_background_task() -> None:
     async def scenario() -> None:
-        pending_tasks: set[asyncio.Task[None]] = set()
-        finished: list[str] = []
+        store = FakeTaskStore()
+        manager = task_queue_module._TaskManager(store)
+        release = asyncio.Event()
+        started = asyncio.Event()
 
         async def job() -> None:
-            finished.append(asyncio.current_task().get_name())
+            started.set()
+            await release.wait()
 
-        spawn_tracked_task(pending_tasks, "abc123", job())
+        task_id = await manager.submit(job)
+        await asyncio.wait_for(started.wait(), timeout=1)
 
-        assert len(pending_tasks) == 1
-        task = next(iter(pending_tasks))
-        assert task.get_name() == "task:abc123"
+        assert len(manager._pending_tasks) == 1
+        task = next(iter(manager._pending_tasks))
+        assert task.get_name() == f"task:{task_id}"
 
+        release.set()
         await task
         await asyncio.sleep(0)
 
-        assert finished == ["task:abc123"]
-        assert task not in pending_tasks
+        assert task not in manager._pending_tasks
 
     asyncio.run(scenario())
 
@@ -119,7 +122,7 @@ def test_run_task_with_status_updates_marks_completed_and_logs() -> None:
 
         await run_task_with_status_updates(store, logger, "task-3", job, 9)
 
-        payload = await read_task_status(store, "task-3")
+        payload = await task_queue_module._TaskManager(store).get_status("task-3")
         assert payload is not None
         assert payload["status"] == "completed"
         assert payload["result"] == {"value": 9}
@@ -139,7 +142,7 @@ def test_run_task_with_status_updates_marks_failed_and_logs() -> None:
 
         await run_task_with_status_updates(store, logger, "task-4", job)
 
-        payload = await read_task_status(store, "task-4")
+        payload = await task_queue_module._TaskManager(store).get_status("task-4")
         assert payload is not None
         assert payload["status"] == "failed"
         assert payload["error"] == "boom"
@@ -234,16 +237,17 @@ def test_get_task_manager_reuses_existing_instance(monkeypatch) -> None:
         task_queue_module._runtime_instance = None
         created_clients: list[FakeTaskStore] = []
 
-        def fake_create_redis_client(redis_url: str) -> FakeTaskStore:
+        def fake_from_url(redis_url: str, *, decode_responses: bool) -> FakeTaskStore:
             assert redis_url == "redis://test"
+            assert decode_responses is True
             client = FakeTaskStore()
             created_clients.append(client)
             return client
 
         monkeypatch.setattr(
-            task_queue_module,
-            "create_redis_client",
-            fake_create_redis_client,
+            task_queue_module.aioredis,
+            "from_url",
+            fake_from_url,
         )
         monkeypatch.setitem(
             sys.modules,

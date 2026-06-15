@@ -128,55 +128,51 @@ async def rename_conversation_record(
     await db.commit()
 
 
-class ConversationService:
-    """会话 CRUD 服务。"""
+async def create_conversation(user_id: int) -> int:
+    """创建新会话并返回会话 id。"""
+    return await run_db_operation(
+        AsyncSessionLocal,
+        logger,
+        "create_conversation",
+        create_conversation_record,
+        user_id,
+        user_id=user_id,
+    )
 
-    @staticmethod
-    async def create_conversation(user_id: int) -> int:
-        """创建新会话并返回会话 id。"""
-        return await run_db_operation(
-            AsyncSessionLocal,
-            logger,
-            "create_conversation",
-            create_conversation_record,
-            user_id,
-            user_id=user_id,
-        )
 
-    @staticmethod
-    async def get_user_conversations(user_id: int) -> list[ConversationSummary]:
-        """获取用户的所有非默认标题会话。"""
-        return await run_db_operation(
-            AsyncSessionLocal,
-            logger,
-            "get_user_conversations",
-            fetch_user_conversations,
-            user_id,
-            user_id=user_id,
-        )
+async def get_user_conversations(user_id: int) -> list[ConversationSummary]:
+    """获取用户的所有非默认标题会话。"""
+    return await run_db_operation(
+        AsyncSessionLocal,
+        logger,
+        "get_user_conversations",
+        fetch_user_conversations,
+        user_id,
+        user_id=user_id,
+    )
 
-    @staticmethod
-    async def delete_conversation(conversation_id: int) -> None:
-        """删除会话。"""
-        await run_db_operation(
-            AsyncSessionLocal,
-            logger,
-            "delete_conversation",
-            delete_conversation_record,
-            conversation_id,
-            conversation_id=conversation_id,
-        )
 
-    @staticmethod
-    async def update_conversation_name(conversation_id: int, name: str) -> None:
-        """更新会话标题。"""
-        await run_db_operation(
-            AsyncSessionLocal,
-            logger,
-            "update_conversation_name",
-            rename_conversation_record,
-            conversation_id,
-            name,
-            conversation_id=conversation_id,
-            name=name,
-        )
+async def delete_conversation(conversation_id: int) -> None:
+    """删除会话。"""
+    await run_db_operation(
+        AsyncSessionLocal,
+        logger,
+        "delete_conversation",
+        delete_conversation_record,
+        conversation_id,
+        conversation_id=conversation_id,
+    )
+
+
+async def update_conversation_name(conversation_id: int, name: str) -> None:
+    """更新会话标题。"""
+    await run_db_operation(
+        AsyncSessionLocal,
+        logger,
+        "update_conversation_name",
+        rename_conversation_record,
+        conversation_id,
+        name,
+        conversation_id=conversation_id,
+        name=name,
+    )

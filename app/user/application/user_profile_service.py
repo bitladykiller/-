@@ -26,8 +26,8 @@ from app.user.application.user_profile_store import (
     upsert_profile_data_in_db,
 )
 
-_PROFILE_CACHE_TTL = 1800  # 30 分钟
-_PROFILE_CACHE_PREFIX = "user:profile"
+CACHE_TTL = 1800  # 30 分钟
+CACHE_PREFIX = "user:profile"
 
 
 class ProfileCache(Protocol):
@@ -40,62 +40,64 @@ class ProfileCache(Protocol):
     async def delete(self, key: str) -> Any: ...
 
 
-class UserProfileService:
-    """用户画像 CRUD + Redis 缓存。"""
+async def get_profile(
+    user_id: int,
+    redis_client: ProfileCache | None = None,
+) -> UserProfilePayload:
+    """获取用户画像，优先读 Redis，未命中再查 MySQL。"""
+    cache_key = f"{CACHE_PREFIX}:{user_id}"
+    if redis_client is not None:
+        cached = await redis_client.get(cache_key)
+        if cached:
+            try:
+                return coerce_user_profile_payload(user_id, json.loads(cached))
+            except (TypeError, ValueError):
+                pass
 
-    CACHE_TTL = _PROFILE_CACHE_TTL
-    CACHE_PREFIX = _PROFILE_CACHE_PREFIX
-
-    @staticmethod
-    async def get_profile(
-        user_id: int,
-        redis_client: ProfileCache | None = None,
-    ) -> UserProfilePayload:
-        """获取用户画像，优先读 Redis，未命中再查 MySQL。"""
-        cache_key = f"{UserProfileService.CACHE_PREFIX}:{user_id}"
+    try:
+        profile = await query_profile_from_db(user_id)
         if redis_client is not None:
-            cached = await redis_client.get(cache_key)
-            if cached:
-                try:
-                    return coerce_user_profile_payload(user_id, json.loads(cached))
-                except (TypeError, ValueError):
-                    pass
+            await redis_client.setex(
+                cache_key,
+                CACHE_TTL,
+                json.dumps(profile, ensure_ascii=False),
+            )
+        return profile
+    except Exception:
+        return empty_user_profile(user_id)
 
-        try:
-            profile = await query_profile_from_db(user_id)
-            if redis_client is not None:
-                await redis_client.setex(
-                    cache_key,
-                    UserProfileService.CACHE_TTL,
-                    json.dumps(profile, ensure_ascii=False),
-                )
-            return profile
-        except Exception:
-            return empty_user_profile(user_id)
 
-    @staticmethod
-    async def upsert_profile_data(
-        user_id: int,
-        profile: UserProfileData,
-        redis_client: ProfileCache | None = None,
-    ) -> bool:
-        """批量回写结构化画像，统一处理主字段和 facts。"""
-        if not profile:
-            return True
-
-        data_changed = False
-        try:
-            async with AsyncSessionLocal() as db:
-                data_changed = await upsert_profile_data_in_db(
-                    db,
-                    user_id=user_id,
-                    profile=profile,
-                )
-                if data_changed:
-                    await db.commit()
-        except Exception:
-            return False
-
-        if data_changed and redis_client is not None:
-            await redis_client.delete(f"{UserProfileService.CACHE_PREFIX}:{user_id}")
+async def upsert_profile_data(
+    user_id: int,
+    profile: UserProfileData,
+    redis_client: ProfileCache | None = None,
+) -> bool:
+    """批量回写结构化画像，统一处理主字段和 facts。"""
+    if not profile:
         return True
+
+    data_changed = False
+    try:
+        async with AsyncSessionLocal() as db:
+            data_changed = await upsert_profile_data_in_db(
+                db,
+                user_id=user_id,
+                profile=profile,
+            )
+            if data_changed:
+                await db.commit()
+    except Exception:
+        return False
+
+    if data_changed and redis_client is not None:
+        await redis_client.delete(f"{CACHE_PREFIX}:{user_id}")
+    return True
+
+
+__all__ = [
+    "CACHE_PREFIX",
+    "CACHE_TTL",
+    "ProfileCache",
+    "get_profile",
+    "upsert_profile_data",
+]

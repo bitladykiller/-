@@ -1,8 +1,6 @@
 """文档上传接口。
 
 这个模块只处理上传入口和任务提交，不承担文档索引细节。
-上传校验、目标路径构造和响应组装都保持为本模块私有 helper，
-避免再拆出只服务单一入口文件的 support 壳层。
 """
 from __future__ import annotations
 
@@ -15,7 +13,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from app.api.common import run_api_action
 from app.shared.core.logger import get_logger
 from app.chat.application.document_formats import (
-    document_magic_signatures,
+    DOCUMENT_MAGIC_SIGNATURES,
     get_document_extension,
     supports_document_indexing,
 )
@@ -59,69 +57,6 @@ class UploadAcceptedResponse(StoredUploadFileInfo, total=False):
     message: str
 
 
-def validate_upload(file: UploadFile) -> None:
-    """验证上传文件的扩展名和 MIME 基本信息。"""
-    ext = get_document_extension(file.filename)
-    if not supports_document_indexing(ext):
-        raise HTTPException(
-            status_code=400,
-            detail=_UNSUPPORTED_FILE_TYPE_DETAIL.format(extension=ext),
-        )
-    if not file.content_type:
-        raise HTTPException(status_code=400, detail=_UNKNOWN_FILE_TYPE_DETAIL)
-
-
-async def read_upload_content(
-    file: UploadFile,
-    *,
-    max_upload_size_bytes: int,
-    file_size_exceeded_detail: str,
-    content_extension_mismatch_detail: str,
-) -> bytes:
-    """读取上传内容并执行大小/魔数校验。"""
-    content = await file.read()
-    if len(content) > max_upload_size_bytes:
-        raise HTTPException(status_code=400, detail=file_size_exceeded_detail)
-
-    extension = get_document_extension(file.filename)
-    signatures = document_magic_signatures(extension)
-    if signatures and not any(content.startswith(signature) for signature in signatures):
-        raise HTTPException(
-            status_code=400,
-            detail=content_extension_mismatch_detail.format(extension=extension),
-        )
-    return content
-
-
-async def _store_upload(file: UploadFile, user_id: int) -> StoredUploadFileInfo:
-    """完成上传文件的校验、落盘与元信息组装。"""
-    user_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    upload_dir = UPLOAD_DIR / user_uuid / timestamp
-    upload_dir.mkdir(parents=True, exist_ok=True)
-
-    original_name = Path(file.filename or "upload").stem
-    file_path = upload_dir / f"{original_name}_{timestamp}{get_document_extension(file.filename)}"
-    content = await read_upload_content(
-        file,
-        max_upload_size_bytes=MAX_UPLOAD_SIZE_BYTES,
-        file_size_exceeded_detail=FILE_SIZE_EXCEEDED_DETAIL,
-        content_extension_mismatch_detail=CONTENT_EXTENSION_MISMATCH_DETAIL,
-    )
-    file_path.write_bytes(content)
-    return {
-        "filename": file_path.name,
-        "original_name": file.filename,
-        "size": len(content),
-        "type": file.content_type,
-        "path": file_path.as_posix(),
-        "user_id": user_id,
-        "user_uuid": user_uuid,
-        "upload_time": timestamp,
-        "directory": upload_dir.as_posix(),
-    }
-
-
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
@@ -129,8 +64,47 @@ async def upload_file(
 ) -> UploadAcceptedResponse:
     """上传文档并异步解析索引。"""
     async def operation() -> UploadAcceptedResponse:
-        validate_upload(file)
-        file_info = await _store_upload(file, user_id)
+        extension = get_document_extension(file.filename)
+        if not supports_document_indexing(extension):
+            raise HTTPException(
+                status_code=400,
+                detail=_UNSUPPORTED_FILE_TYPE_DETAIL.format(extension=extension),
+            )
+        if not file.content_type:
+            raise HTTPException(status_code=400, detail=_UNKNOWN_FILE_TYPE_DETAIL)
+
+        user_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        upload_dir = UPLOAD_DIR / user_uuid / timestamp
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        original_name = Path(file.filename or "upload").stem
+        file_path = upload_dir / (
+            f"{original_name}_{timestamp}{extension}"
+        )
+        content = await file.read()
+        if len(content) > MAX_UPLOAD_SIZE_BYTES:
+            raise HTTPException(status_code=400, detail=FILE_SIZE_EXCEEDED_DETAIL)
+
+        signatures = DOCUMENT_MAGIC_SIGNATURES.get(extension, ())
+        if signatures and not any(content.startswith(signature) for signature in signatures):
+            raise HTTPException(
+                status_code=400,
+                detail=CONTENT_EXTENSION_MISMATCH_DETAIL.format(extension=extension),
+            )
+
+        file_path.write_bytes(content)
+        file_info: StoredUploadFileInfo = {
+            "filename": file_path.name,
+            "original_name": file.filename,
+            "size": len(content),
+            "type": file.content_type,
+            "path": file_path.as_posix(),
+            "user_id": user_id,
+            "user_uuid": user_uuid,
+            "upload_time": timestamp,
+            "directory": upload_dir.as_posix(),
+        }
         task_manager = await get_task_manager()
         task_id = await task_manager.submit(IndexingService().process_file, file_info)
         return {

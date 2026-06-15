@@ -36,34 +36,6 @@ ProfileReader: TypeAlias = Callable[[int, Any | None], Awaitable[UserProfileData
 ProfileWriter: TypeAlias = Callable[[int, UserProfileData, Any | None], Awaitable[bool]]
 
 
-async def load_user_profile(
-    user_id: int,
-    redis_client: Any | None = None,
-) -> UserProfileData:
-    """通过用户画像服务读取结构化画像。"""
-    from app.user.application.user_profile_service import UserProfileService
-
-    return await UserProfileService.get_profile(
-        user_id,
-        redis_client=redis_client,
-    )
-
-
-async def save_user_profile(
-    user_id: int,
-    profile: UserProfileData,
-    redis_client: Any | None = None,
-) -> bool:
-    """通过用户画像服务回写结构化画像。"""
-    from app.user.application.user_profile_service import UserProfileService
-
-    return await UserProfileService.upsert_profile_data(
-        user_id=user_id,
-        profile=profile,
-        redis_client=redis_client,
-    )
-
-
 class MemoryMiddleware:
     """记忆系统编排层。"""
 
@@ -72,14 +44,48 @@ class MemoryMiddleware:
         redis_stm: RedisShortTermMemory,
         milvus_ltm: SimpleLongTermMemory,
         memory_extractor: MemoryExtractor,
-        profile_reader: ProfileReader = load_user_profile,
-        profile_writer: ProfileWriter = save_user_profile,
+        profile_reader: ProfileReader | None = None,
+        profile_writer: ProfileWriter | None = None,
     ):
+        if profile_reader is None:
+            async def default_profile_reader(
+                user_id: int,
+                redis_client: Any | None = None,
+            ) -> UserProfileData:
+                """通过用户画像服务读取结构化画像。"""
+                from app.user.application.user_profile_service import get_profile
+
+                return await get_profile(
+                    user_id,
+                    redis_client=redis_client,
+                )
+
+            self.profile_reader = default_profile_reader
+        else:
+            self.profile_reader = profile_reader
+
+        if profile_writer is None:
+            async def default_profile_writer(
+                user_id: int,
+                profile: UserProfileData,
+                redis_client: Any | None = None,
+            ) -> bool:
+                """通过用户画像服务回写结构化画像。"""
+                from app.user.application.user_profile_service import upsert_profile_data
+
+                return await upsert_profile_data(
+                    user_id=user_id,
+                    profile=profile,
+                    redis_client=redis_client,
+                )
+
+            self.profile_writer = default_profile_writer
+        else:
+            self.profile_writer = profile_writer
+
         self.redis_stm = redis_stm
         self.milvus_ltm = milvus_ltm
         self.memory_extractor = memory_extractor
-        self.profile_reader = profile_reader
-        self.profile_writer = profile_writer
         self.ltm_config: LongTermMemoryConfig = long_term_config()
         self.ltm_enabled = self.ltm_config["enabled"]
         self._errors_warned: set[str] = set()

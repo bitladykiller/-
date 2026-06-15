@@ -73,30 +73,6 @@ class TaskStore(Protocol):
     async def close(self) -> Any: ...
 
 
-def build_task_status_payload(
-    task_id: str,
-    status: TaskStatus,
-    *,
-    result: Any = None,
-    error: str | None = None,
-) -> TaskStatusPayload:
-    """构造统一的任务状态负载。"""
-    payload: TaskStatusPayload = {
-        "task_id": task_id,
-        "status": status.value,
-        "updated_at": datetime.now().isoformat(),
-    }
-    if result is not None:
-        payload["result"] = result
-    if error is not None:
-        payload["error"] = error
-    return payload
-
-
-def dump_task_status_payload(payload: TaskStatusPayload) -> str:
-    """把任务状态序列化为可写入 Redis 的 JSON 字符串。"""
-    return json.dumps(payload, ensure_ascii=False, default=str)
-
 def load_task_status_payload(raw: str | None) -> TaskStatusPayload | None:
     """从 Redis 原始值解析任务状态。"""
     if raw is None:
@@ -129,11 +105,6 @@ def load_task_status_payload(raw: str | None) -> TaskStatusPayload | None:
     return payload
 
 
-def create_redis_client(redis_url: str) -> TaskStore:
-    """根据 Redis URL 创建异步 Redis 客户端。"""
-    return aioredis.from_url(redis_url, decode_responses=True)
-
-
 async def write_task_status(
     redis_client: TaskStore,
     task_id: str,
@@ -143,40 +114,21 @@ async def write_task_status(
     error: str | None = None,
 ) -> None:
     """构造统一状态 payload 并写入 Redis。"""
-    payload = build_task_status_payload(
-        task_id,
-        status,
-        result=result,
-        error=error,
-    )
+    payload: TaskStatusPayload = {
+        "task_id": task_id,
+        "status": status.value,
+        "updated_at": datetime.now().isoformat(),
+    }
+    if result is not None:
+        payload["result"] = result
+    if error is not None:
+        payload["error"] = error
+
     await redis_client.set(
         f"{_TASK_KEY_PREFIX}{task_id}",
-        dump_task_status_payload(payload),
+        json.dumps(payload, ensure_ascii=False, default=str),
         ex=_TASK_TTL_SECONDS,
     )
-
-
-async def read_task_status(
-    redis_client: TaskStore,
-    task_id: str,
-) -> TaskStatusPayload | None:
-    """读取任务状态，不存在或格式异常时返回 None。"""
-    raw = await redis_client.get(f"{_TASK_KEY_PREFIX}{task_id}")
-    return load_task_status_payload(raw)
-
-
-def spawn_tracked_task(
-    pending_tasks: set[asyncio.Task[Any]],
-    task_id: str,
-    coro: Coroutine[Any, Any, Any],
-) -> None:
-    """创建后台任务、附加标准名称并登记引用。"""
-    task = asyncio.create_task(
-        coro,
-        name=f"task:{task_id}",
-    )
-    pending_tasks.add(task)
-    task.add_done_callback(pending_tasks.discard)
 
 
 async def run_task_with_status_updates(
@@ -225,9 +177,7 @@ class _TaskManager:
         """提交一个后台协程任务并返回 task_id。"""
         task_id = uuid.uuid4().hex[:12]
         await write_task_status(self._redis, task_id, TaskStatus.PENDING)
-        spawn_tracked_task(
-            self._pending_tasks,
-            task_id,
+        task = asyncio.create_task(
             run_task_with_status_updates(
                 self._redis,
                 logger,
@@ -236,7 +186,10 @@ class _TaskManager:
                 *args,
                 **kwargs,
             ),
+            name=f"task:{task_id}",
         )
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
         logger.info(
             "任务已提交 | task_id=%s | func=%s",
             task_id,
@@ -246,7 +199,8 @@ class _TaskManager:
 
     async def get_status(self, task_id: str) -> TaskStatusPayload | None:
         """读取任务状态，不存在时返回 None。"""
-        return await read_task_status(self._redis, task_id)
+        raw = await self._redis.get(f"{_TASK_KEY_PREFIX}{task_id}")
+        return load_task_status_payload(raw)
 
     async def close(self) -> None:
         """关闭底层 Redis 连接。
@@ -269,7 +223,9 @@ async def get_task_manager() -> _TaskManager:
     async with _runtime_lock:
         manager = _runtime_instance
         if manager is None:
-            manager = _TaskManager(create_redis_client(settings.REDIS_URL))
+            manager = _TaskManager(
+                aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+            )
             _runtime_instance = manager
         return manager
 
@@ -291,13 +247,9 @@ async def close_task_manager() -> None:
 __all__ = [
     "TaskStatus",
     "TaskStatusPayload",
-    "build_task_status_payload",
     "close_task_manager",
-    "dump_task_status_payload",
     "get_task_manager",
     "load_task_status_payload",
-    "read_task_status",
     "run_task_with_status_updates",
-    "spawn_tracked_task",
     "write_task_status",
 ]

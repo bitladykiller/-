@@ -8,14 +8,18 @@
 
 from __future__ import annotations
 
-from typing import TypedDict
-
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from app.api.common import MessageResponse, build_message_response, run_api_action
+from app.api.common import run_api_action
 from app.shared.core.logger import get_logger
-from app.chat.application.conversation_service import ConversationService, ConversationSummary
+from app.chat.application.conversation_service import (
+    ConversationSummary,
+    create_conversation as create_conversation_service,
+    delete_conversation as delete_conversation_service,
+    get_user_conversations as get_user_conversations_service,
+    update_conversation_name as update_conversation_name_service,
+)
 
 logger = get_logger(__name__)
 
@@ -23,12 +27,6 @@ logger = get_logger(__name__)
 router = APIRouter(tags=["conversations"])
 DELETE_SUCCESS_MESSAGE = "会话已删除"
 UPDATE_NAME_SUCCESS_MESSAGE = "会话名称已更新"
-
-
-class ConversationCreatedResponse(TypedDict):
-    """创建会话成功响应。"""
-
-    conversation_id: int
 
 
 class CreateConversationRequest(BaseModel):
@@ -46,11 +44,11 @@ class UpdateConversationNameRequest(BaseModel):
 @router.post("/conversations")
 async def create_conversation(
     request: CreateConversationRequest,
-) -> ConversationCreatedResponse:
+) -> dict[str, int]:
     """创建新会话并返回会话 ID。"""
     conversation_id = await run_api_action(
         "create_conversation",
-        ConversationService.create_conversation(request.user_id),
+        create_conversation_service(request.user_id),
         logger=logger,
         user_id=request.user_id,
     )
@@ -62,35 +60,35 @@ async def get_user_conversations(user_id: int) -> list[ConversationSummary]:
     """查询指定用户的会话列表。"""
     return await run_api_action(
         "get_user_conversations",
-        ConversationService.get_user_conversations(user_id),
+        get_user_conversations_service(user_id),
         logger=logger,
         user_id=user_id,
     )
 
 
 @router.delete("/conversations/{conversation_id}")
-async def delete_conversation(conversation_id: int) -> MessageResponse:
+async def delete_conversation(conversation_id: int) -> dict[str, str]:
     """删除指定会话。"""
     await run_api_action(
         "delete_conversation",
-        ConversationService.delete_conversation(conversation_id),
+        delete_conversation_service(conversation_id),
         logger=logger,
         conversation_id=conversation_id,
     )
-    return build_message_response(DELETE_SUCCESS_MESSAGE)
+    return {"message": DELETE_SUCCESS_MESSAGE}
 
 
 @router.put("/conversations/{conversation_id}/name")
 async def update_conversation_name(
     conversation_id: int,
     request: UpdateConversationNameRequest,
-) -> MessageResponse:
+) -> dict[str, str]:
     """更新指定会话标题。"""
     await run_api_action(
         "update_conversation_name",
-        ConversationService.update_conversation_name(conversation_id, request.name),
+        update_conversation_name_service(conversation_id, request.name),
         logger=logger,
         conversation_id=conversation_id,
         name=request.name,
     )
-    return build_message_response(UPDATE_NAME_SUCCESS_MESSAGE)
+    return {"message": UPDATE_NAME_SUCCESS_MESSAGE}

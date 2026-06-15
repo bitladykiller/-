@@ -22,7 +22,7 @@ docker compose up -d --build
 
 1. 启动 MySQL、Neo4j、Redis、Milvus 及其依赖
 2. 执行 Neo4j 导入任务（存在 CSV 时）
-3. 执行 `python -m app.scripts.bootstrap_compose_db`
+3. 自动完成数据库建表
 4. 启动 FastAPI 服务
 
 ### 2.2 常用命令
@@ -41,36 +41,24 @@ docker compose down -v
 
 项目当前只保留 `docker compose` 这一种应用启动方式，不再提供本地直启入口。
 
-## 3. 数据库维护脚本
+数据库维护脚本属于内部维护能力，不作为项目启动入口对外提供。
 
-### 3.1 只建表
+## 3. 验证
 
-```bash
-python -m app.scripts.bootstrap_compose_db
-```
-
-### 3.2 本地重置表
-
-```bash
-python -m app.scripts.init_db
-```
-
-## 4. 验证
-
-### 4.1 健康检查
+### 3.1 健康检查
 
 ```bash
 curl http://localhost:8000/health
 ```
 
-### 4.2 结构与测试
+### 3.2 结构与测试
 
 ```bash
 pytest tests/core/test_lazy_package_imports.py
 pytest
 ```
 
-## 5. 生产建议
+## 4. 生产建议
 
 - 只对宿主机暴露 `8000` 端口
 - API Key 和数据库凭据只通过环境变量注入

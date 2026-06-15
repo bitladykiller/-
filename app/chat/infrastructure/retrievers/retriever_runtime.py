@@ -26,28 +26,26 @@ _cypher_example_retriever: Any | None = None
 _t2c_agent: Any | None = None
 
 
-def _get_registry():
-    """返回全局 Retriever 注册表；首次访问时再创建。"""
-    global _registry
+async def get_retriever(name: str):
+    """获取检索器。确保 registry 已初始化。"""
+    global _registry, _cypher_example_retriever, _t2c_agent
+
     if _registry is None:
         from app.chat.infrastructure.retrievers.retriever_contracts import (
             RetrieverRegistry,
         )
 
         _registry = RetrieverRegistry()
-    return _registry
-
-
-
-
-async def get_retriever(name: str):
-    """获取检索器。确保 registry 已初始化。"""
-    global _cypher_example_retriever, _t2c_agent
-
-    registry = _get_registry()
+    registry = _registry
     if KG_RETRIEVER_NAME not in registry or RAG_RETRIEVER_NAME not in registry:
         async with _registry_lock:
-            registry = _get_registry()
+            if _registry is None:
+                from app.chat.infrastructure.retrievers.retriever_contracts import (
+                    RetrieverRegistry,
+                )
+
+                _registry = RetrieverRegistry()
+            registry = _registry
             if KG_RETRIEVER_NAME not in registry:
                 from app.chat.infrastructure.kg_sub_graph.kg_neo4j_conn import (
                     get_neo4j_graph,
@@ -96,7 +94,7 @@ async def get_retriever(name: str):
                 )
 
                 registry.register(RAG_RETRIEVER_NAME, MilvusDocRetriever())
-    return _get_registry().get(name)
+    return registry.get(name)
 
 
 __all__ = ["get_retriever"]

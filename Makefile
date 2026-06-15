@@ -37,9 +37,6 @@ clean: ## 清理构建产物
 build: ## 构建 Docker 镜像
 	docker compose build
 
-docker-up: ## 启动 Docker 服务
-	docker compose up -d
-
 docker-down: ## 停止 Docker 服务
 	docker compose down
 

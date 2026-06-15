@@ -133,7 +133,7 @@ def test_save_memory_inserts_record_built_from_embedding(monkeypatch) -> None:
         collection_name="memory_coll",
         retrieval_core=FakeRetrievalCore(),
     )
-    monkeypatch.setattr(ltm, "_now_ts", lambda: 123)
+    monkeypatch.setattr(ltm_module.time, "time", lambda: 123)
 
     memory_id = _run(
         ltm.save_memory(
@@ -248,7 +248,7 @@ def test_update_memory_hit_info_updates_memory_and_upserts_partial_record(monkey
         "update_last_hit_at": True,
         "increase_hit_count": True,
     }
-    monkeypatch.setattr(ltm, "_now_ts", lambda: 200)
+    monkeypatch.setattr(ltm_module.time, "time", lambda: 200)
     monkeypatch.setattr(
         ltm_module,
         "upsert_records",

@@ -1,4 +1,5 @@
 import logging
+import sys
 
 import app.shared.core.logger as logger_module
 
@@ -16,38 +17,34 @@ def test_format_log_context_filters_empty_values() -> None:
     assert context == "user_id=1 status=ok zero_value=0"
 
 
-def test_configure_root_logger_adds_single_stream_handler() -> None:
-    logger = logging.Logger("test.root")
-    logger_module.configure_root_logger(
-        logger,
-        level=logging.INFO,
-        format_str="%(message)s",
-        date_format="%Y-%m-%d",
-    )
-    logger_module.configure_root_logger(
-        logger,
-        level=logging.INFO,
-        format_str="%(message)s",
-        date_format="%Y-%m-%d",
-    )
+def test_setup_logging_adds_single_stream_handler_and_marks_noisy_loggers(monkeypatch) -> None:
+    root_logger = logging.Logger("test.root")
+    noisy_loggers = {
+        name: logging.Logger(name) for name in logger_module._NOISY_LOGGERS
+    }
+
+    def fake_get_logger(name=None):
+        if name is None:
+            return root_logger
+        return noisy_loggers[name]
+
+    monkeypatch.setattr(logger_module, "_logging_initialized", False)
+    monkeypatch.setattr(logger_module.logging, "getLogger", fake_get_logger)
+
+    logger_module.setup_logging(level=logging.INFO, format_str="%(message)s", date_format="%Y-%m-%d")
+    logger_module.setup_logging(level=logging.INFO, format_str="%(message)s", date_format="%Y-%m-%d")
 
     stream_handlers = [
         handler
-        for handler in logger.handlers
+        for handler in root_logger.handlers
         if isinstance(handler, logging.StreamHandler)
         and not isinstance(handler, logging.FileHandler)
     ]
     assert len(stream_handlers) == 1
-
-
-def test_setup_logging_is_idempotent(monkeypatch) -> None:
-    logger = logging.Logger("test.idempotent")
-    monkeypatch.setattr(logger_module, "_logging_initialized", False)
-    monkeypatch.setattr(logger_module.logging, "getLogger", lambda name=None: logger)
-
-    logger_module.setup_logging()
-    handler_count = len(logger.handlers)
-    logger_module.setup_logging()
-
-    assert len(logger.handlers) == handler_count
+    assert stream_handlers[0].stream is sys.stdout
+    assert root_logger.level == logging.INFO
+    assert all(
+        noisy_logger.level == logging.WARNING
+        for noisy_logger in noisy_loggers.values()
+    )
     monkeypatch.setattr(logger_module, "_logging_initialized", False)

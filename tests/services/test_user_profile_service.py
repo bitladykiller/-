@@ -2,7 +2,6 @@ import asyncio
 import json
 
 import app.user.application.user_profile_service as profile_service
-from app.user.application.user_profile_service import UserProfileService
 
 
 class FakeProfileCache:
@@ -72,7 +71,7 @@ def test_get_profile_uses_cached_profile(monkeypatch) -> None:
 
     monkeypatch.setattr(profile_service, "query_profile_from_db", unexpected_query)
 
-    result = _run(UserProfileService.get_profile(7, redis_client=cache))
+    result = _run(profile_service.get_profile(7, redis_client=cache))
 
     assert result == expected
     assert cache.setex_calls == []
@@ -96,13 +95,13 @@ def test_get_profile_ignores_invalid_cached_json_and_queries_db(monkeypatch) -> 
 
     monkeypatch.setattr(profile_service, "query_profile_from_db", fake_query)
 
-    result = _run(UserProfileService.get_profile(3, redis_client=cache))
+    result = _run(profile_service.get_profile(3, redis_client=cache))
 
     assert result == expected
     assert cache.setex_calls == [
         (
             "user:profile:3",
-            UserProfileService.CACHE_TTL,
+            profile_service.CACHE_TTL,
             json.dumps(expected, ensure_ascii=False),
         )
     ]
@@ -125,13 +124,13 @@ def test_get_profile_queries_db_and_backfills_cache(monkeypatch) -> None:
 
     monkeypatch.setattr(profile_service, "query_profile_from_db", fake_query)
 
-    result = _run(UserProfileService.get_profile(9, redis_client=cache))
+    result = _run(profile_service.get_profile(9, redis_client=cache))
 
     assert result == expected
     assert len(cache.setex_calls) == 1
     key, ttl, value = cache.setex_calls[0]
     assert key == "user:profile:9"
-    assert ttl == UserProfileService.CACHE_TTL
+    assert ttl == profile_service.CACHE_TTL
     assert json.loads(value) == expected
 
 
@@ -141,7 +140,7 @@ def test_get_profile_returns_empty_profile_when_query_fails(monkeypatch) -> None
 
     monkeypatch.setattr(profile_service, "query_profile_from_db", failing_query)
 
-    result = _run(UserProfileService.get_profile(11))
+    result = _run(profile_service.get_profile(11))
 
     assert result == {
         "user_id": 11,
@@ -159,7 +158,7 @@ def test_upsert_profile_data_short_circuits_on_empty_payload(monkeypatch) -> Non
 
     monkeypatch.setattr(profile_service, "upsert_profile_data_in_db", unexpected_write)
 
-    result = _run(UserProfileService.upsert_profile_data(3, {}))
+    result = _run(profile_service.upsert_profile_data(3, {}))
 
     assert result is True
 
@@ -182,7 +181,7 @@ def test_upsert_profile_data_commits_and_invalidates_cache_on_change(monkeypatch
     )
 
     result = _run(
-        UserProfileService.upsert_profile_data(5, profile, redis_client=cache)
+        profile_service.upsert_profile_data(5, profile, redis_client=cache)
     )
 
     assert result is True
@@ -208,7 +207,7 @@ def test_upsert_profile_data_skips_commit_and_invalidation_when_store_reports_no
     )
 
     result = _run(
-        UserProfileService.upsert_profile_data(
+        profile_service.upsert_profile_data(
             8,
             {"preferred_brand": "海尔"},
             redis_client=cache,
@@ -236,7 +235,7 @@ def test_upsert_profile_data_returns_false_when_write_raises(monkeypatch) -> Non
     )
 
     result = _run(
-        UserProfileService.upsert_profile_data(
+        profile_service.upsert_profile_data(
             5,
             {"preferred_brand": "海尔"},
             redis_client=cache,
