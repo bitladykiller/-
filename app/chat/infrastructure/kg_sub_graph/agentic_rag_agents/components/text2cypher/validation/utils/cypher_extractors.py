@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 import regex as re
 
@@ -76,7 +76,18 @@ def _extract_entities_from_cypher_statement(
         match_props = match_props[0] if match_props and match_props[0] else None
 
         if match_props is not None:
-            match_props_parsed = _process_match_clause_property_ids(match_props)
+            match_props_parsed: List[Dict[str, Any]] = []
+            for part in match_props.split(","):
+                k_and_v = part.split(":")
+                if len(k_and_v) != 2:
+                    continue
+                k, v = k_and_v
+                match_props_parsed.append(
+                    {
+                        "property_name": k.strip().strip("{"),
+                        "property_value": v.strip().strip("}").replace('"', "").replace("'", ""),
+                    }
+                )
             [
                 e.update({"labels_or_types": label_or_type, "operator": "="})
                 for e in match_props_parsed
@@ -84,47 +95,20 @@ def _extract_entities_from_cypher_statement(
             tasks.extend(match_props_parsed)
 
         if variable is not None and variable not in used_variables:
-            filters: List[Dict[str, Any]] = _find_all_filters(
-                variable=variable, cypher_statement=cypher_statement
-            )
+            filters = [
+                {
+                    "property_name": property_name.strip().strip("{"),
+                    "operator": operator.strip(),
+                    "property_value": property_value.strip().strip("}").replace('"', "").replace("'", ""),
+                }
+                for property_name, operator, property_value in re.findall(
+                    get_variable_operator_property_pattern(variable=variable),
+                    cypher_statement,
+                )
+            ]
             [e.update({"labels_or_types": label_or_type}) for e in filters]
             tasks.extend(filters)
 
         used_variables.add(variable)
 
     return [CypherValidationTask.model_validate(task) for task in tasks]
-
-
-def _process_match_clause_property_ids(
-    match_clause_section: str,
-) -> List[Dict[str, Any]]:
-    parts = match_clause_section.split(",")
-    result = list()
-    for part in parts:
-        k_and_v = part.split(":")
-        if len(k_and_v) == 2:
-            k, v = k_and_v
-        else:
-            continue
-        result.append(
-            {
-                "property_name": k.strip().strip("{"),
-                "property_value": v.strip().strip("}").replace('"', "").replace("'", ""),
-            }
-        )
-    return result
-
-
-def _find_all_filters(variable: str, cypher_statement: str) -> List[Dict[str, Any]]:
-    res: List[Tuple[str, str, Any]] = re.findall(
-        get_variable_operator_property_pattern(variable=variable), cypher_statement
-    )
-
-    return [
-        {
-            "property_name": n[0].strip().strip("{"),
-            "operator": n[1].strip(),
-            "property_value": n[2].strip().strip("}").replace('"', "").replace("'", ""),
-        }
-        for n in res
-    ]

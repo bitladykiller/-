@@ -83,17 +83,6 @@ def _register_kg_retriever() -> None:
         KG_RETRIEVER_NAME,
         KnowledgeGraphRetriever(_t2c_agent),
     )
-
-
-def _register_rag_retriever() -> None:
-    """注册文档检索器。"""
-    from app.chat.infrastructure.retrievers.retriever_implementations import (
-        MilvusDocRetriever,
-    )
-
-    _get_registry().register(RAG_RETRIEVER_NAME, MilvusDocRetriever())
-
-
 async def get_retriever(name: str):
     """获取检索器。确保 registry 已初始化。"""
     registry = _get_registry()
@@ -103,7 +92,11 @@ async def get_retriever(name: str):
             if KG_RETRIEVER_NAME not in registry:
                 _register_kg_retriever()
             if RAG_RETRIEVER_NAME not in registry:
-                _register_rag_retriever()
+                from app.chat.infrastructure.retrievers.retriever_implementations import (
+                    MilvusDocRetriever,
+                )
+
+                registry.register(RAG_RETRIEVER_NAME, MilvusDocRetriever())
     return _get_registry().get(name)
 
 
