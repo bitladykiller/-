@@ -149,76 +149,6 @@ _VALIDATION_PROMPT = ChatPromptTemplate.from_messages(
     ]
 )
 
-def _create_text2cypher_validation_node(
-    graph: Neo4jGraph,
-    llm: BaseChatModel | None = None,
-    llm_validation: bool = True,
-    max_attempts: int = 3,
-    attempt_cypher_execution_on_final_attempt: bool = False,
-):
-    """构造仅供本工作流使用的 Cypher 校验节点。"""
-    validate_cypher_chain = None
-    if llm is not None and llm_validation:
-        validate_cypher_chain = _VALIDATION_PROMPT | llm.with_structured_output(
-            ValidateCypherOutput
-        )
-
-    async def validate_cypher(state: CypherState) -> dict[str, Any]:
-        generation_attempt = state.get("attempts", 0) + 1
-        errors: list[str] = []
-        mapping_errors: list[str] = []
-
-        syntax_error = validate_cypher_query_syntax(
-            graph=graph, cypher_statement=state.get("statement", "")
-        )
-        errors.extend(syntax_error)
-
-        write_errors = validate_no_writes_in_cypher_query(state.get("statement", ""))
-        errors.extend(write_errors)
-
-        corrected_cypher = correct_cypher_query_relationship_direction(
-            graph=graph, cypher_statement=state.get("statement", "")
-        )
-
-        if validate_cypher_chain is not None:
-            llm_errors = await validate_cypher_query_with_llm(
-                validate_cypher_chain=validate_cypher_chain,
-                question=state.get("task", ""),
-                graph=graph,
-                cypher_statement=state.get("statement", ""),
-            )
-            errors.extend(llm_errors.get("errors", []))
-            mapping_errors.extend(llm_errors.get("mapping_errors", []))
-
-        if not llm_validation:
-            cypher_errors = validate_cypher_query_with_schema(
-                graph=graph, cypher_statement=state.get("statement", "")
-            )
-            errors.extend(cypher_errors)
-
-        if (errors or mapping_errors) and generation_attempt < max_attempts:
-            next_action = "correct_cypher"
-        elif generation_attempt < max_attempts:
-            next_action = "execute_cypher"
-        elif (
-            generation_attempt == max_attempts
-            and attempt_cypher_execution_on_final_attempt
-        ):
-            next_action = "execute_cypher"
-        else:
-            next_action = "__end__"
-
-        return {
-            "next_action_cypher": next_action,
-            "statement": corrected_cypher,
-            "errors": errors,
-            "attempts": generation_attempt,
-            "steps": ["validate_cypher"],
-        }
-
-    return validate_cypher
-
-
 def create_text2cypher_agent(
     llm: BaseChatModel,
     graph: Neo4jGraph,
@@ -324,13 +254,61 @@ def create_text2cypher_agent(
         )
         return {"statement": generated_cypher, "steps": ["generate_cypher"]}
 
-    validate_cypher = _create_text2cypher_validation_node(
-        llm=llm,
-        graph=graph,
-        llm_validation=llm_cypher_validation,
-        max_attempts=max_attempts,
-        attempt_cypher_execution_on_final_attempt=attempt_cypher_execution_on_final_attempt,
-    )
+    async def validate_cypher(state: CypherState) -> dict[str, Any]:
+        generation_attempt = state.get("attempts", 0) + 1
+        errors: list[str] = []
+        mapping_errors: list[str] = []
+
+        syntax_error = validate_cypher_query_syntax(
+            graph=graph, cypher_statement=state.get("statement", "")
+        )
+        errors.extend(syntax_error)
+
+        write_errors = validate_no_writes_in_cypher_query(state.get("statement", ""))
+        errors.extend(write_errors)
+
+        corrected_cypher = correct_cypher_query_relationship_direction(
+            graph=graph, cypher_statement=state.get("statement", "")
+        )
+
+        if llm is not None and llm_cypher_validation:
+            validate_cypher_chain = _VALIDATION_PROMPT | llm.with_structured_output(
+                ValidateCypherOutput
+            )
+            llm_errors = await validate_cypher_query_with_llm(
+                validate_cypher_chain=validate_cypher_chain,
+                question=state.get("task", ""),
+                graph=graph,
+                cypher_statement=state.get("statement", ""),
+            )
+            errors.extend(llm_errors.get("errors", []))
+            mapping_errors.extend(llm_errors.get("mapping_errors", []))
+
+        if not llm_cypher_validation:
+            cypher_errors = validate_cypher_query_with_schema(
+                graph=graph, cypher_statement=state.get("statement", "")
+            )
+            errors.extend(cypher_errors)
+
+        if (errors or mapping_errors) and generation_attempt < max_attempts:
+            next_action = "correct_cypher"
+        elif generation_attempt < max_attempts:
+            next_action = "execute_cypher"
+        elif (
+            generation_attempt == max_attempts
+            and attempt_cypher_execution_on_final_attempt
+        ):
+            next_action = "execute_cypher"
+        else:
+            next_action = "__end__"
+
+        return {
+            "next_action_cypher": next_action,
+            "statement": corrected_cypher,
+            "errors": errors,
+            "attempts": generation_attempt,
+            "steps": ["validate_cypher"],
+        }
 
     async def correct_cypher(state: CypherState) -> dict[str, Any]:
         correct_cypher_chain = _CORRECTION_PROMPT | llm | StrOutputParser()

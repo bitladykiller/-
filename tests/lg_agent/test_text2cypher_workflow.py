@@ -54,13 +54,6 @@ def _run(awaitable):
     return asyncio.run(awaitable)
 
 
-def _unexpected_node(message: str):
-    def node(_state):
-        raise AssertionError(message)
-
-    return node
-
-
 def test_create_text2cypher_agent_falls_back_to_generation_when_predefined_miss(
     monkeypatch,
 ) -> None:
@@ -74,23 +67,17 @@ def test_create_text2cypher_agent_falls_back_to_generation_when_predefined_miss(
         "create_vector_query_matcher",
         lambda *_args, **_kwargs: matcher,
     )
-
-    def fake_validation_node(*_args, **_kwargs):
-        async def validate(state):
-            return {
-                "next_action_cypher": "execute_cypher",
-                "statement": state.get("statement", ""),
-                "errors": [],
-                "attempts": 1,
-                "steps": ["validate_cypher"],
-            }
-
-        return validate
-
+    monkeypatch.setattr(text2cypher, "validate_cypher_query_syntax", lambda **_kwargs: [])
+    monkeypatch.setattr(text2cypher, "validate_no_writes_in_cypher_query", lambda *_args: [])
     monkeypatch.setattr(
         text2cypher,
-        "_create_text2cypher_validation_node",
-        fake_validation_node,
+        "correct_cypher_query_relationship_direction",
+        lambda **kwargs: kwargs["cypher_statement"],
+    )
+    monkeypatch.setattr(
+        text2cypher,
+        "validate_cypher_query_with_schema",
+        lambda **_kwargs: [],
     )
 
     def fake_llm(prompt_value):
@@ -101,6 +88,7 @@ def test_create_text2cypher_agent_falls_back_to_generation_when_predefined_miss(
         llm=fake_llm,
         graph=graph,
         cypher_example_retriever=example_retriever,
+        llm_cypher_validation=False,
         predefined_cypher_dict={"query_a": "MATCH (n) RETURN n"},
     )
 
@@ -138,11 +126,6 @@ def test_create_text2cypher_agent_uses_fallback_record_when_execute_returns_empt
         text2cypher,
         "create_vector_query_matcher",
         lambda *_args, **_kwargs: matcher,
-    )
-    monkeypatch.setattr(
-        text2cypher,
-        "_create_text2cypher_validation_node",
-        lambda *_args, **_kwargs: _unexpected_node("should not validate"),
     )
 
     agent = text2cypher.create_text2cypher_agent(
