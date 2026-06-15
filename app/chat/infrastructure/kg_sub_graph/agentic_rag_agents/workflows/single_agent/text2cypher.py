@@ -177,7 +177,7 @@ def create_text2cypher_agent(
     async def predefined_match(state: CypherState) -> dict:
         normalized_task = state["task"]
         matches = matcher.match_query(normalized_task, top_k=1)
-        if not matches or matches[0]["similarity"] <= 0.6:
+        if not matches:
             return {
                 "steps": ["predefined_match"],
                 "next_action_cypher": "generate_cypher",

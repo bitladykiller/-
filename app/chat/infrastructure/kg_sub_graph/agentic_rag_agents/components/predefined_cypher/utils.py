@@ -24,7 +24,7 @@ class _VectorQueryMatcher:
         self,
         predefined_cypher_dict: dict[str, str],
         query_descriptions: dict[str, str],
-        similarity_threshold: float = 0.5,
+        similarity_threshold: float = 0.6,
     ):
         """
         初始化查询匹配器。

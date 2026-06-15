@@ -59,7 +59,7 @@ def test_vector_query_matcher_match_query_filters_by_similarity(monkeypatch) -> 
     matcher = predefined_utils._VectorQueryMatcher(
         predefined_cypher_dict={"query_a": "A", "query_b": "B"},
         query_descriptions={"query_a": "desc a", "query_b": "desc b"},
-        similarity_threshold=0.5,
+        similarity_threshold=0.6,
     )
     monkeypatch.setattr(matcher, "_embed_texts", lambda texts: [[0.9, 0.1]])
 
@@ -69,6 +69,25 @@ def test_vector_query_matcher_match_query_filters_by_similarity(monkeypatch) -> 
     assert results[0]["query_name"] == "query_a"
     assert results[0]["cypher"] == "A"
     assert results[0]["similarity"] >= matcher.similarity_threshold
+
+
+def test_vector_query_matcher_drops_low_similarity_matches(monkeypatch) -> None:
+    monkeypatch.setattr(
+        predefined_utils._VectorQueryMatcher,
+        "_embed_texts",
+        lambda self, texts: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    )
+    matcher = predefined_utils._VectorQueryMatcher(
+        predefined_cypher_dict={"query_a": "A", "query_b": "B", "query_c": "C"},
+        query_descriptions={
+            "query_a": "desc a",
+            "query_b": "desc b",
+            "query_c": "desc c",
+        },
+    )
+    monkeypatch.setattr(matcher, "_embed_texts", lambda texts: [[1.0, 1.0, 1.0]])
+
+    assert matcher.match_query("查一个模糊问题", top_k=2) == []
 
 
 def test_vector_query_matcher_parameter_extraction_and_factory(monkeypatch) -> None:
