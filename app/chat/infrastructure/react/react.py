@@ -12,6 +12,7 @@
 import asyncio
 import json
 
+from app.chat.infrastructure.graph.message_utils import normalize_message_role
 from app.chat.infrastructure.graph.state import AgentState
 from app.chat.infrastructure.kg_sub_graph.kg_neo4j_conn import get_neo4j_graph
 from app.chat.infrastructure.memory_bridge.context import enrich_question
@@ -29,7 +30,7 @@ from app.chat.infrastructure.retrievers.retriever_contracts import (
     RAG_RETRIEVER_NAME,
 )
 from app.chat.infrastructure.retrievers.retriever_runtime import get_retriever
-from langchain_core.messages import AIMessage, ChatMessage
+from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.graph.state import CompiledStateGraph
@@ -138,7 +139,7 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
         else:
             transcript_lines: list[str] = []
             for message in result_messages[-20:]:
-                role = message.role if isinstance(message, ChatMessage) else message.type
+                role = normalize_message_role(message)
                 content = str(message.text)
                 if content:
                     transcript_lines.append(f"[{role}] {content}")

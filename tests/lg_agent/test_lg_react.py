@@ -125,14 +125,14 @@ def test_execute_react_returns_checked_answer_with_progress_message(monkeypatch)
             {"role": "system", "content": lg_react.REACT_ANSWER_CHECK_PROMPT},
             {
                 "role": "user",
-                "content": (
-                    "用户问题：怎么修空调\n\n"
-                    "ReAct 过程记录：\n[human] 怎么修空调\n[ai] 先检查电源\n\n"
-                    "当前候选答案：先检查电源"
-                ),
-            },
+                    "content": (
+                        "用户问题：怎么修空调\n\n"
+                        "ReAct 过程记录：\n[user] 怎么修空调\n[assistant] 先检查电源\n\n"
+                        "当前候选答案：先检查电源"
+                    ),
+                },
+            ]
         ]
-    ]
 
 
 def test_execute_react_preserves_chat_message_role_in_transcript(monkeypatch) -> None:

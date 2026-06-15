@@ -21,6 +21,20 @@ def wrap_user_message(raw_input: str) -> str:
     return f"<user_message>\n{escaped}\n</user_message>"
 
 
+def normalize_message_role(message: AnyMessage) -> str:
+    """把 LangChain 消息角色收口为稳定的 user/assistant/... 角色名。"""
+    raw_role = message.role if isinstance(message, ChatMessage) else message.type
+    return {
+        "human": "user",
+        "ai": "assistant",
+    }.get(raw_role, raw_role)
+
+
+def extract_message_content(message: AnyMessage) -> str:
+    """提取消息 content，并统一为字符串。"""
+    return str(message.content or "")
+
+
 def build_safe_messages(
     system_prompt: str,
     messages: Sequence[AnyMessage],
@@ -28,12 +42,8 @@ def build_safe_messages(
     """构建安全消息列表，对 user 消息做 XML 隔离防注入。"""
     safe: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     for message in messages:
-        raw_role = message.role if isinstance(message, ChatMessage) else message.type
-        role = {
-            "human": "user",
-            "ai": "assistant",
-        }.get(raw_role, raw_role)
-        content = str(message.content or "")
+        role = normalize_message_role(message)
+        content = extract_message_content(message)
         if role == "user":
             safe.append({"role": "user", "content": wrap_user_message(content)})
             continue
