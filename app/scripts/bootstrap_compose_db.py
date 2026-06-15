@@ -15,6 +15,6 @@ async def create_all_tables() -> None:
         await conn.run_sync(Base.metadata.create_all)
 
 
-# 导入模型以触发 SQLAlchemy metadata 注册。
-importlib.import_module("app.user.infrastructure.models.user")
+# 导入会话模型以触发 SQLAlchemy metadata 注册。
+# `conversation.py` 会继续显式导入 `User`，因此这里不需要重复导入 `user.py`。
 importlib.import_module("app.user.infrastructure.models.conversation")

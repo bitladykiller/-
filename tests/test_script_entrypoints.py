@@ -20,10 +20,7 @@ def test_bootstrap_compose_db_import_prepares_environment(monkeypatch) -> None:
     original_import_module = importlib.import_module
 
     def fake_import_module(name: str, package: str | None = None):
-        if name in {
-            "app.user.infrastructure.models.user",
-            "app.user.infrastructure.models.conversation",
-        }:
+        if name == "app.user.infrastructure.models.conversation":
             imported_modules.append(name)
             return types.ModuleType(name)
         return original_import_module(name, package)
@@ -32,10 +29,7 @@ def test_bootstrap_compose_db_import_prepares_environment(monkeypatch) -> None:
 
     _import_fresh("app.scripts.bootstrap_compose_db")
 
-    assert imported_modules == [
-        "app.user.infrastructure.models.user",
-        "app.user.infrastructure.models.conversation",
-    ]
+    assert imported_modules == ["app.user.infrastructure.models.conversation"]
 
 
 def test_create_all_tables_runs_create_all(monkeypatch) -> None:
