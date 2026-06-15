@@ -38,59 +38,58 @@ def _get_registry():
     return _registry
 
 
-def _register_kg_retriever() -> None:
-    """在 Neo4j 可用时注册知识图谱检索器。"""
-    global _cypher_example_retriever, _t2c_agent
 
-    from app.chat.infrastructure.kg_sub_graph.kg_neo4j_conn import get_neo4j_graph
 
-    neo4j_graph = get_neo4j_graph()
-    if neo4j_graph is None:
-        return
-
-    if _cypher_example_retriever is None:
-        from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.retrievers.cypher_examples.northwind_retriever import (
-            NorthwindCypherRetriever,
-        )
-
-        _cypher_example_retriever = NorthwindCypherRetriever()
-
-    if _t2c_agent is None:
-        from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.cypher_dict import (
-            predefined_cypher_dict,
-        )
-        from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.descriptions import (
-            QUERY_DESCRIPTIONS,
-        )
-        from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.workflows.single_agent.text2cypher import (
-            create_text2cypher_agent,
-        )
-        from app.chat.infrastructure.modeling.models import cypher_model
-
-        _t2c_agent = create_text2cypher_agent(
-            llm=cypher_model,
-            graph=neo4j_graph,
-            cypher_example_retriever=_cypher_example_retriever,
-            predefined_cypher_dict=predefined_cypher_dict,
-            query_descriptions=QUERY_DESCRIPTIONS,
-        )
-
-    from app.chat.infrastructure.retrievers.retriever_implementations import (
-        KnowledgeGraphRetriever,
-    )
-
-    _get_registry().register(
-        KG_RETRIEVER_NAME,
-        KnowledgeGraphRetriever(_t2c_agent),
-    )
 async def get_retriever(name: str):
     """获取检索器。确保 registry 已初始化。"""
+    global _cypher_example_retriever, _t2c_agent
+
     registry = _get_registry()
     if KG_RETRIEVER_NAME not in registry or RAG_RETRIEVER_NAME not in registry:
         async with _registry_lock:
             registry = _get_registry()
             if KG_RETRIEVER_NAME not in registry:
-                _register_kg_retriever()
+                from app.chat.infrastructure.kg_sub_graph.kg_neo4j_conn import (
+                    get_neo4j_graph,
+                )
+
+                neo4j_graph = get_neo4j_graph()
+                if neo4j_graph is not None:
+                    if _cypher_example_retriever is None:
+                        from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.retrievers.cypher_examples.northwind_retriever import (
+                            NorthwindCypherRetriever,
+                        )
+
+                        _cypher_example_retriever = NorthwindCypherRetriever()
+
+                    if _t2c_agent is None:
+                        from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.cypher_dict import (
+                            predefined_cypher_dict,
+                        )
+                        from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.descriptions import (
+                            QUERY_DESCRIPTIONS,
+                        )
+                        from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.workflows.single_agent.text2cypher import (
+                            create_text2cypher_agent,
+                        )
+                        from app.chat.infrastructure.modeling.models import cypher_model
+
+                        _t2c_agent = create_text2cypher_agent(
+                            llm=cypher_model,
+                            graph=neo4j_graph,
+                            cypher_example_retriever=_cypher_example_retriever,
+                            predefined_cypher_dict=predefined_cypher_dict,
+                            query_descriptions=QUERY_DESCRIPTIONS,
+                        )
+
+                    from app.chat.infrastructure.retrievers.retriever_implementations import (
+                        KnowledgeGraphRetriever,
+                    )
+
+                    registry.register(
+                        KG_RETRIEVER_NAME,
+                        KnowledgeGraphRetriever(_t2c_agent),
+                    )
             if RAG_RETRIEVER_NAME not in registry:
                 from app.chat.infrastructure.retrievers.retriever_implementations import (
                     MilvusDocRetriever,

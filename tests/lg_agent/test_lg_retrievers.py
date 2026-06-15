@@ -178,6 +178,13 @@ def test_knowledge_graph_retriever_normalizes_records_and_cyphers() -> None:
 
 
 def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
+    import app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.cypher_dict as cypher_dict
+    import app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.descriptions as descriptions
+    import app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.retrievers.cypher_examples.northwind_retriever as northwind_retriever
+    import app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.workflows.single_agent.text2cypher as text2cypher
+    import app.chat.infrastructure.kg_sub_graph.kg_neo4j_conn as kg_neo4j_conn
+    import app.chat.infrastructure.modeling.models as lg_models
+
     monkeypatch.setattr(
         retriever_runtime,
         "_registry",
@@ -185,16 +192,53 @@ def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
     )
     monkeypatch.setattr(retriever_runtime, "_cypher_example_retriever", None)
     monkeypatch.setattr(retriever_runtime, "_t2c_agent", None)
-    call_count = {"kg": 0}
+    created: dict[str, object] = {}
+    fake_graph = object()
+    fake_model = object()
+    fake_agent = object()
 
-    def fake_register_kg() -> None:
-        call_count["kg"] += 1
-        retriever_runtime._get_registry().register(
-            retriever_contracts.KG_RETRIEVER_NAME,
-            FakeRetriever({"records": [{"id": 1}]}),
-        )
+    class FakeNorthwindRetriever:
+        def __init__(self) -> None:
+            created["cypher_examples"] = int(created.get("cypher_examples", 0)) + 1
 
-    monkeypatch.setattr(retriever_runtime, "_register_kg_retriever", fake_register_kg)
+    class FakeKgRetriever(FakeRetriever):
+        def __init__(self, agent) -> None:
+            created["kg_retrievers"] = int(created.get("kg_retrievers", 0)) + 1
+            created["kg_agent"] = agent
+            super().__init__({"records": [{"id": 1}]})
+
+    def fake_create_text2cypher_agent(**kwargs):
+        created["t2c_calls"] = int(created.get("t2c_calls", 0)) + 1
+        created["t2c_kwargs"] = kwargs
+        return fake_agent
+
+    monkeypatch.setattr(kg_neo4j_conn, "get_neo4j_graph", lambda: fake_graph)
+    monkeypatch.setattr(
+        northwind_retriever,
+        "NorthwindCypherRetriever",
+        FakeNorthwindRetriever,
+    )
+    monkeypatch.setattr(
+        cypher_dict,
+        "predefined_cypher_dict",
+        {"query_a": "MATCH (n) RETURN n"},
+    )
+    monkeypatch.setattr(
+        descriptions,
+        "QUERY_DESCRIPTIONS",
+        {"query_a": "desc"},
+    )
+    monkeypatch.setattr(
+        text2cypher,
+        "create_text2cypher_agent",
+        fake_create_text2cypher_agent,
+    )
+    monkeypatch.setattr(lg_models, "cypher_model", fake_model)
+    monkeypatch.setattr(
+        retriever_implementations,
+        "KnowledgeGraphRetriever",
+        FakeKgRetriever,
+    )
     monkeypatch.setattr(
         retriever_implementations,
         "MilvusDocRetriever",
@@ -208,6 +252,18 @@ def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
         retriever_runtime.get_retriever(retriever_contracts.RAG_RETRIEVER_NAME)
     )
 
-    assert isinstance(kg, FakeRetriever)
+    assert isinstance(kg, FakeKgRetriever)
     assert isinstance(rag, FakeRagRetriever)
-    assert call_count == {"kg": 1}
+    assert created == {
+        "cypher_examples": 1,
+        "kg_agent": fake_agent,
+        "kg_retrievers": 1,
+        "t2c_calls": 1,
+        "t2c_kwargs": {
+            "llm": fake_model,
+            "graph": fake_graph,
+            "cypher_example_retriever": retriever_runtime._cypher_example_retriever,
+            "predefined_cypher_dict": {"query_a": "MATCH (n) RETURN n"},
+            "query_descriptions": {"query_a": "desc"},
+        },
+    }
