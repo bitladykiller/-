@@ -148,6 +148,8 @@ _VALIDATION_PROMPT = ChatPromptTemplate.from_messages(
         ),
     ]
 )
+
+
 def _create_text2cypher_generation_node(
     llm: BaseChatModel,
     graph: Neo4jGraph,
@@ -173,28 +175,6 @@ def _create_text2cypher_generation_node(
         return {"statement": generated_cypher, "steps": ["generate_cypher"]}
 
     return generate_cypher
-
-
-def _create_text2cypher_correction_node(llm: BaseChatModel, graph: Neo4jGraph):
-    """构造仅供本工作流使用的 Cypher 修正节点。"""
-    correct_cypher_chain = _CORRECTION_PROMPT | llm | StrOutputParser()
-
-    async def correct_cypher(state: CypherState) -> dict[str, Any]:
-        corrected_cypher = await correct_cypher_chain.ainvoke(
-            {
-                "question": state.get("task"),
-                "errors": state.get("errors"),
-                "cypher": state.get("statement"),
-                "schema": graph.schema,
-            }
-        )
-        return {
-            "next_action_cypher": "validate_cypher",
-            "statement": corrected_cypher,
-            "steps": ["correct_cypher"],
-        }
-
-    return correct_cypher
 
 
 def _create_text2cypher_validation_node(
@@ -365,7 +345,22 @@ def create_text2cypher_agent(
         max_attempts=max_attempts,
         attempt_cypher_execution_on_final_attempt=attempt_cypher_execution_on_final_attempt,
     )
-    correct_cypher = _create_text2cypher_correction_node(llm=llm, graph=graph)
+
+    async def correct_cypher(state: CypherState) -> dict[str, Any]:
+        correct_cypher_chain = _CORRECTION_PROMPT | llm | StrOutputParser()
+        corrected_cypher = await correct_cypher_chain.ainvoke(
+            {
+                "question": state.get("task"),
+                "errors": state.get("errors"),
+                "cypher": state.get("statement"),
+                "schema": graph.schema,
+            }
+        )
+        return {
+            "next_action_cypher": "validate_cypher",
+            "statement": corrected_cypher,
+            "steps": ["correct_cypher"],
+        }
 
     text2cypher_graph_builder.add_node("generate_cypher", generate_cypher)
     text2cypher_graph_builder.add_node("validate_cypher", validate_cypher)

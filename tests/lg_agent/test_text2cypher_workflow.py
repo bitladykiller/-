@@ -86,12 +86,6 @@ def test_create_text2cypher_agent_falls_back_to_generation_when_predefined_miss(
 
         return validate
 
-    def fake_correction_node(*_args, **_kwargs):
-        async def correct(_state):
-            raise AssertionError("should not enter correction path")
-
-        return correct
-
     monkeypatch.setattr(
         text2cypher,
         "_create_text2cypher_generation_node",
@@ -101,11 +95,6 @@ def test_create_text2cypher_agent_falls_back_to_generation_when_predefined_miss(
         text2cypher,
         "_create_text2cypher_validation_node",
         fake_validation_node,
-    )
-    monkeypatch.setattr(
-        text2cypher,
-        "_create_text2cypher_correction_node",
-        fake_correction_node,
     )
 
     agent = text2cypher.create_text2cypher_agent(
@@ -158,11 +147,6 @@ def test_create_text2cypher_agent_uses_fallback_record_when_execute_returns_empt
         text2cypher,
         "_create_text2cypher_validation_node",
         lambda *_args, **_kwargs: _unexpected_node("should not validate"),
-    )
-    monkeypatch.setattr(
-        text2cypher,
-        "_create_text2cypher_correction_node",
-        lambda *_args, **_kwargs: _unexpected_node("should not correct"),
     )
 
     agent = text2cypher.create_text2cypher_agent(
