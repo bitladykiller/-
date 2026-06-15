@@ -6,18 +6,21 @@
 - 通过统一 helper 包装 Service 调用，避免每个 handler 重复样板代码
 """
 
-from collections.abc import Awaitable
-from typing import Any
-
-from fastapi import APIRouter, Body, HTTPException
-
-from app.shared.core.logger import format_log_context, get_logger
+from app.api.route_utils import run_route_action
 from app.chat.application.conversation_service import (
     create_conversation as create_conversation_service,
+)
+from app.chat.application.conversation_service import (
     delete_conversation as delete_conversation_service,
+)
+from app.chat.application.conversation_service import (
     get_user_conversations as get_user_conversations_service,
+)
+from app.chat.application.conversation_service import (
     update_conversation_name as update_conversation_name_service,
 )
+from app.shared.core.logger import get_logger
+from fastapi import APIRouter, Body
 
 logger = get_logger(__name__)
 
@@ -25,35 +28,15 @@ logger = get_logger(__name__)
 router = APIRouter(tags=["conversations"])
 
 
-async def _run_route_action(
-    action_name: str,
-    operation: Awaitable[Any],
-    **context: object,
-) -> Any:
-    """统一执行会话路由动作，并把未知异常转换成 HTTP 500。"""
-    try:
-        return await operation
-    except HTTPException:
-        raise
-    except Exception as exc:
-        log_context = format_log_context(**context)
-        logger.error(
-            f"{action_name} 异常 | {log_context} | {exc}"
-            if log_context
-            else f"{action_name} 异常 | {exc}",
-            exc_info=True,
-        )
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
 @router.post("/conversations")
 async def create_conversation(
     user_id: int = Body(..., embed=True),
 ) -> dict[str, int]:
     """创建新会话并返回会话 ID。"""
-    conversation_id = await _run_route_action(
+    conversation_id = await run_route_action(
         "create_conversation",
         create_conversation_service(user_id),
+        logger=logger,
         user_id=user_id,
     )
     return {"conversation_id": conversation_id}
@@ -62,9 +45,10 @@ async def create_conversation(
 @router.get("/conversations/user/{user_id}")
 async def get_user_conversations(user_id: int) -> list[dict[str, object]]:
     """查询指定用户的会话列表。"""
-    return await _run_route_action(
+    return await run_route_action(
         "get_user_conversations",
         get_user_conversations_service(user_id),
+        logger=logger,
         user_id=user_id,
     )
 
@@ -72,9 +56,10 @@ async def get_user_conversations(user_id: int) -> list[dict[str, object]]:
 @router.delete("/conversations/{conversation_id}")
 async def delete_conversation(conversation_id: int) -> dict[str, str]:
     """删除指定会话。"""
-    await _run_route_action(
+    await run_route_action(
         "delete_conversation",
         delete_conversation_service(conversation_id),
+        logger=logger,
         conversation_id=conversation_id,
     )
     return {"message": "会话已删除"}
@@ -86,9 +71,10 @@ async def update_conversation_name(
     name: str = Body(..., embed=True),
 ) -> dict[str, str]:
     """更新指定会话标题。"""
-    await _run_route_action(
+    await run_route_action(
         "update_conversation_name",
         update_conversation_name_service(conversation_id, name),
+        logger=logger,
         conversation_id=conversation_id,
         name=name,
     )

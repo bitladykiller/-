@@ -3,21 +3,20 @@
 这个模块只处理上传入口和任务提交，不承担文档索引细节。
 """
 
-from collections.abc import Awaitable
-from typing import Any
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-
-from app.shared.core.logger import format_log_context, get_logger
+from app.api.route_utils import run_route_action
+from app.chat.application.task_queue import get_task_manager
 from app.knowledge.application.indexing_service import (
     DOCUMENT_MAGIC_SIGNATURES,
     INDEXABLE_DOCUMENT_EXTENSIONS,
     process_file,
 )
-from app.chat.application.task_queue import get_task_manager
+from app.shared.core.logger import get_logger
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 logger = get_logger(__name__)
 
@@ -25,27 +24,6 @@ router = APIRouter(tags=["upload"])
 
 UPLOAD_DIR = Path("uploads")
 MAX_UPLOAD_SIZE_MB = 50
-
-
-async def _run_route_action(
-    action_name: str,
-    operation: Awaitable[Any],
-    **context: object,
-) -> Any:
-    """统一执行上传路由动作，并把未知异常转换成 HTTP 500。"""
-    try:
-        return await operation
-    except HTTPException:
-        raise
-    except Exception as exc:
-        log_context = format_log_context(**context)
-        logger.error(
-            f"{action_name} 异常 | {log_context} | {exc}"
-            if log_context
-            else f"{action_name} 异常 | {exc}",
-            exc_info=True,
-        )
-        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/upload")
@@ -107,9 +85,10 @@ async def upload_file(
             "message": "文件已上传，后台正在解析索引。请通过 task_id 查询进度。",
         }
 
-    return await _run_route_action(
+    return await run_route_action(
         "upload_file",
         operation(),
+        logger=logger,
         user_id=user_id,
         filename=file.filename,
     )
@@ -128,8 +107,9 @@ async def get_upload_status(task_id: str) -> dict[str, Any]:
             )
         return status
 
-    return await _run_route_action(
+    return await run_route_action(
         "get_upload_status",
         operation(),
+        logger=logger,
         task_id=task_id,
     )
