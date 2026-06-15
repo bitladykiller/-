@@ -51,6 +51,3 @@ neo4j-import: ## 导入 Neo4j 数据
 
 pre-commit: ## 运行 pre-commit hooks
 	pre-commit run --all-files
-
-dev: ## 开发模式启动
-	python -m app.run

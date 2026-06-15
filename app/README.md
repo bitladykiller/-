@@ -20,4 +20,4 @@
 ## 使用约定
 
 - 新代码优先从 `app.chat`、`app.knowledge`、`app.user`、`app.shared` 导入。
-- 本地开发启动推荐使用 `python -m app.run`。
+- 应用启动统一由 `docker compose` 调用 `configs/docker/app/start.sh` 完成。

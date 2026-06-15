@@ -97,20 +97,9 @@ docker volume ls | grep '^local.*kefu_'
 
 如果后续要恢复 Neo4j 图谱初始化，把那 16 份 CSV 数据放进 `docker/neo4j-import/` 即可，无需再改 `compose`。
 
-### 4. 本地开发模式（可选）
+项目当前只保留 `docker compose` 这一种启动方式，不再保留其他应用启动入口。
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python -m app.run
-```
-
-`requirements.txt` 已包含 `shared_retrieval` 与 `rag_doc_parser` 的本地可编辑安装，无需额外手工安装兄弟模块。
-
-如果继续用本地开发模式，仍然可以沿用 `app/.env` 中的宿主机端口配置。
-
-### 5. 开发检查（可选）
+### 4. 开发检查（可选）
 
 根目录的 [pyproject.toml](/Volumes/移动卷宗/学习/Aiprogram/智能客服Agent/code/deepseek_agent/pyproject.toml) 已统一收敛了 `pytest` 和 `ruff` 的基础配置。
 
@@ -155,7 +144,7 @@ deepseek_agent/
 - [app/README.md](app/README.md) — 当前主代码树说明
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 当前架构和目录边界
 - [docs/MIGRATION.md](docs/MIGRATION.md) — 新旧导入路径和迁移策略
-- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — 部署与启动方式
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — Docker Compose 部署方式
 - [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) — 开发规范
 - [rag_doc_parser/README.md](rag_doc_parser/README.md) — RAG 文档解析模块
 - [app/scripts/README.md](app/scripts/README.md) — 应用内维护脚本说明

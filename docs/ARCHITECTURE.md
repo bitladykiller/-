@@ -79,16 +79,9 @@ shared
 
 ## 4. 启动方式
 
-### 本地开发
-
-```bash
-python -m app.run
-```
-
-### Docker Compose
-
 ```bash
 docker compose up -d --build
 ```
 
+项目当前只保留 Docker Compose 启动。
 容器启动前会执行 `python -m app.scripts.bootstrap_compose_db`。

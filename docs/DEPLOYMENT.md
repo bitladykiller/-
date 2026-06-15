@@ -39,45 +39,38 @@ docker compose down -v
 - API：`http://localhost:8000`
 - Swagger：`http://localhost:8000/docs`
 
-## 3. 本地开发启动
+项目当前只保留 `docker compose` 这一种应用启动方式，不再提供本地直启入口。
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python -m app.run
-```
+## 3. 数据库维护脚本
 
-## 4. 数据库维护脚本
-
-### 4.1 只建表
+### 3.1 只建表
 
 ```bash
 python -m app.scripts.bootstrap_compose_db
 ```
 
-### 4.2 本地重置表
+### 3.2 本地重置表
 
 ```bash
 python -m app.scripts.init_db
 ```
 
-## 5. 验证
+## 4. 验证
 
-### 5.1 健康检查
+### 4.1 健康检查
 
 ```bash
 curl http://localhost:8000/health
 ```
 
-### 5.2 结构与测试
+### 4.2 结构与测试
 
 ```bash
 pytest tests/core/test_lazy_package_imports.py
 pytest
 ```
 
-## 6. 生产建议
+## 5. 生产建议
 
 - 只对宿主机暴露 `8000` 端口
 - API Key 和数据库凭据只通过环境变量注入
