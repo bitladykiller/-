@@ -13,10 +13,11 @@ from __future__ import annotations
 
 from typing import Any, TypedDict, TypeAlias
 
+from langchain_core.messages import AIMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
-from app.chat.infrastructure.graph.message_utils import MessagePayload, build_progress_response
+from app.chat.infrastructure.graph.message_utils import build_progress_response
 from app.chat.infrastructure.retrievers.retriever_contracts import Retriever
 
 RetrieverRecord: TypeAlias = dict[str, Any]
@@ -59,6 +60,7 @@ class RetrieverResult(TypedDict, total=False):
     records: list[RetrieverRecord]
     errors: list[Any]
     steps: list[Any]
+
 
 def records_from_result(result: RetrieverResult) -> list[RetrieverRecord]:
     """从统一 Retriever 结果中安全提取 records 列表。"""
@@ -112,7 +114,7 @@ async def summarize_and_build_response(
     *,
     progress_message: str,
     fallback: str = "未查询到相关信息～",
-) -> MessagePayload:
+) -> dict[str, list[AIMessage]]:
     """统一执行摘要生成，并返回“两段式”进度响应。"""
     if not records:
         return build_progress_response(progress_message, fallback)

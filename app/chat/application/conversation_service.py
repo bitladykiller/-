@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any, AsyncContextManager, Protocol, TypeAlias, TypeVar, TypedDict
+from typing import Any, AsyncContextManager, TypeVar, TypedDict
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,7 +21,6 @@ from app.user.infrastructure.models.conversation import Conversation, DialogueTy
 
 logger = get_logger(__name__)
 OperationResult = TypeVar("OperationResult")
-_SessionFactory: TypeAlias = Callable[[], AsyncContextManager[AsyncSession]]
 _DEFAULT_CONVERSATION_TITLE = "新会话"
 
 
@@ -35,15 +34,9 @@ class ConversationSummary(TypedDict):
     dialogue_type: str
 
 
-class _LoggerLike(Protocol):
-    """服务层日志对象的最小接口。"""
-
-    def error(self, msg: str, *args: Any, **kwargs: Any) -> Any: ...
-
-
 async def run_db_operation(
-    session_factory: _SessionFactory,
-    logger: _LoggerLike,
+    session_factory: Callable[[], AsyncContextManager[AsyncSession]],
+    logger: Any,
     action_name: str,
     operation: Callable[..., Awaitable[OperationResult]],
     *operation_args: object,

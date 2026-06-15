@@ -13,17 +13,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, TypedDict
+from typing import Any
 
 from langchain_core.messages import AIMessage
 
 from app.shared.security import wrap_user_message
-
-
-class MessagePayload(TypedDict):
-    """节点返回的标准消息负载。"""
-
-    messages: list[AIMessage]
 
 
 def _message_role(message: Any) -> str:
@@ -58,7 +52,7 @@ def build_safe_messages(
 def build_progress_response(
     progress_message: str,
     summary: str,
-) -> MessagePayload:
+) -> dict[str, list[AIMessage]]:
     """统一构造“进度提示 + 最终摘要”的两段式回复。"""
     return {
         "messages": [
@@ -68,7 +62,7 @@ def build_progress_response(
     }
 
 
-def build_simple_message_response(message: str) -> MessagePayload:
+def build_simple_message_response(message: str) -> dict[str, list[AIMessage]]:
     """统一构造单条助手消息响应。"""
     return {"messages": [AIMessage(content=message)]}
 
@@ -103,7 +97,6 @@ def find_last_assistant_message(messages: list[Any]) -> str:
 
 
 __all__ = [
-    "MessagePayload",
     "build_progress_response",
     "build_safe_messages",
     "build_simple_message_response",

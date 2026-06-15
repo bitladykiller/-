@@ -44,7 +44,6 @@ logger = get_logger(__name__)
 SEARCH_LOG_PREVIEW_LIMIT = 100
 EMBEDDING_LOG_PREVIEW_LIMIT = 200
 HYBRID_SEARCH_LIMIT_MULTIPLIER = 2
-LoggerLike: TypeAlias = Any
 _MilvusHit: TypeAlias = Mapping[str, Any]
 
 
@@ -241,7 +240,7 @@ def ensure_collection_ready_or_raise(
     *,
     milvus_client: Any,
     collection_name: str,
-    logger: LoggerLike,
+    logger: Any,
 ) -> None:
     """确保长期记忆 collection 已就绪；失败时统一补充上下文日志。"""
     try:
