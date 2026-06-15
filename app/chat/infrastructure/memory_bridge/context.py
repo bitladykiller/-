@@ -50,6 +50,19 @@ _MEMORY_SECTION_TITLES = {
 }
 
 
+def resolve_memory_scope(config: RunnableConfig) -> tuple[str, str, str]:
+    """从 RunnableConfig 提取 tenant/user/session，缺失时回退默认值。"""
+    configurable = config.get("configurable", {})
+    tenant_id = configurable.get("tenant_id")
+    user_id = configurable.get("user_id")
+    thread_id = configurable.get("thread_id")
+    return (
+        tenant_id if isinstance(tenant_id, str) and tenant_id else _DEFAULT_TENANT_ID,
+        user_id if isinstance(user_id, str) and user_id else _DEFAULT_USER_ID,
+        thread_id if isinstance(thread_id, str) and thread_id else _DEFAULT_SESSION_ID,
+    )
+
+
 def build_memory_context(
     session_summary: SessionSummary | None,
     recent_messages: list[MessageRecord],
@@ -88,13 +101,12 @@ def build_memory_context(
                 memory.memory_type,
             )
             memory_lines.append(f"{index}. {memory_type_label}：{memory.content}")
-        if memory_lines:
-            joined_memory_lines = "\n".join(memory_lines)
-            long_term_memory_text = (
-                "【长期记忆参考】\n"
-                f"{joined_memory_lines}\n"
-                "注意：以上长期记忆仅供参考，用户当前表达优先级更高。"
-            )
+        joined_memory_lines = "\n".join(memory_lines)
+        long_term_memory_text = (
+            "【长期记忆参考】\n"
+            f"{joined_memory_lines}\n"
+            "注意：以上长期记忆仅供参考，用户当前表达优先级更高。"
+        )
 
     parts: list[str] = []
     for title, body in (
@@ -113,7 +125,6 @@ def build_memory_context(
     ):
         if body:
             parts.append(f"[{title}]\n{body}")
-    parts = [section for section in parts if section.strip()]
     if not parts:
         return ""
     return "【记忆说明】当以下信息来源存在矛盾时，优先信任 P0 > P1 > P2 > P3。" + "\n\n" + "\n\n".join(parts)
@@ -133,14 +144,11 @@ async def load_memory_state(
         return None
 
     try:
-        configurable = config.get("configurable", {})
-        tenant_id = configurable.get("tenant_id")
-        user_id = configurable.get("user_id")
-        thread_id = configurable.get("thread_id")
+        tenant_id, user_id, thread_id = resolve_memory_scope(config)
         memory_state = await middleware.before_agent(
-            tenant_id=tenant_id if isinstance(tenant_id, str) and tenant_id else _DEFAULT_TENANT_ID,
-            user_id=user_id if isinstance(user_id, str) and user_id else _DEFAULT_USER_ID,
-            session_id=thread_id if isinstance(thread_id, str) and thread_id else _DEFAULT_SESSION_ID,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            session_id=thread_id,
             user_input=user_input,
         )
     except Exception:
