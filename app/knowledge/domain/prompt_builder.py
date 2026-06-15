@@ -7,7 +7,7 @@
 
 边界：
 - 这里只负责拼接局部提示片段
-- 完整的 Agent 上下文组装由 `lg_context.py` 负责
+- 完整的 Agent 上下文组装由 `app.chat.infrastructure.memory_bridge.context` 负责
 """
 from __future__ import annotations
 
