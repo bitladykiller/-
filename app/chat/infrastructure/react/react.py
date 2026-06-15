@@ -14,7 +14,6 @@ import json
 
 from app.chat.infrastructure.graph.message_utils import normalize_message_role
 from app.chat.infrastructure.graph.state import AgentState
-from app.chat.infrastructure.kg_sub_graph.kg_neo4j_conn import get_neo4j_graph
 from app.chat.infrastructure.memory_bridge.context import enrich_question
 from app.chat.infrastructure.modeling.models import (
     ReactAnswerCheckOutput,
@@ -49,6 +48,8 @@ async def get_react_subgraph() -> CompiledStateGraph:
         async with _react_lock:
             if _react_subgraph is None:
                 kg = await get_retriever(KG_RETRIEVER_NAME)
+                if kg is None:
+                    raise RuntimeError("kg retriever unavailable")
                 rag = await get_retriever(RAG_RETRIEVER_NAME)
 
                 # ReAct 子图是单例，工具里直接捕获检索器引用即可，
@@ -99,7 +100,9 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
     Returns:
         {"messages": [...]} 包含最终回复。
     """
-    if get_neo4j_graph() is None:
+    try:
+        sg = await get_react_subgraph()
+    except RuntimeError:
         return {"messages": [AIMessage(content="抱歉，知识库服务暂时不可用，请稍后重试。")]}
 
     q = await enrich_question(
@@ -107,8 +110,6 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
         config,
         state.messages[-1].content,
     )
-
-    sg = await get_react_subgraph()
     subgraph_config = dict(config) if config else {}
     # 单次 ReAct 子图的最大 agent/tools 步数
     subgraph_config["recursion_limit"] = REACT_RECURSION_LIMIT

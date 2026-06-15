@@ -67,8 +67,29 @@ def test_react_runtime_caches_builder_result(monkeypatch) -> None:
     assert build_count["count"] == 1
 
 
+def test_get_react_subgraph_raises_when_kg_retriever_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(lg_react, "_react_subgraph", None)
+
+    async def fake_get_retriever(name: str):
+        if name == lg_react.KG_RETRIEVER_NAME:
+            return None
+        raise AssertionError("rag retriever should not be requested when kg is unavailable")
+
+    monkeypatch.setattr(lg_react, "get_retriever", fake_get_retriever)
+
+    try:
+        _run(lg_react.get_react_subgraph())
+    except RuntimeError as exc:
+        assert str(exc) == "kg retriever unavailable"
+    else:  # pragma: no cover - contract guard
+        raise AssertionError("expected RuntimeError")
+
+
 def test_execute_react_returns_no_neo4j_response_when_graph_missing(monkeypatch) -> None:
-    monkeypatch.setattr(lg_react, "get_neo4j_graph", lambda: None)
+    async def fake_get_react_subgraph():
+        raise RuntimeError("kg retriever unavailable")
+
+    monkeypatch.setattr(lg_react, "get_react_subgraph", fake_get_react_subgraph)
 
     result = _run(
         lg_react.execute_react(
@@ -98,7 +119,6 @@ def test_execute_react_returns_checked_answer_with_progress_message(monkeypatch)
     async def fake_get_react_subgraph():
         return subgraph
 
-    monkeypatch.setattr(lg_react, "get_neo4j_graph", lambda: object())
     monkeypatch.setattr(lg_react, "enrich_question", fake_enrich_question)
     monkeypatch.setattr(lg_react, "get_react_subgraph", fake_get_react_subgraph)
     monkeypatch.setattr(lg_react, "react_judge_model", judge_model)
@@ -154,7 +174,6 @@ def test_execute_react_preserves_chat_message_role_in_transcript(monkeypatch) ->
         return subgraph
 
     monkeypatch.setattr(lg_react, "REACT_MAX_ATTEMPTS", 1)
-    monkeypatch.setattr(lg_react, "get_neo4j_graph", lambda: object())
     monkeypatch.setattr(lg_react, "enrich_question", fake_enrich_question)
     monkeypatch.setattr(lg_react, "get_react_subgraph", fake_get_react_subgraph)
     monkeypatch.setattr(lg_react, "react_judge_model", judge_model)
@@ -184,7 +203,6 @@ def test_execute_react_retries_on_step_exhaustion_and_returns_fallback(monkeypat
     async def fake_get_react_subgraph():
         return subgraph
 
-    monkeypatch.setattr(lg_react, "get_neo4j_graph", lambda: object())
     monkeypatch.setattr(lg_react, "enrich_question", fake_enrich_question)
     monkeypatch.setattr(lg_react, "get_react_subgraph", fake_get_react_subgraph)
 
