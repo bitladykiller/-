@@ -1,4 +1,3 @@
-import asyncio
 import sys
 from types import SimpleNamespace
 
@@ -8,17 +7,6 @@ import app.chat.infrastructure.modeling.models as lg_models
 class DummyModel:
     def __init__(self) -> None:
         self.answer = "ok"
-
-
-class AwaitableDummyModel:
-    def __init__(self, value: str) -> None:
-        self.value = value
-
-    def __await__(self):
-        async def _resolve() -> str:
-            return self.value
-
-        return _resolve().__await__()
 
 
 def test_get_model_uses_provider_specific_client(monkeypatch) -> None:
@@ -112,20 +100,3 @@ def test_lazy_model_proxy_delegates_attribute_access(monkeypatch) -> None:
     )
 
     assert lazy_model.answer == "ok"
-
-
-def test_lazy_model_proxy_delegates_await(monkeypatch) -> None:
-    monkeypatch.setattr(
-        lg_models,
-        "_get_model",
-        lambda *_args: AwaitableDummyModel("awaited"),
-    )
-    lazy_model = lg_models.LazyModelProxy(
-        "agent",
-        0.7,
-    )
-
-    async def _await_value() -> str:
-        return await lazy_model
-
-    assert asyncio.run(_await_value()) == "awaited"

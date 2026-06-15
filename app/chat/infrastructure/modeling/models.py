@@ -9,15 +9,14 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
-
-from app.shared.core.config import settings
-from app.shared.core.logger import get_logger
 from app.chat.infrastructure.graph.state import (
-    RetrievalPlanType,
     GuardrailsAction,
     ReactJudgeDecision,
+    RetrievalPlanType,
 )
+from app.shared.core.config import settings
+from app.shared.core.logger import get_logger
+from pydantic import BaseModel, Field
 
 logger = get_logger(__name__)
 
@@ -47,10 +46,6 @@ class LazyModelProxy:
 
     def __getattr__(self, item: str) -> Any:
         return getattr(_get_model(self._name, self._temperature), item)
-
-    def __await__(self):
-        """支持 `await lazy_model`，直接代理到底层模型。"""
-        return _get_model(self._name, self._temperature).__await__()
 
 
 # ================================================================== #
