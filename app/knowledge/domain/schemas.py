@@ -33,6 +33,17 @@ class UserProfileData(TypedDict, total=False):
     facts: list[UserProfileFact]
 
 
+def empty_user_profile_data() -> UserProfileData:
+    """返回带稳定默认值的空画像结构。"""
+    return {
+        "preferred_brand": None,
+        "budget_range": None,
+        "preferred_category": None,
+        "tags": [],
+        "facts": [],
+    }
+
+
 class MessageRecord(BaseModel):
     """
     短期记忆中的单条消息记录。
@@ -140,6 +151,6 @@ class AgentMemoryState(BaseModel):
     recent_messages: list[MessageRecord] = Field(default_factory=list)
     long_term_memories: list[MemorySearchResult] = Field(default_factory=list)
     user_profile: UserProfileData = Field(
-        default_factory=dict,
+        default_factory=empty_user_profile_data,
         description="结构化用户画像快照，由画像存储链路提供",
     )

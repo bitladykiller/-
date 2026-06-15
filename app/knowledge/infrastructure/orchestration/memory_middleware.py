@@ -16,6 +16,7 @@ from app.knowledge.domain.schemas import (
     AgentMemoryState,
     MemorySearchResult,
     MessageRecord,
+    empty_user_profile_data,
 )
 from app.shared.core.logger import get_logger
 
@@ -90,7 +91,7 @@ class MemoryMiddleware:
                 )
             except Exception:
                 self._warn_once("user_profile", "[memory] 用户画像读取失败，降级为空画像")
-                memory_state.user_profile = {}
+                memory_state.user_profile = empty_user_profile_data()
 
         try:
             memory_state.long_term_memories = await self.milvus_ltm.hybrid_search(

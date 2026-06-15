@@ -164,6 +164,9 @@ def test_upsert_profile_data_in_db_orchestrates_profile_fields_and_facts(monkeyp
             user_id=5,
             profile={
                 "preferred_brand": "海尔",
+                "budget_range": None,
+                "preferred_category": None,
+                "tags": [],
                 "facts": [
                     {"key": "city", "value": "杭州"},
                     {"key": "budget", "value": "3000以内"},
@@ -181,7 +184,7 @@ def test_upsert_profile_data_in_db_orchestrates_profile_fields_and_facts(monkeyp
                 "preferred_brand": "海尔",
                 "budget_range": None,
                 "preferred_category": None,
-                "tags": None,
+                "tags": [],
             },
         ),
         (
@@ -195,7 +198,7 @@ def test_upsert_profile_data_in_db_orchestrates_profile_fields_and_facts(monkeyp
     ]
 
 
-def test_upsert_profile_data_in_db_skips_empty_fields_and_invalid_facts(monkeypatch) -> None:
+def test_upsert_profile_data_in_db_skips_empty_fields_and_empty_fact_list(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
     fake_session = object()
 
@@ -219,23 +222,17 @@ def test_upsert_profile_data_in_db_skips_empty_fields_and_invalid_facts(monkeypa
             fake_session,
             user_id=6,
             profile={
-                "preferred_brand": "",
-                "facts": [
-                    {"key": "city", "value": "杭州"},
-                    {"key": "", "value": "ignored"},
-                    {"key": "budget", "value": None},
-                ],
+                "preferred_brand": None,
+                "budget_range": None,
+                "preferred_category": None,
+                "tags": [],
+                "facts": [],
             },
         )
     )
 
     assert changed is False
-    assert calls == [
-        (
-            "fact",
-            {"user_id": 6, "fact_key": "city", "fact_value": "杭州"},
-        )
-    ]
+    assert calls == []
 
 
 def test_upsert_fact_in_db_returns_false_when_value_did_not_change() -> None:

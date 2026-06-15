@@ -63,18 +63,18 @@ def build_memory_context(
         recent_message_lines.append(f"[{role}]: {message.content}")
 
     user_profile_text = ""
-    if user_profile:
+    if user_profile is not None:
         profile_lines: list[str] = []
         for field_name, label in _USER_PROFILE_TEXT_LABELS.items():
-            value = user_profile.get(field_name)
-            if isinstance(value, str) and value:
+            value = user_profile[field_name]
+            if value:
                 profile_lines.append(f"{label}: {value}")
 
-        tags = user_profile.get("tags") or []
+        tags = user_profile["tags"]
         if tags:
             profile_lines.append(f"标签: {', '.join(tags)}")
 
-        for fact in user_profile.get("facts", []):
+        for fact in user_profile["facts"]:
             profile_lines.append(f"{fact['key']}: {fact['value']}")
         user_profile_text = "\n".join(profile_lines)
 

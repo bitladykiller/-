@@ -60,13 +60,14 @@ async def upsert_profile_data(
     if not profile:
         return True
 
+    normalized_profile = coerce_user_profile_data(profile)
     data_changed = False
     try:
         async with AsyncSessionLocal() as db:
             data_changed = await upsert_profile_data_in_db(
                 db,
                 user_id=user_id,
-                profile=profile,
+                profile=normalized_profile,
             )
             if data_changed:
                 await db.commit()

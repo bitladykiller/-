@@ -34,7 +34,15 @@ def _run(awaitable):
 
 
 def test_load_memory_state_returns_cached_state_without_runtime_lookup(monkeypatch) -> None:
-    cached_state = AgentMemoryState(user_profile={"preferred_brand": "海尔"})
+    cached_state = AgentMemoryState(
+        user_profile={
+            "preferred_brand": "海尔",
+            "budget_range": None,
+            "preferred_category": None,
+            "tags": [],
+            "facts": [],
+        }
+    )
     state = AgentState(messages=[], memory_state=cached_state)
 
     async def unexpected_get_memory_middleware():
@@ -62,7 +70,15 @@ def test_load_memory_state_returns_none_when_runtime_unavailable(monkeypatch) ->
 
 
 def test_load_memory_state_loads_and_caches_memory_state(monkeypatch) -> None:
-    loaded_state = AgentMemoryState(user_profile={"preferred_category": "空调"})
+    loaded_state = AgentMemoryState(
+        user_profile={
+            "preferred_brand": None,
+            "budget_range": None,
+            "preferred_category": "空调",
+            "tags": [],
+            "facts": [],
+        }
+    )
     middleware = FakeMemoryMiddleware(loaded_state)
     state = AgentState(messages=[])
     config = {
@@ -135,7 +151,15 @@ def test_enrich_question_returns_original_when_memory_missing(monkeypatch) -> No
 
 def test_enrich_question_injects_memory_context(monkeypatch) -> None:
     state = AgentState(messages=[])
-    memory_state = AgentMemoryState(user_profile={"preferred_category": "洗衣机"})
+    memory_state = AgentMemoryState(
+        user_profile={
+            "preferred_brand": None,
+            "budget_range": None,
+            "preferred_category": "洗衣机",
+            "tags": [],
+            "facts": [],
+        }
+    )
 
     async def fake_load_memory_state(
         current_state: AgentState,

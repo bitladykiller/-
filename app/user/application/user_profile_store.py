@@ -189,37 +189,26 @@ async def upsert_profile_data_in_db(
     user_id: int,
     profile: UserProfileData,
 ) -> bool:
-    """在单个事务里批量回写画像字段和结构化 facts。"""
+    """在单个事务里批量回写稳定画像结构和结构化 facts。"""
     data_changed = False
 
-    if any(profile.get(field_name) for field_name in PROFILE_FIELD_NAMES) or bool(
-        profile.get("tags")
-    ):
+    if any(profile.get(field_name) for field_name in PROFILE_FIELD_NAMES) or profile["tags"]:
         profile_changed = await upsert_profile_fields_in_db(
             db,
             user_id=user_id,
             preferred_brand=profile.get("preferred_brand"),
             budget_range=profile.get("budget_range"),
             preferred_category=profile.get("preferred_category"),
-            tags=profile.get("tags"),
+            tags=profile["tags"],
         )
         data_changed = data_changed or profile_changed
 
-    for fact in profile.get("facts") or []:
-        fact_key = fact.get("key")
-        fact_value = fact.get("value")
-        if not (
-            isinstance(fact_key, str)
-            and fact_key
-            and isinstance(fact_value, str)
-            and fact_value
-        ):
-            continue
+    for fact in profile["facts"]:
         fact_changed = await upsert_fact_in_db(
             db,
             user_id=user_id,
-            fact_key=fact_key,
-            fact_value=fact_value,
+            fact_key=fact["key"],
+            fact_value=fact["value"],
         )
         data_changed = data_changed or fact_changed
 

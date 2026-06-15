@@ -257,11 +257,23 @@ def test_before_agent_degrades_and_warns_once_on_memory_load_failures(monkeypatc
 
     assert first.session_summary is None
     assert first.recent_messages == []
-    assert first.user_profile == {}
+    assert first.user_profile == {
+        "preferred_brand": None,
+        "budget_range": None,
+        "preferred_category": None,
+        "tags": [],
+        "facts": [],
+    }
     assert first.long_term_memories == []
     assert second.session_summary is None
     assert second.recent_messages == []
-    assert second.user_profile == {}
+    assert second.user_profile == {
+        "preferred_brand": None,
+        "budget_range": None,
+        "preferred_category": None,
+        "tags": [],
+        "facts": [],
+    }
     assert second.long_term_memories == []
     assert logger.warnings == [
         "[memory] Redis STM 读取失败，短期记忆降级",

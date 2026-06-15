@@ -166,7 +166,16 @@ def test_upsert_profile_data_commits_and_invalidates_cache_on_change(monkeypatch
 
     async def fake_upsert_profile_data_in_db(db, **kwargs):
         assert db is session
-        assert kwargs == {"user_id": 5, "profile": profile}
+        assert kwargs == {
+            "user_id": 5,
+            "profile": {
+                "preferred_brand": "海尔",
+                "budget_range": None,
+                "preferred_category": None,
+                "tags": [],
+                "facts": [],
+            },
+        }
         return True
 
     monkeypatch.setattr(profile_service, "AsyncSessionLocal", FakeSessionFactory(session))
@@ -213,6 +222,49 @@ def test_upsert_profile_data_skips_commit_and_invalidation_when_store_reports_no
     assert result is True
     assert session.committed is False
     assert cache.deleted_keys == []
+
+
+def test_upsert_profile_data_normalizes_profile_before_store(monkeypatch) -> None:
+    session = FakeSession()
+    captured: dict[str, object] = {}
+
+    async def fake_upsert_profile_data_in_db(db, **kwargs):
+        assert db is session
+        captured.update(kwargs)
+        return False
+
+    monkeypatch.setattr(profile_service, "AsyncSessionLocal", FakeSessionFactory(session))
+    monkeypatch.setattr(
+        profile_service,
+        "upsert_profile_data_in_db",
+        fake_upsert_profile_data_in_db,
+    )
+
+    result = _run(
+        profile_service.upsert_profile_data(
+            12,
+            {
+                "preferred_brand": "  海尔 ",
+                "tags": ["家电", "", "家电"],
+                "facts": [
+                    {"key": "city", "value": " 杭州 "},
+                    {"key": "", "value": "ignored"},
+                ],
+            },
+        )
+    )
+
+    assert result is True
+    assert captured == {
+        "user_id": 12,
+        "profile": {
+            "preferred_brand": "海尔",
+            "budget_range": None,
+            "preferred_category": None,
+            "tags": ["家电"],
+            "facts": [{"key": "city", "value": "杭州"}],
+        },
+    }
 
 
 def test_upsert_profile_data_returns_false_when_write_raises(monkeypatch) -> None:

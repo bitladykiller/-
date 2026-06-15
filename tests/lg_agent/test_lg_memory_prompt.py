@@ -37,6 +37,8 @@ def test_build_memory_context_orders_sections_by_priority() -> None:
         ],
         user_profile={
             "preferred_brand": "小米",
+            "budget_range": None,
+            "preferred_category": None,
             "tags": ["家电", "高端"],
             "facts": [
                 {"key": "city", "value": "杭州"},
