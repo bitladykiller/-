@@ -14,13 +14,11 @@
 import asyncio
 import json
 import uuid
-from collections.abc import Callable
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from datetime import datetime
 from typing import Any
 
 import redis.asyncio as aioredis
-
 from app.shared.core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -65,7 +63,6 @@ class _TaskManager:
         self,
         coro_func: Callable[..., Coroutine[Any, Any, Any]],
         *args: Any,
-        **kwargs: Any,
     ) -> str:
         """提交一个后台协程任务并返回 task_id。"""
         task_id = uuid.uuid4().hex[:12]
@@ -74,7 +71,7 @@ class _TaskManager:
         async def background_runner() -> None:
             await self._write_task_status(task_id, "running")
             try:
-                result = await coro_func(*args, **kwargs)
+                result = await coro_func(*args)
                 await self._write_task_status(
                     task_id,
                     "completed",

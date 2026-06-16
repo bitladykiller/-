@@ -46,8 +46,8 @@ def test_react_runtime_caches_builder_result(monkeypatch) -> None:
     built = FakeCompiledSubgraph()
 
     class FakeRetriever:
-        async def search(self, _query: str) -> dict:
-            return {"records": []}
+        async def search(self, _query: str) -> list[dict]:
+            return []
 
     async def fake_get_retriever(_name: str):
         return FakeRetriever()

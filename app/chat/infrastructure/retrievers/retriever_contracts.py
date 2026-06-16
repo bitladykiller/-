@@ -20,5 +20,5 @@ class Retriever(ABC):
     """检索器抽象接口。"""
 
     @abstractmethod
-    async def search(self, task: str) -> dict[str, Any]:
-        """执行检索并返回统一结构结果。"""
+    async def search(self, task: str) -> list[dict[str, Any]]:
+        """执行检索并返回记录列表。"""

@@ -106,7 +106,6 @@ react_judge_model = LazyModelProxy("react_judge", 0.1)
 
 class RetrievalPlanOutput(BaseModel):
     """检索计划路由器的输出结构。"""
-    logic: str = Field(description="选择该计划的理由")
     plan: RetrievalPlanType = Field(
         description="最合适的检索策略"
     )

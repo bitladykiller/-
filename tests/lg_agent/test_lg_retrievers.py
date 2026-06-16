@@ -31,16 +31,17 @@ class FakeT2CAgent:
 
 
 class FakeRetriever(Retriever):
-    def __init__(self, payload: dict) -> None:
-        self.payload = payload
+    def __init__(self, records: list[dict]) -> None:
+        self.records = records
 
-    async def search(self, task: str) -> dict:
-        return {"task": task, **self.payload}
+    async def search(self, task: str) -> list[dict]:
+        _ = task
+        return self.records
 
 
 class FakeRagRetriever(FakeRetriever):
     def __init__(self) -> None:
-        super().__init__({"records": [{"id": 2}]})
+        super().__init__([{"id": 2}])
 
 
 def _run(awaitable):
@@ -67,8 +68,8 @@ def test_milvus_doc_retriever_search_truncates_records() -> None:
 
     result = _run(retriever.search("保修政策"))
 
-    assert len(result["records"]) == 5
-    assert result["records"][0] == {
+    assert len(result) == 5
+    assert result[0] == {
         "chunk_type": "text",
         "section_path": "章节-0",
         "source_file": "doc-0.md",
@@ -76,8 +77,6 @@ def test_milvus_doc_retriever_search_truncates_records() -> None:
         "rrf_score": 0.0,
         "rerank_score": 0.0,
     }
-    assert result["errors"] == []
-    assert result["steps"] == ["execute_rag_search"]
 
 
 def test_milvus_doc_retriever_search_keeps_stable_record_shape() -> None:
@@ -99,7 +98,7 @@ def test_milvus_doc_retriever_search_keeps_stable_record_shape() -> None:
 
     result = _run(retriever.search("保修政策"))
 
-    assert result["records"] == [
+    assert result == [
         {
             "chunk_type": "text",
             "section_path": "章节-1",
@@ -119,51 +118,27 @@ def test_milvus_doc_retriever_search_returns_fallback_record_on_error() -> None:
 
     result = _run(retriever.search("保修政策"))
 
-    assert result["records"] == [{"message": "文档检索暂时不可用。"}]
-    assert result["errors"] == ["boom"]
+    assert result == [{"message": "文档检索暂时不可用。"}]
 
 
-def test_knowledge_graph_retriever_wraps_text2cypher_output() -> None:
-    t2c_agent = FakeT2CAgent(
-        {
-            "cyphers": [{"records": [{"name": "Alice"}], "errors": []}],
-            "steps": ["text2cypher"],
-        }
-    )
+def test_knowledge_graph_retriever_returns_text2cypher_records() -> None:
+    t2c_agent = FakeT2CAgent({"records": [{"name": "Alice"}]})
     retriever = retriever_implementations.KnowledgeGraphRetriever(t2c_agent)
 
     result = _run(retriever.search("查用户"))
 
     assert t2c_agent.calls == [{"task": "查用户"}]
-    assert result["task"] == "查用户"
-    assert result["records"] == [{"name": "Alice"}]
-    assert result["errors"] == []
-    assert result["steps"] == ["text2cypher"]
+    assert result == [{"name": "Alice"}]
 
 
-def test_knowledge_graph_retriever_flattens_cypher_payload() -> None:
+def test_knowledge_graph_retriever_preserves_empty_records() -> None:
     retriever = retriever_implementations.KnowledgeGraphRetriever(
-        FakeT2CAgent(
-            {
-                "cyphers": [
-                    {"records": [{"id": 1}], "errors": ["warn-1"]},
-                    {"records": [{"id": 2}], "errors": []},
-                    {"records": [], "errors": ["warn-2"]},
-                ]
-                ,
-                "steps": ["kg"],
-            }
-        )
+        FakeT2CAgent({"records": []})
     )
 
     payload = _run(retriever.search("查订单"))
 
-    assert payload == {
-        "task": "查订单",
-        "records": [{"id": 1}, {"id": 2}],
-        "errors": ["warn-1", "warn-2"],
-        "steps": ["kg"],
-    }
+    assert payload == []
 
 
 def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
@@ -198,7 +173,7 @@ def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
         def __init__(self, agent) -> None:
             created["kg_retrievers"] = int(created.get("kg_retrievers", 0)) + 1
             created["kg_agent"] = agent
-            super().__init__({"records": [{"id": 1}]})
+            super().__init__([{"id": 1}])
 
     def fake_create_text2cypher_agent(**kwargs):
         created["t2c_calls"] = int(created.get("t2c_calls", 0)) + 1

@@ -35,13 +35,11 @@ class _VectorQueryMatcher:
         similarity_threshold: 相似度阈值，低于该阈值的匹配将被忽略
         """
         self.predefined_cypher_dict = predefined_cypher_dict
-        self.query_descriptions = query_descriptions
         self.similarity_threshold = similarity_threshold
 
         # 使用环境变量获取 Ollama 的基础 URL 和模型名称。
-        self.ollama_base_url = settings.OLLAMA_BASE_URL.rstrip("/")
         self.ollama_embedding_model = settings.OLLAMA_EMBEDDING_MODEL
-        self.ollama_api_url = f"{self.ollama_base_url}/api/embed"
+        self.ollama_api_url = f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/embed"
 
         # 预计算查询向量
         if not self.predefined_cypher_dict:
@@ -49,7 +47,7 @@ class _VectorQueryMatcher:
         else:
             query_keys = list(self.predefined_cypher_dict)
             query_texts = [
-                f"{query_name} {self.query_descriptions.get(query_name, '')}".strip()
+                f"{query_name} {query_descriptions.get(query_name, '')}".strip()
                 for query_name in query_keys
             ]
             vectors = self._embed_texts(query_texts)

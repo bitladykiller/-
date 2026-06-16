@@ -23,16 +23,8 @@ class FakeRetrievalCore:
         self.hybrid_hits = [
             {
                 "entity": {
-                    "memory_id": "mem-2",
-                    "tenant_id": "tenant-1",
-                    "user_id": "user-1",
                     "memory_type": "solution_note",
                     "content": "建议先检查路由器",
-                    "created_at": 11,
-                    "updated_at": 12,
-                    "last_hit_at": 13,
-                    "hit_count": 2,
-                    "is_deleted": False,
                 },
                 "score": 0.88,
             }
@@ -46,15 +38,11 @@ class FakeRetrievalCore:
 class FakeMilvusClient:
     def __init__(self, *, search_result=None) -> None:
         self.insert_calls: list[dict] = []
-        self.upsert_calls: list[dict] = []
         self.search_calls: list[dict] = []
         self.search_result = [[{"distance": 0.91}]] if search_result is None else search_result
 
     def insert(self, **kwargs) -> None:
         self.insert_calls.append(kwargs)
-
-    def upsert(self, **kwargs) -> None:
-        self.upsert_calls.append(kwargs)
 
     def search(self, **kwargs):
         self.search_calls.append(kwargs)
@@ -117,16 +105,8 @@ def test_hybrid_search_maps_entity_contract_into_memory_result(monkeypatch) -> N
     fake_core.hybrid_hits = [
         {
             "entity": {
-                "memory_id": "mem-9",
-                "tenant_id": "tenant-1",
-                "user_id": "user-1",
                 "memory_type": "solution_note",
                 "content": "建议重启网关",
-                "created_at": 10,
-                "updated_at": 12,
-                "last_hit_at": 14,
-                "hit_count": 3,
-                "is_deleted": False,
             },
             "score": 0.88,
         }
@@ -142,17 +122,9 @@ def test_hybrid_search_maps_entity_contract_into_memory_result(monkeypatch) -> N
     )
 
     assert len(results) == 1
-    assert results[0].memory.model_dump() == {
-        "memory_id": "mem-9",
-        "tenant_id": "tenant-1",
-        "user_id": "user-1",
+    assert results[0].model_dump() == {
         "memory_type": "solution_note",
         "content": "建议重启网关",
-        "created_at": 10,
-        "updated_at": 12,
-        "last_hit_at": 14,
-        "hit_count": 3,
-        "is_deleted": False,
     }
 
 
@@ -165,7 +137,7 @@ def test_save_memory_inserts_record_built_from_embedding(monkeypatch) -> None:
     )
     monkeypatch.setattr(ltm_module.time, "time", lambda: 123)
 
-    memory_id = _run(
+    _run(
         ltm.save_memory(
             "tenant-1",
             "user-1",
@@ -174,13 +146,15 @@ def test_save_memory_inserts_record_built_from_embedding(monkeypatch) -> None:
         )
     )
 
-    assert memory_id is not None
+    inserted_record = client.insert_calls[0]["data"][0]
+    assert isinstance(inserted_record["memory_id"], str)
+    assert inserted_record["memory_id"]
     assert client.insert_calls == [
         {
             "collection_name": "memory_coll",
             "data": [
                 {
-                    "memory_id": memory_id,
+                    "memory_id": inserted_record["memory_id"],
                     "tenant_id": "tenant-1",
                     "user_id": "user-1",
                     "memory_type": "solution_note",
@@ -212,23 +186,15 @@ def test_hybrid_search_uses_multiplier_for_search_limit(monkeypatch) -> None:
     )
 
     assert len(results) == 1
-    assert results[0].memory.memory_id == "mem-2"
+    assert results[0].content == "建议先检查路由器"
     assert fake_core.hybrid_calls == [
         {
             "query": "路由器经常断网",
             "limit": 3,
             "filter_expr": 'tenant_id == "tenant-1" and user_id == "user-1" and is_deleted == false',
             "output_fields": [
-                "memory_id",
-                "tenant_id",
-                "user_id",
                 "memory_type",
                 "content",
-                "created_at",
-                "updated_at",
-                "last_hit_at",
-                "hit_count",
-                "is_deleted",
             ],
             "score_threshold": 0.82,
             "search_limit": 6,
@@ -255,16 +221,8 @@ def test_hybrid_search_uses_default_search_config_when_overrides_missing(monkeyp
             "limit": 5,
             "filter_expr": 'tenant_id == "tenant-1" and user_id == "user-1" and is_deleted == false',
             "output_fields": [
-                "memory_id",
-                "tenant_id",
-                "user_id",
                 "memory_type",
                 "content",
-                "created_at",
-                "updated_at",
-                "last_hit_at",
-                "hit_count",
-                "is_deleted",
             ],
             "score_threshold": 0.72,
             "search_limit": 10,
@@ -298,7 +256,6 @@ def test_deduplicate_memory_returns_false_when_hit_threshold_reached(monkeypatch
             "filter": 'tenant_id == "tenant-1" and user_id == "user-1" and '
             'memory_type == "issue_history" and is_deleted == false',
             "limit": 2,
-            "output_fields": ["memory_id", "content"],
         }
     ]
 
@@ -323,37 +280,3 @@ def test_deduplicate_memory_returns_true_when_hits_below_threshold(monkeypatch) 
     )
 
     assert should_save is True
-
-
-def test_update_memory_hit_info_updates_memory_and_upserts_partial_record(monkeypatch) -> None:
-    client = FakeMilvusClient()
-    ltm, _embedding_model, _fake_core = _build_ltm(monkeypatch, client=client)
-    monkeypatch.setattr(ltm_module.time, "time", lambda: 200)
-    memory = ltm_module.LongTermMemory(
-        memory_id="mem-1",
-        tenant_id="tenant-1",
-        user_id="user-1",
-        memory_type="issue_history",
-        content="门铃掉线",
-        hit_count=2,
-        last_hit_at=100,
-    )
-
-    updated = _run(ltm.update_memory_hit_info(memory))
-
-    assert updated is True
-    assert memory.hit_count == 3
-    assert memory.last_hit_at == 200
-    assert client.upsert_calls == [
-        {
-            "collection_name": "memory_coll",
-            "data": [
-                {
-                    "memory_id": "mem-1",
-                    "updated_at": 200,
-                    "hit_count": 3,
-                    "last_hit_at": 200,
-                }
-            ],
-        }
-    ]

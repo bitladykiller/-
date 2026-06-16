@@ -58,7 +58,7 @@ async def get_react_subgraph() -> CompiledStateGraph:
                 async def neo4j_query(task: str) -> str:
                     """查询 Neo4j 知识图谱，获取商品、订单、客户等结构化数据。"""
                     return json.dumps(
-                        (await kg.search(task))["records"],
+                        await kg.search(task),
                         ensure_ascii=False,
                     )
 
@@ -66,7 +66,7 @@ async def get_react_subgraph() -> CompiledStateGraph:
                 async def rag_search(query: str) -> str:
                     """检索文档知识库，获取售后政策、保修条款等非结构化信息。"""
                     return json.dumps(
-                        (await rag.search(query))["records"],
+                        await rag.search(query),
                         ensure_ascii=False,
                     )
 
@@ -90,7 +90,7 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
     流程：
     1. 增强问题（注入记忆上下文）
     2. ReAct 子图执行（最多 11 步 tool call）
-    3. 答案充分性检查（sufficient / retry / handoff）
+    3. 答案充分性检查（sufficient / retry）
     4. 不足时最多重试 5 轮
 
     Args:

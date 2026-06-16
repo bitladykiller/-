@@ -39,8 +39,7 @@ async def execute_graph_only(state: AgentState, *, config: RunnableConfig) -> di
         config,
         state.messages[-1].content,
     )
-    result = await kg.search(query)
-    records = result["records"]
+    records = await kg.search(query)
     return await summarize_and_build_response(
         query,
         records,
@@ -57,8 +56,7 @@ async def execute_rag_only(state: AgentState, *, config: RunnableConfig) -> dict
         config,
         state.messages[-1].content,
     )
-    result = await rag.search(query)
-    records = result["records"]
+    records = await rag.search(query)
     return await summarize_and_build_response(
         query,
         records,
@@ -81,14 +79,14 @@ async def execute_parallel(state: AgentState, *, config: RunnableConfig) -> dict
     )
     graph_query = query + "（仅查询结构化数据：价格、库存、订单等）"
     rag_query = query + "（仅查询文档知识：售后政策、保修条款等）"
-    neo_result, rag_result = await asyncio.gather(
+    neo_records, rag_records = await asyncio.gather(
         kg.search(graph_query),
         rag.search(rag_query),
     )
 
     all_records = [
-        *neo_result["records"],
-        *rag_result["records"],
+        *neo_records,
+        *rag_records,
     ]
     return await summarize_and_build_response(
         query,
@@ -109,11 +107,9 @@ async def execute_then(state: AgentState, *, config: RunnableConfig) -> dict:
         config,
         state.messages[-1].content,
     )
-    neo_result = await kg.search(query)
-    neo_records = neo_result["records"]
+    neo_records = await kg.search(query)
     rag_query = f"已知信息：{neo_records}\n\n查询：{query}"
-    rag_result = await rag.search(rag_query)
-    rag_records = rag_result["records"]
+    rag_records = await rag.search(rag_query)
     all_records = [*neo_records, *rag_records]
     return await summarize_and_build_response(
         query,

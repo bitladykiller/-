@@ -98,16 +98,8 @@ def test_create_text2cypher_agent_falls_back_to_generation_when_predefined_miss(
     assert matcher.match_calls == [("查询订单", 1)]
     assert example_retriever.calls == [("查询订单", 3)]
     assert len(generation_inputs) == 1
-    assert set(result) == {"cyphers", "steps"}
-    assert "parameters" not in result["cyphers"][0]
-    assert result["cyphers"][0]["statement"] == "MATCH (n) RETURN n"
-    assert result["cyphers"][0]["records"] == [{"id": 1}]
-    assert result["cyphers"][0]["steps"] == [
-        "predefined_match",
-        "generate_cypher",
-        "validate_cypher",
-        "execute_cypher",
-    ]
+    assert result == {"records": [{"id": 1}]}
+    assert graph.calls == [("MATCH (n) RETURN n", {})]
 
 
 def test_create_text2cypher_agent_keeps_empty_records_when_execute_returns_empty(
@@ -142,6 +134,5 @@ def test_create_text2cypher_agent_keeps_empty_records_when_execute_returns_empty
     result = _run(agent.ainvoke({"task": "查询订单"}))
 
     assert matcher.extract_calls == [("查询订单", "query_a", llm)]
-    assert result["cyphers"][0]["records"] == []
-    assert result["cyphers"][0]["steps"] == ["predefined_match", "execute_cypher"]
+    assert result == {"records": []}
     assert graph.calls == [("MATCH (n) RETURN n", {})]

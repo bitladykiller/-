@@ -2,7 +2,7 @@
 
 这个模块负责：
 - 管理长期记忆的 Milvus collection 与索引
-- 提供混合检索、去重、命中刷新和软删除能力
+- 提供混合检索、去重和软删除能力
 
 这个模块不负责：
 - 对话级编排
@@ -14,7 +14,7 @@ import time
 import uuid
 from typing import Any
 
-from app.knowledge.domain.schemas import LongTermMemory, MemorySearchResult
+from app.knowledge.domain.schemas import LongTermMemory
 from app.knowledge.infrastructure.config import (
     LONG_TERM_MEMORY_CONFIG,
 )
@@ -33,7 +33,7 @@ class SimpleLongTermMemory:
     作用：
     1. 向 Milvus 写入用户长期记忆。
     2. 根据用户当前问题检索长期记忆。
-    3. 命中长期记忆后刷新 last_hit_at 和 hit_count。
+    3. 根据当前问题检索已保存的长期记忆。
     """
 
     def __init__(
@@ -151,7 +151,7 @@ class SimpleLongTermMemory:
         user_id: str,
         memory_type: str,
         content: str,
-    ) -> str | None:
+    ) -> None:
         """
         保存长期记忆。
 
@@ -161,8 +161,6 @@ class SimpleLongTermMemory:
         - memory_type：记忆类型
         - content：记忆内容
 
-        返回：
-        - memory_id：保存成功返回记忆 ID，失败返回 None
         """
         try:
             embedding = await self._get_embedding(content)
@@ -171,7 +169,7 @@ class SimpleLongTermMemory:
                     f"保存记忆失败：embedding 生成返回空 | tenant={tenant_id} "
                     f"user={user_id} type={memory_type}"
                 )
-                return None
+                return
 
             now_ts = int(time.time())
             memory_id = str(uuid.uuid4())
@@ -192,45 +190,13 @@ class SimpleLongTermMemory:
                 collection_name=self.collection_name,
                 data=[memory_data],
             )
-            return memory_id
         except Exception as exc:
             logger.error(
                 f"保存记忆异常 | tenant={tenant_id} user={user_id} "
                 f"type={memory_type} | {exc}",
                 exc_info=True,
             )
-            return None
-
-    async def update_memory_hit_info(self, memory: LongTermMemory) -> bool:
-        """
-        使用 Milvus partial_update 更新命中计数器。
-
-        只传 memory_id + hit_count + last_hit_at + updated_at（部分更新），
-        不需要重新生成 embedding，也不需要传输全量字段。
-        """
-        try:
-            now_ts = int(time.time())
-            last_hit_at = now_ts
-            hit_count = memory.hit_count + 1
-            update_record: dict[str, Any] = {
-                "memory_id": memory.memory_id,
-                "updated_at": now_ts,
-                "hit_count": hit_count,
-                "last_hit_at": last_hit_at,
-            }
-            memory.hit_count = hit_count
-            memory.last_hit_at = last_hit_at
-            self.milvus_client.upsert(
-                collection_name=self.collection_name,
-                data=[update_record],
-            )
-            return True
-        except Exception as exc:
-            logger.error(
-                f"update_memory_hit_info 异常 | memory_id={memory.memory_id} | {exc}",
-                exc_info=True,
-            )
-            return False
+            return
 
     async def deduplicate_memory(
         self,
@@ -264,7 +230,6 @@ class SimpleLongTermMemory:
                 data=[list(embedding)],
                 filter=filter_expr,
                 limit=self.deduplication_config["top_k"],
-                output_fields=["memory_id", "content"],
             )
             if not results or not results[0]:
                 return True
@@ -290,7 +255,7 @@ class SimpleLongTermMemory:
         query: str,
         top_k: int | None = None,
         score_threshold: float | None = None,
-    ) -> list[MemorySearchResult]:
+    ) -> list[LongTermMemory]:
         """
         混合检索：向量检索 + Milvus BM25 + RRF 融合。
 
@@ -326,28 +291,16 @@ class SimpleLongTermMemory:
                 limit=resolved_top_k,
                 filter_expr=filter_expr,
                 output_fields=[
-                    "memory_id",
-                    "tenant_id",
-                    "user_id",
                     "memory_type",
                     "content",
-                    "created_at",
-                    "updated_at",
-                    "last_hit_at",
-                    "hit_count",
-                    "is_deleted",
                 ],
                 score_threshold=resolved_score_threshold,
                 search_limit=resolved_top_k * 2,
             )
-            search_results: list[MemorySearchResult] = []
+            search_results: list[LongTermMemory] = []
             for hit in hits:
                 entity = hit["entity"]
-                search_results.append(
-                    MemorySearchResult(
-                        memory=LongTermMemory(**entity),
-                    )
-                )
+                search_results.append(LongTermMemory(**entity))
             return search_results
         except Exception as exc:
             logger.error(

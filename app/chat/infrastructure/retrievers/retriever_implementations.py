@@ -25,13 +25,11 @@ class MilvusDocRetriever(Retriever):
 
         self._searcher = HybridSearcher(RetrievalConfig())
 
-    async def search(self, task: str) -> dict[str, Any]:
+    async def search(self, task: str) -> list[dict[str, Any]]:
         """检索 Milvus 文档知识库。"""
-
-        errors: list[str] = []
         try:
             results = await self._searcher.search(task)
-            records = [
+            return [
                 {
                     "chunk_type": result["chunk_type"],
                     "section_path": result["section_path"],
@@ -42,16 +40,8 @@ class MilvusDocRetriever(Retriever):
                 }
                 for result in results[:5]
             ]
-        except Exception as exc:
-            records = [{"message": "文档检索暂时不可用。"}]
-            errors.append(str(exc))
-
-        return {
-            "task": task,
-            "records": records,
-            "errors": errors,
-            "steps": ["execute_rag_search"],
-        }
+        except Exception:
+            return [{"message": "文档检索暂时不可用。"}]
 
 
 class KnowledgeGraphRetriever(Retriever):
@@ -60,17 +50,8 @@ class KnowledgeGraphRetriever(Retriever):
     def __init__(self, t2c_agent: Any) -> None:
         self._t2c_agent = t2c_agent
 
-    async def search(self, task: str) -> dict[str, Any]:
+    async def search(self, task: str) -> list[dict[str, Any]]:
         """查询 Neo4j 知识图谱。"""
 
         raw_result = await self._t2c_agent.ainvoke({"task": task})
-        cyphers = raw_result["cyphers"]
-        records = [record for cypher in cyphers for record in cypher["records"]]
-        errors = [error for cypher in cyphers for error in cypher["errors"]]
-
-        return {
-            "task": task,
-            "records": records,
-            "errors": errors,
-            "steps": raw_result["steps"],
-        }
+        return raw_result["records"]

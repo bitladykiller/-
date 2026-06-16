@@ -3,7 +3,6 @@ from app.chat.infrastructure.memory_bridge.context import (
 )
 from app.knowledge.domain.schemas import (
     LongTermMemory,
-    MemorySearchResult,
     MessageRecord,
     SessionSummary,
     empty_user_profile_data,
@@ -26,14 +25,9 @@ def test_build_memory_context_orders_sections_by_priority() -> None:
             ),
         ],
         long_term_memories=[
-            MemorySearchResult(
-                memory=LongTermMemory(
-                    memory_id="mem-1",
-                    tenant_id="tenant-1",
-                    user_id="user-1",
-                    memory_type="issue_history",
-                    content="之前咨询过智能门铃断网问题",
-                ),
+            LongTermMemory(
+                memory_type="issue_history",
+                content="之前咨询过智能门铃断网问题",
             )
         ],
         user_profile={

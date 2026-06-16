@@ -4,8 +4,6 @@ import app.knowledge.infrastructure.orchestration.memory_middleware as memory_mi
 import app.user.application.user_profile_service as profile_service
 from app.knowledge.domain.schemas import (
     LongTermMemory,
-    MemoryExtractorResult,
-    MemorySearchResult,
     MessageRecord,
     SessionMeta,
     SessionSummary,
@@ -103,18 +101,17 @@ class FakeRedisShortTermMemory:
 
 class FakeLongTermMemory:
     def __init__(self) -> None:
-        self.hybrid_results: list[MemorySearchResult] = []
+        self.hybrid_results: list[LongTermMemory] = []
         self.hybrid_search_calls: list[tuple[str, str, str]] = []
         self.deduplicate_calls: list[tuple[str, str, str, str]] = []
         self.saved_memories: list[tuple[str, str, str, str]] = []
-        self.updated_memory_ids: list[str] = []
 
     async def hybrid_search(
         self,
         tenant_id: str,
         user_id: str,
         user_input: str,
-    ) -> list[MemorySearchResult]:
+    ) -> list[LongTermMemory]:
         self.hybrid_search_calls.append((tenant_id, user_id, user_input))
         return self.hybrid_results
 
@@ -134,13 +131,8 @@ class FakeLongTermMemory:
         user_id: str,
         memory_type: str,
         content: str,
-    ) -> str:
+    ) -> None:
         self.saved_memories.append((tenant_id, user_id, memory_type, content))
-        return "mem-saved"
-
-    async def update_memory_hit_info(self, memory: LongTermMemory) -> bool:
-        self.updated_memory_ids.append(memory.memory_id)
-        return True
 
 
 class FakeLLMClient:
@@ -156,7 +148,7 @@ class FakeMemoryExtractor:
     def __init__(
         self,
         *,
-        semantic_memories: list[MemoryExtractorResult] | None = None,
+        semantic_memories: list[LongTermMemory] | None = None,
         profile: dict | None = None,
     ) -> None:
         self.llm_client = FakeLLMClient()
@@ -169,7 +161,7 @@ class FakeMemoryExtractor:
         user_message: str,
         assistant_message: str,
         session_summary: SessionSummary | None = None,
-    ) -> tuple[list[MemoryExtractorResult], dict]:
+    ) -> tuple[list[LongTermMemory], dict]:
         self.extract_calls.append((user_message, assistant_message, session_summary))
         return self.semantic_memories, self.profile
 
@@ -182,14 +174,9 @@ def test_before_agent_loads_all_memory_layers(monkeypatch) -> None:
     redis_stm = FakeRedisShortTermMemory()
     milvus_ltm = FakeLongTermMemory()
     expected_profile = {"preferred_brand": "海尔", "tags": ["家电"]}
-    expected_memory = MemorySearchResult(
-        memory=LongTermMemory(
-            memory_id="mem-1",
-            tenant_id="tenant-1",
-            user_id="42",
-            memory_type="issue_history",
-            content="曾问过空调维修",
-        ),
+    expected_memory = LongTermMemory(
+        memory_type="issue_history",
+        content="曾问过空调维修",
     )
     milvus_ltm.hybrid_results = [expected_memory]
     extractor = FakeMemoryExtractor()
@@ -235,7 +222,7 @@ def test_before_agent_degrades_and_warns_once_on_memory_load_failures(monkeypatc
             tenant_id: str,
             user_id: str,
             user_input: str,
-        ) -> list[MemorySearchResult]:
+        ) -> list[LongTermMemory]:
             raise RuntimeError("milvus failed")
 
     logger = FakeLogger()
@@ -282,12 +269,12 @@ def test_before_agent_degrades_and_warns_once_on_memory_load_failures(monkeypatc
     ]
 
 
-def test_after_agent_persists_turn_extracts_memory_and_updates_hits(monkeypatch) -> None:
+def test_after_agent_persists_turn_and_extracts_memory(monkeypatch) -> None:
     redis_stm = FakeRedisShortTermMemory(compress_session_result=True)
     milvus_ltm = FakeLongTermMemory()
     extractor = FakeMemoryExtractor(
         semantic_memories=[
-            MemoryExtractorResult(
+            LongTermMemory(
                 memory_type="solution_note",
                 content="建议先检查电源和 WiFi",
             )
@@ -307,16 +294,6 @@ def test_after_agent_persists_turn_extracts_memory_and_updates_hits(monkeypatch)
         milvus_ltm=milvus_ltm,
         memory_extractor=extractor,
     )
-    hit_memory = MemorySearchResult(
-        memory=LongTermMemory(
-            memory_id="mem-hit",
-            tenant_id="tenant-1",
-            user_id="5",
-            memory_type="issue_history",
-            content="门铃连不上网",
-        ),
-    )
-
     _run(
         middleware.after_agent(
             "tenant-1",
@@ -324,7 +301,6 @@ def test_after_agent_persists_turn_extracts_memory_and_updates_hits(monkeypatch)
             "session-1",
             "门铃连不上网",
             "你可以先检查一下 WiFi 和电源",
-            [hit_memory],
         )
     )
 
@@ -365,7 +341,6 @@ def test_after_agent_persists_turn_extracts_memory_and_updates_hits(monkeypatch)
     assert milvus_ltm.saved_memories == [
         ("tenant-1", "5", "solution_note", "建议先检查电源和 WiFi")
     ]
-    assert milvus_ltm.updated_memory_ids == ["mem-hit"]
     assert profile_writer_calls == [
         (5, {"preferred_category": "智能门铃"}, redis_stm.redis)
     ]
@@ -378,7 +353,7 @@ def test_after_agent_logs_profile_write_failure_without_aborting(monkeypatch) ->
     milvus_ltm = FakeLongTermMemory()
     extractor = FakeMemoryExtractor(
         semantic_memories=[
-            MemoryExtractorResult(
+            LongTermMemory(
                 memory_type="solution_note",
                 content="建议先检查电源和 WiFi",
             )
@@ -421,7 +396,7 @@ def test_after_agent_skips_extraction_when_compress_did_not_complete(monkeypatch
     milvus_ltm = FakeLongTermMemory()
     extractor = FakeMemoryExtractor(
         semantic_memories=[
-            MemoryExtractorResult(
+            LongTermMemory(
                 memory_type="solution_note",
                 content="这条记忆不该被落库",
             )
@@ -458,52 +433,3 @@ def test_after_agent_skips_extraction_when_compress_did_not_complete(monkeypatch
     assert milvus_ltm.deduplicate_calls == []
     assert milvus_ltm.saved_memories == []
     assert profile_writer_calls == []
-
-
-def test_after_agent_updates_hits_best_effort() -> None:
-    class PartiallyFailingLongTermMemory(FakeLongTermMemory):
-        async def update_memory_hit_info(self, memory: LongTermMemory) -> bool:
-            if memory.memory_id == "mem-fail":
-                raise RuntimeError("boom")
-            self.updated_memory_ids.append(memory.memory_id)
-            return True
-
-    redis_stm = FakeRedisShortTermMemory()
-    milvus_ltm = PartiallyFailingLongTermMemory()
-    middleware = MemoryMiddleware(
-        redis_stm=redis_stm,
-        milvus_ltm=milvus_ltm,
-        memory_extractor=FakeMemoryExtractor(),
-    )
-
-    _run(
-        middleware.after_agent(
-            "tenant-1",
-            "5",
-            "session-1",
-            "门铃连不上网",
-            "你可以先检查一下 WiFi 和电源",
-            [
-                MemorySearchResult(
-                    memory=LongTermMemory(
-                        memory_id="mem-ok",
-                        tenant_id="tenant-1",
-                        user_id="5",
-                        memory_type="issue_history",
-                        content="正常命中",
-                    ),
-                ),
-                MemorySearchResult(
-                    memory=LongTermMemory(
-                        memory_id="mem-fail",
-                        tenant_id="tenant-1",
-                        user_id="5",
-                        memory_type="issue_history",
-                        content="单条失败",
-                    ),
-                ),
-            ],
-        )
-    )
-
-    assert milvus_ltm.updated_memory_ids == ["mem-ok"]

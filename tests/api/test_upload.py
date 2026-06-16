@@ -150,7 +150,12 @@ def test_upload_file_writes_file_and_returns_stable_metadata(
     assert len(manager.submit_calls) == 1
     submitted_func, submitted_args = manager.submit_calls[0]
     assert submitted_func is upload_api.process_file
-    assert submitted_args == (file_info,)
+    assert submitted_args == (
+        {
+            "path": file_info["path"],
+            "user_id": file_info["user_id"],
+        },
+    )
     assert (
         tmp_path / "user-uuid" / "20260102_030405" / "manual_20260102_030405.pdf"
     ).read_bytes() == b"%PDF-1.7"

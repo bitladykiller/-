@@ -19,7 +19,6 @@ from typing import Annotated, Any, Literal, TypedDict
 from langchain_core.messages import AnyMessage
 from langgraph.graph import add_messages
 
-
 RetrievalPlanType = Literal[
     "GRAPH_ONLY",
     "RAG_ONLY",
@@ -28,7 +27,7 @@ RetrievalPlanType = Literal[
     "AGENT_REACT",
 ]
 GuardrailsAction = Literal["continue", "end"]
-ReactJudgeDecision = Literal["sufficient", "retry", "handoff"]
+ReactJudgeDecision = Literal["sufficient", "retry"]
 
 
 class Router(TypedDict):
@@ -41,7 +40,6 @@ class Router(TypedDict):
 class RetrievalPlan(TypedDict):
     """检索计划路由输出。"""
 
-    logic: str
     plan: RetrievalPlanType
 
 

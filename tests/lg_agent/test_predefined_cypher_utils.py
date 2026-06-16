@@ -97,7 +97,6 @@ def test_vector_query_matcher_parameter_extraction_and_factory(monkeypatch) -> N
         {"product_price_query": "product price query"},
     )
 
-    assert matcher.query_descriptions == {"product_price_query": "product price query"}
     llm = FakeLLM('说明 {"product_name":"智能门锁Pro"} 尾部')
     assert matcher.extract_parameters(
         "这个产品多少钱",

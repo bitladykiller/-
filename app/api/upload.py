@@ -77,8 +77,12 @@ async def upload_file(
             "upload_time": timestamp,
             "directory": upload_dir.as_posix(),
         }
+        task_payload = {
+            "path": file_info["path"],
+            "user_id": file_info["user_id"],
+        }
         task_manager = await get_task_manager()
-        task_id = await task_manager.submit(process_file, file_info)
+        task_id = await task_manager.submit(process_file, task_payload)
         return {
             **file_info,
             "task_id": task_id,

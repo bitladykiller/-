@@ -17,7 +17,7 @@ from app.chat.infrastructure.graph.state import AgentState
 from app.chat.infrastructure.memory_bridge.runtime import get_memory_middleware
 from app.knowledge.domain.schemas import (
     AgentMemoryState,
-    MemorySearchResult,
+    LongTermMemory,
     MessageRecord,
     SessionSummary,
     UserProfileData,
@@ -66,7 +66,7 @@ def resolve_memory_scope(config: RunnableConfig) -> tuple[str, str, str]:
 def build_memory_context(
     session_summary: SessionSummary | None,
     recent_messages: list[MessageRecord],
-    long_term_memories: list[MemorySearchResult],
+    long_term_memories: list[LongTermMemory],
     user_profile: UserProfileData,
 ) -> str:
     """组装带优先级的记忆上下文字符串，用于注入 system prompt。"""
@@ -92,8 +92,7 @@ def build_memory_context(
     long_term_memory_text = ""
     if long_term_memories:
         memory_lines: list[str] = []
-        for index, search_result in enumerate(long_term_memories, 1):
-            memory = search_result.memory
+        for index, memory in enumerate(long_term_memories, 1):
             memory_type_label = _MEMORY_TYPE_LABELS.get(
                 memory.memory_type,
                 memory.memory_type,

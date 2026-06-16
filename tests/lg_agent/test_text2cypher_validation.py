@@ -57,7 +57,6 @@ def _build_schema() -> Neo4jStructuredSchema:
         relationships=[
             {"start": "User", "type": "PURCHASED", "end": "Product"}
         ],
-        metadata={},
     )
 
 

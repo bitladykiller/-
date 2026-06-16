@@ -96,12 +96,6 @@ class LongTermMemory(BaseModel):
     LTM = Long-Term Memory，长期记忆。
     """
 
-    memory_id: str = Field(..., description="长期记忆唯一 ID")
-
-    tenant_id: str = Field(..., description="租户 ID")
-
-    user_id: str = Field(..., description="用户 ID")
-
     memory_type: Literal[
         "issue_history",
         "solution_note"
@@ -109,47 +103,13 @@ class LongTermMemory(BaseModel):
 
     content: str = Field(..., description="长期记忆内容")
 
-    created_at: int = Field(default=0, description="创建时间戳")
-
-    updated_at: int = Field(default=0, description="更新时间戳")
-
-    last_hit_at: int = Field(default=0, description="最近一次命中时间戳")
-
-    hit_count: int = Field(default=0, description="命中次数")
-
-    is_deleted: bool = Field(default=False, description="是否软删除")
-
-
-class MemorySearchResult(BaseModel):
-    """
-    长期记忆检索结果。
-    """
-
-    memory: LongTermMemory
-
-
-class MemoryExtractorResult(BaseModel):
-    """
-    长期记忆抽取结果。
-
-    这里只描述会写入 Milvus 的语义记忆候选项。
-    结构化用户画像走独立画像链路，因此不会作为语义记忆类型返回。
-    """
-
-    memory_type: Literal[
-        "issue_history",
-        "solution_note"
-    ]
-
-    content: str
-
 
 class AgentMemoryState(BaseModel):
     """一次请求里复用的记忆快照。"""
 
     session_summary: SessionSummary | None = None
     recent_messages: list[MessageRecord] = Field(default_factory=list)
-    long_term_memories: list[MemorySearchResult] = Field(default_factory=list)
+    long_term_memories: list[LongTermMemory] = Field(default_factory=list)
     user_profile: UserProfileData = Field(
         default_factory=empty_user_profile_data,
         description="结构化用户画像快照，由画像存储链路提供",

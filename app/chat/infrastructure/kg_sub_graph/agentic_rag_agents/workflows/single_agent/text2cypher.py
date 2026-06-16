@@ -11,8 +11,7 @@
 """
 
 from collections.abc import Callable
-from operator import add
-from typing import Annotated, Any
+from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.output_parsers import StrOutputParser
@@ -40,12 +39,10 @@ class CypherState(TypedDict):
     errors: list[str]
     next_action_cypher: str
     attempts: int
-    steps: Annotated[list[str], add]
 
 
-class OverallState(TypedDict):
-    cyphers: Annotated[list[dict[str, Any]], add]
-    steps: Annotated[list[str], add]
+class Text2CypherResult(TypedDict):
+    records: list[dict[str, Any]]
 
 
 def create_text2cypher_agent(
@@ -70,7 +67,7 @@ def create_text2cypher_agent(
     generation_limit = 3
     text2cypher_graph_builder = StateGraph(
         CypherState,
-        output_schema=OverallState,
+        output_schema=Text2CypherResult,
     )
     generation_prompt = ChatPromptTemplate.from_messages(
         [
@@ -179,7 +176,6 @@ def create_text2cypher_agent(
         matches = matcher.match_query(normalized_task, top_k=1)
         if not matches:
             return {
-                "steps": ["predefined_match"],
                 "next_action_cypher": "generate_cypher",
             }
 
@@ -194,31 +190,19 @@ def create_text2cypher_agent(
             "params": {key: str(value) for key, value in params.items()},
             "statement": best_match["cypher"],
             "errors": [],
-            "steps": ["predefined_match"],
             "next_action_cypher": "execute_cypher",
         }
 
     text2cypher_graph_builder.add_node("predefined_match", predefined_match)
     text2cypher_graph_builder.add_edge(START, "predefined_match")
 
-    async def execute_cypher(state: CypherState) -> dict[str, list[dict[str, Any]] | list[str]]:
-        """执行 Cypher 查询并回填统一输出结构。"""
-        records = graph.query(
-            state["statement"],
-            params=state["params"],
-        )
-        steps = list(state["steps"])
-        steps.append("execute_cypher")
-        output_state = {
-            "task": state["task"],
-            "statement": state["statement"],
-            "errors": state["errors"],
-            "records": records,
-            "steps": steps,
-        }
+    async def execute_cypher(state: CypherState) -> Text2CypherResult:
+        """执行 Cypher 查询并返回实际会被消费的记录列表。"""
         return {
-            "cyphers": [output_state],
-            "steps": ["text2cypher"],
+            "records": graph.query(
+                state["statement"],
+                params=state["params"],
+            )
         }
 
     # LLM generation + validation + correction
@@ -236,7 +220,6 @@ def create_text2cypher_agent(
             "attempts": 0,
             "params": {},
             "statement": generated_cypher,
-            "steps": ["generate_cypher"],
         }
 
     async def validate_cypher(state: CypherState) -> dict[str, Any]:
@@ -286,7 +269,6 @@ def create_text2cypher_agent(
             "statement": corrected_cypher,
             "errors": errors,
             "attempts": generation_attempt,
-            "steps": ["validate_cypher"],
         }
 
     async def correct_cypher(state: CypherState) -> dict[str, Any]:
@@ -302,7 +284,6 @@ def create_text2cypher_agent(
         return {
             "next_action_cypher": "validate_cypher",
             "statement": corrected_cypher,
-            "steps": ["correct_cypher"],
         }
 
     text2cypher_graph_builder.add_node("generate_cypher", generate_cypher)

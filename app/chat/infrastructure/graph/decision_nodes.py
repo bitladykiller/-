@@ -44,7 +44,7 @@ from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
 
 
-async def analyze_and_route_query(state: AgentState, *, config: RunnableConfig) -> dict:
+async def analyze_and_route_query(state: AgentState) -> dict:
     """分析用户输入，路由到通用回复或知识库检索。"""
     messages = build_safe_messages(ROUTER_SYSTEM_PROMPT, state.messages)
     response: Router = await router_model.with_structured_output(Router).ainvoke(
@@ -87,8 +87,6 @@ async def respond_to_general_query(
 
 async def guardrails_node(
     state: AgentState,
-    *,
-    config: RunnableConfig,
 ) -> dict[str, list[BaseMessage] | str]:
     """守卫节点：检查问题是否在业务范围内，拦截恶意输入。"""
     question = state.messages[-1].content
@@ -125,8 +123,6 @@ def guardrails_edge(
 
 async def retrieval_plan_route(
     state: AgentState,
-    *,
-    config: RunnableConfig,
 ) -> dict:
     """根据问题特征选择最优检索策略。"""
     question = state.messages[-1].content
@@ -139,7 +135,7 @@ async def retrieval_plan_route(
         question=wrapped_question,
     )
 
-    plan: RetrievalPlan = {"logic": output.logic, "plan": output.plan}
+    plan: RetrievalPlan = {"plan": output.plan}
     return {"retrieval_plan": plan}
 
 

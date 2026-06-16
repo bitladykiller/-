@@ -84,19 +84,11 @@ class Neo4jStructuredSchemaPropertyNumber(BaseModel):
         description="The min value of the number.", default=float("-inf")
     )
     max: float = Field(description="The max value of the number.", default=float("inf"))
-    distinct_count: int | None = Field(
-        description="The number of distinct values in the database.", default=None
-    )
 
     @field_validator("type")
     def validate_prop_type(cls, v: str) -> str:
         assert v in {"INTEGER", "FLOAT"}, "Property type must be 'INTEGER' or 'FLOAT'."
         return v
-
-    @builtin_property
-    def is_enum(self) -> bool:
-        """数值属性默认不表示枚举值。"""
-        return False
 
 
 class Neo4jStructuredSchema(BaseModel):
@@ -125,9 +117,6 @@ class Neo4jStructuredSchema(BaseModel):
     )
     relationships: list[dict[str, str]] = Field(
         description="A list of relationships."
-    )
-    metadata: dict[str, Any] = Field(
-        description="Metadata about the database.", default=dict()
     )
 
     def get_node_properties_enum(self) -> dict[str, set[str]]:

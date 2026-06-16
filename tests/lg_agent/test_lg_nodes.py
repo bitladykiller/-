@@ -21,9 +21,7 @@ class FakeMemoryMiddleware:
         session_id: str,
         user_message: str,
         assistant_message: str,
-        long_term_memories=None,
     ) -> None:
-        _ = long_term_memories
         self.calls.append(
             {
                 "tenant_id": tenant_id,
@@ -36,12 +34,12 @@ class FakeMemoryMiddleware:
 
 
 class FakeRetriever:
-    def __init__(self, name: str, result: dict | None = None) -> None:
+    def __init__(self, name: str, result: list[dict] | None = None) -> None:
         self.name = name
-        self.result = result or {"records": []}
+        self.result = result or []
         self.queries: list[str] = []
 
-    async def search(self, query: str) -> dict:
+    async def search(self, query: str) -> list[dict]:
         self.queries.append(query)
         return self.result
 
@@ -55,7 +53,7 @@ def test_route_edges_map_state_to_expected_node_names() -> None:
         messages=[],
         router={"type": "general", "logic": ""},
         next_action="end",
-        retrieval_plan={"logic": "", "plan": "GRAPH_ONLY"},
+        retrieval_plan={"plan": "GRAPH_ONLY"},
     )
 
     assert lg_decision_nodes.route_query(state) == "respond_to_general_query"
@@ -64,12 +62,12 @@ def test_route_edges_map_state_to_expected_node_names() -> None:
 
     state.router = {"type": "rag_doc-query", "logic": ""}
     state.next_action = "continue"
-    state.retrieval_plan = {"logic": "", "plan": "GRAPH_THEN_RAG"}
+    state.retrieval_plan = {"plan": "GRAPH_THEN_RAG"}
     assert lg_decision_nodes.route_query(state) == "retrieval_plan_router"
     assert lg_decision_nodes.guardrails_edge(state) == "retrieval_plan_route"
     assert lg_decision_nodes.retrieval_plan_edge(state) == "execute_then"
 
-    state.retrieval_plan = {"logic": "", "plan": "AGENT_REACT"}
+    state.retrieval_plan = {"plan": "AGENT_REACT"}
     assert lg_decision_nodes.retrieval_plan_edge(state) == "execute_react"
 
 
@@ -136,7 +134,6 @@ def test_guardrails_node_wraps_question_and_blocks_end(monkeypatch) -> None:
     result = _run(
         lg_decision_nodes.guardrails_node(
             AgentState(messages=[HumanMessage(content="请查一下空调")]),
-            config={},
         )
     )
 
@@ -152,7 +149,7 @@ def test_retrieval_plan_route_wraps_question_and_returns_plan(monkeypatch) -> No
 
     async def fake_ainvoke_structured_question_output(**kwargs):
         captured["question"] = kwargs["question"]
-        return SimpleNamespace(logic="先查图再查文档", plan="GRAPH_THEN_RAG")
+        return SimpleNamespace(plan="GRAPH_THEN_RAG")
 
     monkeypatch.setattr(
         lg_decision_nodes,
@@ -163,7 +160,6 @@ def test_retrieval_plan_route_wraps_question_and_returns_plan(monkeypatch) -> No
     result = _run(
         lg_decision_nodes.retrieval_plan_route(
             AgentState(messages=[HumanMessage(content="查订单再看保修")]),
-            config={},
         )
     )
 
@@ -172,7 +168,6 @@ def test_retrieval_plan_route_wraps_question_and_returns_plan(monkeypatch) -> No
     assert captured["question"].endswith("</user_message>")
     assert result == {
         "retrieval_plan": {
-            "logic": "先查图再查文档",
             "plan": "GRAPH_THEN_RAG",
         }
     }
@@ -295,8 +290,8 @@ def test_after_response_uses_default_scope_when_config_missing(monkeypatch) -> N
 
 def test_execute_parallel_adds_strategy_specific_queries(monkeypatch) -> None:
     retrievers = {
-        "kg": FakeRetriever("kg", {"records": [{"source": "kg"}]}),
-        "rag": FakeRetriever("rag", {"records": [{"source": "rag"}]}),
+        "kg": FakeRetriever("kg", [{"source": "kg"}]),
+        "rag": FakeRetriever("rag", [{"source": "rag"}]),
     }
 
     async def fake_get_retriever(name: str):
@@ -335,8 +330,8 @@ def test_execute_parallel_adds_strategy_specific_queries(monkeypatch) -> None:
 
 def test_execute_then_injects_graph_records_into_rag_query(monkeypatch) -> None:
     retrievers = {
-        "kg": FakeRetriever("kg", {"records": [{"product": "X1"}]}),
-        "rag": FakeRetriever("rag", {"records": [{"doc": "warranty"}]}),
+        "kg": FakeRetriever("kg", [{"product": "X1"}]),
+        "rag": FakeRetriever("rag", [{"doc": "warranty"}]),
     }
 
     async def fake_get_retriever(name: str):
@@ -374,7 +369,7 @@ def test_execute_then_injects_graph_records_into_rag_query(monkeypatch) -> None:
 
 
 def test_execute_rag_only_builds_summary_from_rag_records(monkeypatch) -> None:
-    retriever = FakeRetriever("rag", {"records": [{"doc": "refund-policy"}]})
+    retriever = FakeRetriever("rag", [{"doc": "refund-policy"}])
 
     async def fake_get_retriever(_name: str):
         return retriever
@@ -411,7 +406,7 @@ def test_execute_rag_only_builds_summary_from_rag_records(monkeypatch) -> None:
 
 
 def test_execute_graph_only_keeps_empty_records_for_summary_fallback(monkeypatch) -> None:
-    retriever = FakeRetriever("kg", {"records": []})
+    retriever = FakeRetriever("kg", [])
 
     async def fake_get_retriever(_name: str):
         return retriever

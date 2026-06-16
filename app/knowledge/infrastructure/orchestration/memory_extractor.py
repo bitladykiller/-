@@ -10,7 +10,7 @@ import json
 import re
 
 from app.knowledge.domain.schemas import (
-    MemoryExtractorResult,
+    LongTermMemory,
     SessionSummary,
     UserProfileData,
 )
@@ -55,10 +55,10 @@ class MemoryExtractor:
         user_message: str,
         assistant_message: str,
         session_summary: SessionSummary | None = None,
-    ) -> tuple[list[MemoryExtractorResult], UserProfileData]:
+    ) -> tuple[list[LongTermMemory], UserProfileData]:
         """抽取语义记忆 + 结构化画像。
 
-        Returns: (semantic_memories: List[MemoryExtractorResult], profile_data: UserProfileData)
+        Returns: (semantic_memories: List[LongTermMemory], profile_data: UserProfileData)
         - semantic_memories: 存入 Milvus
         - profile_data: 存入 MySQL（preferred_brand, budget_range, preferred_category, tags, facts）
         """
@@ -113,7 +113,7 @@ class MemoryExtractor:
                 logger.debug("[memory] JSON 解析失败: %s", exc)
                 parsed = {}
 
-            semantic: list[MemoryExtractorResult] = []
+            semantic: list[LongTermMemory] = []
             for item in parsed.get("semantic", []):
                 if not isinstance(item, dict):
                     continue
@@ -150,7 +150,7 @@ class MemoryExtractor:
                     continue
 
                 semantic.append(
-                    MemoryExtractorResult(
+                    LongTermMemory(
                         memory_type=memory_type,
                         content=masked_content,
                     )

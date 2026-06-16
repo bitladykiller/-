@@ -4,7 +4,7 @@ from __future__ import annotations
 
 统一编排：
 - `before_agent`：读取短期记忆、用户画像、长期记忆
-- `after_agent`：写入短期记忆、触发压缩、抽取长期记忆、刷新命中信息
+- `after_agent`：写入短期记忆、触发压缩、抽取长期记忆
 
 本文件重点做流程编排，不把 Redis / Milvus / 画像服务的细节分散到多个调用点。
 """
@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING
 
 from app.knowledge.domain.schemas import (
     AgentMemoryState,
-    MemorySearchResult,
     MessageRecord,
     empty_user_profile_data,
 )
@@ -114,7 +113,6 @@ class MemoryMiddleware:
         session_id: str,
         user_message: str,
         assistant_message: str,
-        long_term_memories: list[MemorySearchResult] | None = None,
     ) -> None:
         """Agent 回复后：写入短期记忆，必要时压缩并抽取长期记忆。"""
         now_ts = int(time.time())
@@ -220,10 +218,3 @@ class MemoryMiddleware:
                         logger.debug(f"[memory] 用户画像更新失败(user_id={user_id}): {exc}")
         except Exception:
             self._warn_once("compress", "[memory] 记忆压缩失败")
-
-        if long_term_memories:
-            for result in long_term_memories:
-                try:
-                    await self.milvus_ltm.update_memory_hit_info(result.memory)
-                except Exception:
-                    continue
