@@ -56,7 +56,7 @@ class _Neo4jStructuredSchemaPropertyString(BaseModel):
             return False
 
     @field_validator("type")
-    def validate_prop_type(cls, v: str) -> str:
+    def validate_prop_type(v: str) -> str:
         assert v == "STRING", "Property type must be 'STRING'."
         return v
 
@@ -86,7 +86,7 @@ class Neo4jStructuredSchemaPropertyNumber(BaseModel):
     max: float = Field(description="The max value of the number.", default=float("inf"))
 
     @field_validator("type")
-    def validate_prop_type(cls, v: str) -> str:
+    def validate_prop_type(v: str) -> str:
         assert v in {"INTEGER", "FLOAT"}, "Property type must be 'INTEGER' or 'FLOAT'."
         return v
 
