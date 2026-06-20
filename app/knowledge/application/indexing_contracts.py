@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Protocol, TypeAlias, TypedDict
+from typing import Any, Protocol, TypeAlias
+
+from typing_extensions import TypedDict
 
 ChunkRecord: TypeAlias = dict[str, Any]
 ParsedChunks: TypeAlias = list[ChunkRecord]

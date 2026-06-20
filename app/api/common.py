@@ -11,7 +11,9 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable
-from typing import Protocol, TypeVar, TypedDict
+from typing import Protocol, TypeVar
+
+from typing_extensions import TypedDict
 
 from fastapi import HTTPException
 

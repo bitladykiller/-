@@ -19,7 +19,9 @@ from collections.abc import Callable
 from collections.abc import Coroutine
 from datetime import datetime
 from enum import Enum
-from typing import Any, Protocol, TypeAlias, TypedDict
+from typing import Any, Protocol, TypeAlias
+
+from typing_extensions import TypedDict
 
 import redis.asyncio as aioredis
 

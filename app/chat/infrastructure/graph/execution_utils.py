@@ -12,7 +12,9 @@
 
 from __future__ import annotations
 
-from typing import Any, TypedDict, TypeAlias
+from typing import Any, TypeAlias
+
+from typing_extensions import TypedDict
 
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate

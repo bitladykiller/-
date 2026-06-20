@@ -13,7 +13,9 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, TypedDict
+from typing import Any
+
+from typing_extensions import TypedDict
 
 from langchain_core.messages import AIMessage
 

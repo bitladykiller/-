@@ -14,7 +14,9 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, TypeAlias, TypedDict
+from typing import TYPE_CHECKING, Any, TypeAlias
+
+from typing_extensions import TypedDict
 
 from pymilvus import MilvusClient
 

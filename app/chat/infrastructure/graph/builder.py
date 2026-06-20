@@ -77,7 +77,7 @@ _RETRIEVAL_PLAN_EDGE_MAP = {
 _EXECUTION_NODE_NAMES = tuple(_RETRIEVAL_PLAN_EDGE_MAP.values())
 
 # 编译后的主图实例，供外部使用
-_graph_builder = StateGraph(AgentState, input_schema=InputState)
+_graph_builder = StateGraph(AgentState, input=InputState)
 for registration in _NODE_REGISTRATIONS:
     if isinstance(registration, tuple):
         node_name, node_handler = registration

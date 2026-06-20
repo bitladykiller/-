@@ -28,7 +28,9 @@ def _import_fresh(module_name: str):
 def test_import_app_main_skips_missing_static_dir() -> None:
     main_module = _import_fresh("app.main")
 
-    route_names = {route.name for route in main_module.app.routes}
+    route_names = {
+        route.name for route in main_module.app.routes if getattr(route, "name", None)
+    }
     route_paths = {getattr(route, "path", None) for route in main_module.app.routes}
 
     assert main_module.app.title == main_module.APP_TITLE
@@ -48,7 +50,7 @@ def test_create_app_logs_and_skips_missing_static_dir(tmp_path) -> None:
         health_status="healthy",
     )
 
-    route_names = {route.name for route in app.routes}
+    route_names = {route.name for route in app.routes if getattr(route, "name", None)}
     route_paths = {getattr(route, "path", None) for route in app.routes}
 
     assert "/health" in route_paths

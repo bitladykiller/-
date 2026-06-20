@@ -10,7 +10,9 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any, AsyncContextManager, Protocol, TypeAlias, TypeVar, TypedDict
+from typing import Any, AsyncContextManager, Protocol, TypeAlias, TypeVar
+
+from typing_extensions import TypedDict
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession

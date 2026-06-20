@@ -15,7 +15,9 @@ import json
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, TypeAlias, TypedDict, TypeVar
+from typing import Any, TypeAlias, TypeVar
+
+from typing_extensions import TypedDict
 
 import redis.asyncio as redis
 from pydantic import BaseModel

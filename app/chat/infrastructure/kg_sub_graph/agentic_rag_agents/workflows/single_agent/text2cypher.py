@@ -172,8 +172,8 @@ def create_text2cypher_agent(
     """
     text2cypher_graph_builder = StateGraph(
         CypherState,
-        input_schema=CypherInputState,
-        output_schema=OverallState,
+        input=CypherInputState,
+        output=OverallState,
     )
 
     if predefined_cypher_dict:

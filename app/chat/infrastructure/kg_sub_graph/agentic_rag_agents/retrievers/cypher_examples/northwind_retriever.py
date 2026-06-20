@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from itertools import chain
-from typing import TypedDict
+from typing_extensions import TypedDict
 
 
 class CypherExample(TypedDict):

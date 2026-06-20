@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
-from typing import TypedDict, cast
+from typing import cast
+
+from typing_extensions import TypedDict
 
 # ------------------------------------------------------------------ #
 # 短期记忆配置
