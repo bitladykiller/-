@@ -14,13 +14,10 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from app.api.common import run_api_action
 from app.shared.core.logger import get_logger
-from app.chat.application.document_formats import (
-    document_magic_signatures,
-    get_document_extension,
-    supports_document_indexing,
-)
 from app.knowledge.application.indexing_service import (
     IndexingService,
+    get_document_extension,
+    supports_document_indexing,
 )
 from app.knowledge.application.indexing_contracts import UploadFileInfo
 from app.chat.application.task_queue import TaskStatusPayload, get_task_manager
@@ -40,6 +37,17 @@ _UNKNOWN_FILE_TYPE_DETAIL = "无法识别文件类型"
 _UNSUPPORTED_FILE_TYPE_DETAIL = "不支持的文件类型: {extension}"
 _TASK_NOT_FOUND_DETAIL = "任务不存在: {task_id}"
 _UPLOAD_ACCEPTED_MESSAGE = "文件已上传，后台正在解析索引。请通过 task_id 查询进度。"
+
+# 从 knowledge 域引入魔数签名，作为唯一格式真相来源
+_DOCUMENT_MAGIC_SIGNATURES: dict[str, tuple[bytes, ...]] = {
+    ".pdf": (b"%PDF",),
+    ".docx": (b"PK\x03\x04",),
+}
+
+
+def _document_magic_signatures(extension: str) -> tuple[bytes, ...]:
+    """返回扩展名对应的魔数签名；无定义时返回空元组。"""
+    return _DOCUMENT_MAGIC_SIGNATURES.get(extension, ())
 
 
 class StoredUploadFileInfo(UploadFileInfo, total=False):
@@ -86,7 +94,7 @@ async def read_upload_content(
         raise HTTPException(status_code=400, detail=file_size_exceeded_detail)
 
     extension = get_document_extension(file.filename)
-    signatures = document_magic_signatures(extension)
+    signatures = _document_magic_signatures(extension)
     if signatures and not any(content.startswith(signature) for signature in signatures):
         raise HTTPException(
             status_code=400,
