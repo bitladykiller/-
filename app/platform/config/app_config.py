@@ -108,21 +108,6 @@ class MemoryConfig:
 
 
 # ====================================================================
-# 检索器配置
-# ====================================================================
-
-@dataclass(frozen=True)
-class RetrieverConfig:
-    """检索器的运行时配置。"""
-
-    hybrid_search_limit_multiplier: int = 2
-    """混合检索时的候选数量倍增系数。"""
-
-    compress_fetch_limit: int = 100
-    """STM 压缩时一次拉取的消息上限。"""
-
-
-# ====================================================================
 # 聚合配置
 # ====================================================================
 
@@ -137,7 +122,6 @@ class AppConfig:
     upload: UploadConfig = field(default_factory=UploadConfig)
     task_queue: TaskQueueConfig = field(default_factory=TaskQueueConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
-    retriever: RetrieverConfig = field(default_factory=RetrieverConfig)
 
 
 # 模块级单例（不可变，无需锁）
@@ -147,7 +131,6 @@ __all__ = [
     "AppConfig",
     "MemoryConfig",
     "ReactConfig",
-    "RetrieverConfig",
     "TaskQueueConfig",
     "UploadConfig",
     "app_config",
