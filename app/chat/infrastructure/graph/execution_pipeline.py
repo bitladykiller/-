@@ -2,7 +2,8 @@
 
 职责：
 - 定义 ExecutionPipeline 类，封装 enrich → search → merge → summarize → wrap 流程
-- 让 5 个执行节点共享同一套编排骨架，只注入不同的 retriever 组合
+- 让 4 个执行节点共享同一套编排骨架，只注入不同的 retriever 组合
+- 内部处理 query 构造（graph_only / rag_only / graph_then_rag），节点层不再关心
 
 不负责：
 - 节点路由和守卫
@@ -12,9 +13,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from app.chat.infrastructure.graph.execution_utils import (
+    build_graph_only_query,
+    build_graph_then_rag_query,
+    build_rag_only_query,
     merge_retriever_records,
     records_from_result,
     search_retriever,
@@ -57,18 +61,7 @@ class ExecutionPipeline:
         progress_message: str | None = None,
         fallback: str | None = None,
     ) -> MessagePayload:
-        """单检索器执行：enrich → search → summarize。
-
-        Args:
-            state: Agent 状态
-            config: LangGraph 运行时配置
-            retriever: 检索器实例
-            progress_message: 覆盖默认进度消息
-            fallback: 覆盖默认兜底消息
-
-        Returns:
-            标准消息负载
-        """
+        """单检索器执行：enrich → search → summarize。"""
         query = await enrich_question(state, config, question_from_state(state))
         result = await search_retriever(retriever, query)
         return await summarize_and_build_response(
@@ -78,69 +71,46 @@ class ExecutionPipeline:
             fallback=fallback or self._fallback,
         )
 
-    async def execute_parallel(
+    async def execute_dual(
         self,
         state: AgentState,
         config: Any,
-        *retrievers: tuple[Retriever | None, str],
+        kg: Retriever | None,
+        rag: Retriever | None,
+        *,
+        mode: Literal["parallel", "sequential"] = "parallel",
         progress_message: str | None = None,
         fallback: str | None = None,
     ) -> MessagePayload:
-        """多检索器并行执行：enrich → 并行 search → merge → summarize。
+        """双检索器执行：enrich → 并行/串行 search → merge → summarize。
 
         Args:
             state: Agent 状态
             config: LangGraph 运行时配置
-            *retrievers: (检索器, 查询) 元组列表
+            kg: KG 检索器
+            rag: RAG 检索器
+            mode: "parallel" 并行, "sequential" 先 KG 后 RAG
             progress_message: 覆盖默认进度消息
             fallback: 覆盖默认兜底消息
-
-        Returns:
-            标准消息负载
         """
         import asyncio
 
         query = await enrich_question(state, config, question_from_state(state))
-        results = await asyncio.gather(
-            *(search_retriever(r, q) for r, q in retrievers)
-        )
-        all_records = merge_retriever_records(*results)
-        return await summarize_and_build_response(
-            query,
-            all_records,
-            progress_message=progress_message or self._progress_message,
-            fallback=fallback or self._fallback,
-        )
 
-    async def execute_sequential(
-        self,
-        state: AgentState,
-        config: Any,
-        first: tuple[Retriever | None, str],
-        second: tuple[Retriever | None, str],
-        *,
-        progress_message: str | None = None,
-        fallback: str | None = None,
-    ) -> MessagePayload:
-        """两阶段串行执行：enrich → search_first → search_second(含 first 结果) → merge → summarize。
+        if mode == "parallel":
+            kg_result, rag_result = await asyncio.gather(
+                search_retriever(kg, build_graph_only_query(query)),
+                search_retriever(rag, build_rag_only_query(query)),
+            )
+        else:
+            kg_result = await search_retriever(kg, query)
+            kg_records = records_from_result(kg_result)
+            rag_result = await search_retriever(
+                rag,
+                build_graph_then_rag_query(query, kg_records),
+            )
 
-        Args:
-            state: Agent 状态
-            config: LangGraph 运行时配置
-            first: (检索器, 查询) 第一阶段
-            second: (检索器, 查询) 第二阶段
-            progress_message: 覆盖默认进度消息
-            fallback: 覆盖默认兜底消息
-
-        Returns:
-            标准消息负载
-        """
-        query = await enrich_question(state, config, question_from_state(state))
-        first_retriever, first_query = first
-        first_result = await search_retriever(first_retriever, first_query)
-        second_retriever, second_query = second
-        second_result = await search_retriever(second_retriever, second_query)
-        all_records = merge_retriever_records(first_result, second_result)
+        all_records = merge_retriever_records(kg_result, rag_result)
         return await summarize_and_build_response(
             query,
             all_records,

@@ -10,28 +10,20 @@
 - after_response 写回记忆
 
 重构后：
-- 使用 ExecutionPipeline 抽取通用逻辑
-- 各节点只需声明检索策略
+- 使用 ExecutionPipeline 抽取通用逻辑，各节点只需声明检索策略
+- enrich_question / question_from_state 已内聚到 pipeline 中
 """
 
 from __future__ import annotations
 
-import asyncio
-
 from langchain_core.runnables import RunnableConfig
 
-from app.chat.domain.utils import no_neo4j_response, question_from_state
+from app.chat.domain.utils import no_neo4j_response
 from app.chat.infrastructure.graph.execution_pipeline import ExecutionPipeline
-from app.chat.infrastructure.graph.execution_utils import (
-    build_graph_only_query,
-    build_graph_then_rag_query,
-    build_rag_only_query,
-)
 from app.chat.infrastructure.graph.message_utils import (
     build_simple_message_response,
 )
 from app.chat.infrastructure.graph.state import AgentState
-from app.chat.infrastructure.memory_bridge.context import enrich_question
 from app.chat.infrastructure.retrievers.retriever_contracts import (
     KG_RETRIEVER_NAME,
     RAG_RETRIEVER_NAME,
@@ -79,16 +71,12 @@ async def execute_parallel(state: AgentState, *, config: RunnableConfig) -> dict
         return no_neo4j_response()
     rag = await get_retriever(RAG_RETRIEVER_NAME)
 
-    # 使用 ExecutionPipeline 的并行能力
-    query = await enrich_question(state, config, question_from_state(state))
-    kg_query = build_graph_only_query(query)
-    rag_query = build_rag_only_query(query)
-
-    return await _pipeline.execute_parallel(
+    return await _pipeline.execute_dual(
         state,
         config,
-        (kg, kg_query),
-        (rag, rag_query),
+        kg,
+        rag,
+        mode="parallel",
         progress_message="正在同时查询...",
     )
 
@@ -100,15 +88,12 @@ async def execute_then(state: AgentState, *, config: RunnableConfig) -> dict:
         return no_neo4j_response()
     rag = await get_retriever(RAG_RETRIEVER_NAME)
 
-    # 使用 ExecutionPipeline 的串行能力
-    query = await enrich_question(state, config, question_from_state(state))
-    rag_query = build_graph_then_rag_query(query, [])  # 占位，实际由 pipeline 处理
-
-    return await _pipeline.execute_sequential(
+    return await _pipeline.execute_dual(
         state,
         config,
-        first=(kg, query),
-        second=(rag, rag_query),
+        kg,
+        rag,
+        mode="sequential",
         progress_message="正在先查数据库，再查文档...",
     )
 
