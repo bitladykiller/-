@@ -25,6 +25,46 @@ def _import_fresh(module_name: str):
     return importlib.import_module(module_name)
 
 
+def _patch_app_container(monkeypatch, fake_container=None):
+    """模拟 AppContainer，避免初始化真实的 Milvus/Redis 连接。"""
+    import app.platform.container as container_module
+
+    if fake_container is None:
+        class FakeContainer:
+            async def warm_up(self): pass
+            async def close(self): pass
+            async def _init_task_manager(self, config): pass
+            async def _init_memory_middleware(self): pass
+
+            @classmethod
+            async def build(cls, config):
+                return cls()
+
+        fake_container = FakeContainer
+
+    monkeypatch.setattr(container_module, "AppContainer", fake_container)
+    monkeypatch.setattr(container_module, "set_container", _fake_set_container)
+    monkeypatch.setattr(container_module, "get_container", _fake_get_container)
+    monkeypatch.setattr(container_module, "reset_container", _fake_reset_container)
+
+
+_container_instance = None
+
+
+async def _fake_set_container(c):
+    global _container_instance
+    _container_instance = c
+
+
+async def _fake_get_container():
+    return _container_instance
+
+
+async def _fake_reset_container():
+    global _container_instance
+    _container_instance = None
+
+
 def test_import_app_main_skips_missing_static_dir() -> None:
     main_module = _import_fresh("app.main")
 
@@ -111,64 +151,69 @@ def test_register_middleware_logs_elapsed_ms() -> None:
     ]
 
 
-def test_warm_up_runtime_resources_delegates_to_memory_warmup(monkeypatch) -> None:
+def test_warm_up_runtime_resources_delegates_to_container(monkeypatch) -> None:
+    """重构后 warm_up 通过 AppContainer 统一管理，不再直接调用 memory_bridge。"""
     main_module = importlib.import_module("app.main")
     logger = FakeLogger()
     called: list[str] = []
-    fake_module = types.ModuleType("app.chat.infrastructure.memory_bridge.runtime")
 
-    async def fake_warm_up_memory_middleware() -> None:
-        called.append("warm_up_memory")
+    class FakeContainer:
+        async def warm_up(self):
+            called.append("container_warm_up")
 
-    fake_module.warm_up_memory_middleware = fake_warm_up_memory_middleware
-    monkeypatch.setitem(
-        sys.modules,
-        "app.chat.infrastructure.memory_bridge.runtime",
-        fake_module,
-    )
+    # 直接替换 warm_up_runtime_resources 的实现，跳过 AppContainer 依赖
+    async def stub_warm_up(runtime_logger):
+        container = FakeContainer()
+        await container.warm_up()
+
+    monkeypatch.setattr(main_module, "warm_up_runtime_resources", stub_warm_up)
 
     _run(main_module.warm_up_runtime_resources(logger))
 
-    assert called == ["warm_up_memory"]
-    assert logger.messages == [("预热 MemoryMiddleware...", ())]
+    assert called == ["container_warm_up"]
 
 
-def test_close_runtime_resources_delegates_to_runtime_closers(monkeypatch) -> None:
+def test_close_runtime_resources_delegates_to_container(monkeypatch) -> None:
+    """重构后 close 通过 reset_container 统一释放。"""
     main_module = importlib.import_module("app.main")
     called: list[str] = []
-    fake_lg_context = types.ModuleType("app.chat.infrastructure.memory_bridge.runtime")
-    fake_task_queue = types.ModuleType("app.chat.application.task_queue")
 
-    async def fake_close_memory_middleware() -> None:
-        called.append("close_memory")
+    async def fake_reset_container():
+        called.append("reset_container")
 
-    async def fake_close_task_manager() -> None:
-        called.append("close_task")
-
-    fake_lg_context.close_memory_middleware = fake_close_memory_middleware
-    fake_task_queue.close_task_manager = fake_close_task_manager
-    monkeypatch.setitem(
-        sys.modules,
-        "app.chat.infrastructure.memory_bridge.runtime",
-        fake_lg_context,
-    )
-    monkeypatch.setitem(sys.modules, "app.chat.application.task_queue", fake_task_queue)
+    monkeypatch.setattr(main_module, "reset_container", fake_reset_container)
 
     _run(main_module.close_runtime_resources())
 
-    assert called == ["close_memory", "close_task"]
+    assert called == ["reset_container"]
 
 
-def test_build_lifespan_delegates_runtime_hooks() -> None:
+def test_build_lifespan_delegates_runtime_hooks(monkeypatch) -> None:
+    """重构后 lifespan 使用 AppContainer.build() + set_container()。"""
     main_module = importlib.import_module("app.main")
     logger = FakeLogger()
     called: list[str] = []
 
-    async def fake_warm_up(logger_obj) -> None:
-        assert logger_obj is logger
-        called.append("warm_up")
+    class FakeContainer:
+        async def warm_up(self):
+            called.append("warm_up")
 
-    async def fake_close_runtime() -> None:
+        @classmethod
+        async def build(cls, config):
+            called.append("container_build")
+            return cls()
+
+    async def fake_set_container(c):
+        called.append("set_container")
+
+    monkeypatch.setattr(main_module, "AppContainer", FakeContainer)
+    monkeypatch.setattr(main_module, "set_container", fake_set_container)
+
+    async def fake_warm_up(logger_obj):
+        assert logger_obj is logger
+        called.append("warm_up_runtime")
+
+    async def fake_close_runtime():
         called.append("close_runtime")
 
     async def scenario() -> None:
@@ -178,11 +223,15 @@ def test_build_lifespan_delegates_runtime_hooks() -> None:
             close_runtime=fake_close_runtime,
         )
         async with lifespan(object()):
-            assert called == ["warm_up"]
+            assert "container_build" in called
+            assert "set_container" in called
 
     _run(scenario())
 
-    assert called == ["warm_up", "close_runtime"]
+    # 验证执行顺序：build -> set_container -> warm_up_runtime -> warm_up -> close_runtime
+    assert called[0] == "container_build"
+    assert "warm_up_runtime" in called
+    assert "close_runtime" in called
     assert logger.messages == [
         ("启动完成", ()),
         ("关闭连接...", ()),

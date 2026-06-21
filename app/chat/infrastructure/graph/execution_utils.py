@@ -63,6 +63,7 @@ class RetrieverResult(TypedDict, total=False):
     errors: list[Any]
     steps: list[Any]
 
+
 def records_from_result(result: RetrieverResult) -> list[RetrieverRecord]:
     """从统一 Retriever 结果中安全提取 records 列表。"""
     records = result.get("records", [])
@@ -118,7 +119,7 @@ async def ainvoke_structured_question_output(
     output_schema: type[Any],
     question: str,
 ) -> Any:
-    """统一执行“system + 单个问题模板”的结构化输出链。"""
+    """统一执行"system + 单个问题模板"的结构化输出链。"""
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
         ("human", human_prompt),
@@ -156,6 +157,6 @@ async def summarize_and_build_response(
     progress_message: str,
     fallback: str = "未查询到相关信息～",
 ) -> MessagePayload:
-    """统一执行摘要生成，并返回“两段式”进度响应。"""
+    """统一执行摘要生成，并返回"两段式"进度响应。"""
     summary = await summarize_records(query, records, fallback)
     return build_progress_response(progress_message, summary)

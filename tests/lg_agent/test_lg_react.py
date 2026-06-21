@@ -4,6 +4,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 import app.chat.infrastructure.react.react as lg_react
 from app.chat.infrastructure.graph.state import AgentState
+from app.platform.config.app_config import app_config
 
 
 class FakeAnswerCheck:
@@ -108,7 +109,7 @@ def test_execute_react_returns_checked_answer_with_progress_message(monkeypatch)
     assert subgraph.calls == [
         (
             {"messages": [{"role": "user", "content": "怎么修空调"}]},
-            {"recursion_limit": lg_react.REACT_RECURSION_LIMIT},
+            {"recursion_limit": app_config.react.recursion_limit},
         )
     ]
     assert judge_model.messages == [
@@ -127,7 +128,9 @@ def test_execute_react_returns_checked_answer_with_progress_message(monkeypatch)
 
 
 def test_execute_react_retries_on_step_exhaustion_and_returns_fallback(monkeypatch) -> None:
-    monkeypatch.setattr(lg_react, "REACT_MAX_ATTEMPTS", 2)
+    # 用 replace() 创建新的 frozen dataclass 实例，max_attempts=2
+    from dataclasses import replace
+    monkeypatch.setattr(lg_react, "_REACT_CFG", replace(lg_react._REACT_CFG, max_attempts=2))
     subgraph = FakeCompiledSubgraph(
         {"messages": [AIMessage(content="Need more steps before finish")]}
     )
@@ -150,12 +153,12 @@ def test_execute_react_retries_on_step_exhaustion_and_returns_fallback(monkeypat
 
     assert [message.content for message in result["messages"]] == [
         "正在综合分析...",
-        lg_react.REACT_FALLBACK_ANSWER,
+        app_config.react.fallback_answer,
     ]
     assert subgraph.calls == [
         (
             {"messages": [{"role": "user", "content": "帮我查订单"}]},
-            {"recursion_limit": lg_react.REACT_RECURSION_LIMIT},
+            {"recursion_limit": app_config.react.recursion_limit},
         ),
         (
             {
@@ -165,12 +168,12 @@ def test_execute_react_retries_on_step_exhaustion_and_returns_fallback(monkeypat
                     {
                         "role": "user",
                         "content": (
-                            f"{lg_react._REACT_RETRY_PROMPT}"
-                            f"不足原因：{lg_react.REACT_STEP_EXHAUSTED_REASON}"
+                            f"{app_config.react.retry_prompt}"
+                            f"不足原因：{app_config.react.step_exhausted_reason}"
                         ),
                     },
                 ]
             },
-            {"recursion_limit": lg_react.REACT_RECURSION_LIMIT},
+            {"recursion_limit": app_config.react.recursion_limit},
         ),
     ]

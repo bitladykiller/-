@@ -24,14 +24,16 @@ from app.knowledge.application.indexing_service import (
 )
 from app.knowledge.application.indexing_contracts import UploadFileInfo
 from app.chat.application.task_queue import TaskStatusPayload, get_task_manager
+from app.platform.config.app_config import app_config
 
 logger = get_logger(__name__)
 
 router = APIRouter(tags=["upload"])
 
 UPLOAD_DIR = Path("uploads")
-MAX_UPLOAD_SIZE_MB = 50
-MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+# 上传大小限制从统一配置读取
+MAX_UPLOAD_SIZE_MB = app_config.upload.max_upload_size_mb
+MAX_UPLOAD_SIZE_BYTES = app_config.upload.max_upload_size_bytes
 FILE_SIZE_EXCEEDED_DETAIL = f"文件大小超过限制 ({MAX_UPLOAD_SIZE_MB}MB)"
 CONTENT_EXTENSION_MISMATCH_DETAIL = "文件内容与扩展名不匹配: {extension}"
 _UNKNOWN_FILE_TYPE_DETAIL = "无法识别文件类型"

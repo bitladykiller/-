@@ -1,23 +1,39 @@
 """文档索引服务。
 
 上传后的文件通过 `rag_doc_parser` 解析，再写入 Milvus / BM25 检索索引。
-本文件只保留“校验输入文件 + 调用解析索引管道”这一层，不承载上传或任务编排逻辑。
+本文件只保留"校验输入文件 + 调用解析索引管道"这一层，不承载上传或任务编排逻辑。
+
+重构后:
+- 文档格式定义从 chat/ 收拢到 knowledge/ 自身，消除 knowledge -> chat 依赖
 """
 from __future__ import annotations
 
 from pathlib import Path
 import uuid
 
-from app.chat.application.document_formats import (
-    get_document_extension,
-    supports_document_indexing,
-)
 from app.knowledge.application.indexing_contracts import (
     DocIDFactory,
     IndexingResult,
     PipelineLoader,
     UploadFileInfo,
 )
+
+# 知识域自行维护可索引的文档格式，不依赖 chat 域
+_DOCUMENT_EXTENSIONS = frozenset({".pdf", ".docx"})
+_DOCUMENT_MAGIC_SIGNATURES: dict[str, tuple[bytes, ...]] = {
+    ".pdf": (b"%PDF",),
+    ".docx": (b"PK\x03\x04",),
+}
+
+
+def get_document_extension(path: Path) -> str:
+    """返回文件的小写扩展名。"""
+    return path.suffix.lower()
+
+
+def supports_document_indexing(extension: str) -> bool:
+    """判断扩展名是否属于可索引的文档格式。"""
+    return extension in _DOCUMENT_EXTENSIONS
 
 STATUS_SUCCESS = "success"
 STATUS_ERROR = "error"

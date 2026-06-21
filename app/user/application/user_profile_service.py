@@ -25,8 +25,10 @@ from app.user.application.user_profile_store import (
     query_profile_from_db,
     upsert_profile_data_in_db,
 )
+from app.platform.config.app_config import app_config
 
-_PROFILE_CACHE_TTL = 1800  # 30 分钟
+# 缓存 TTL 从统一配置读取
+_PROFILE_CACHE_TTL = app_config.memory.user_profile_cache_ttl
 _PROFILE_CACHE_PREFIX = "user:profile"
 
 

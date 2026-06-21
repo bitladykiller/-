@@ -8,6 +8,7 @@
 边界：
 - 这里只处理 ReAct 兜底链路，不承载主图路由决策
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -39,20 +40,11 @@ from app.chat.infrastructure.modeling.models import (
 from app.chat.infrastructure.memory_bridge.context import enrich_question
 from app.chat.infrastructure.kg_sub_graph.kg_neo4j_conn import get_neo4j_graph
 from app.chat.domain.utils import question_from_state, no_neo4j_response
+from app.platform.config.app_config import app_config
 
+# 所有运行时行为常量统一从 app_config 读取
+_REACT_CFG = app_config.react
 
-REACT_MAX_ATTEMPTS = 5
-REACT_RECURSION_LIMIT = 11
-_REACT_TRANSCRIPT_WINDOW = 20
-_REACT_PROGRESS_MESSAGE = "正在综合分析..."
-REACT_FALLBACK_ANSWER = "亲～这个问题回答不了哦～"
-_REACT_RETRY_PROMPT = (
-    "上一次候选答案仍然不充分，请继续按标准 ReAct 检索并补足关键事实。"
-)
-_REACT_STEP_EXHAUSTED_MARKER = "need more steps"
-REACT_STEP_EXHAUSTED_REASON = "单次 ReAct 内部步数耗尽，仍未得到足够答案。"
-REACT_DEFAULT_INSUFFICIENCY_REASON = "答案信息不足。"
-REACT_INITIAL_REASON = "初始状态：尚未完成充分回答。"
 _react_subgraph: CompiledStateGraph | None = None
 _react_lock: asyncio.Lock = asyncio.Lock()
 
@@ -74,13 +66,13 @@ async def get_react_subgraph(
 # ================================================================== #
 
 async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
-    """ReAct 兜底执行 + 答案充分性检查，最多 5 轮。
+    """ReAct 兜底执行 + 答案充分性检查，最多 N 轮。
 
     流程：
     1. 增强问题（注入记忆上下文）
-    2. ReAct 子图执行（最多 11 步 tool call）
+    2. ReAct 子图执行（最多 recursion_limit 步 tool call）
     3. 答案充分性检查（sufficient / retry / handoff）
-    4. 不足时最多重试 5 轮
+    4. 不足时最多重试 max_attempts 轮
 
     Args:
         state: Agent 状态。
@@ -99,8 +91,6 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
         kg = await get_retriever(KG_RETRIEVER_NAME)
         rag = await get_retriever(RAG_RETRIEVER_NAME)
 
-        # ReAct 子图是单例，工具里直接捕获检索器引用即可，
-        # 不必把“先拿注册表再查名字”的样板暴露给执行逻辑。
         @tool
         async def neo4j_query(task: str) -> str:
             """查询 Neo4j 知识图谱，获取商品、订单、客户等结构化数据。"""
@@ -131,17 +121,16 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
 
     sg = await get_react_subgraph(build_react_subgraph)
     subgraph_config = dict(config) if config else {}
-    # 单次 ReAct 子图的最大 agent/tools 步数
-    subgraph_config["recursion_limit"] = REACT_RECURSION_LIMIT
+    subgraph_config["recursion_limit"] = _REACT_CFG.recursion_limit
     react_messages: list[dict[str, str]] = [{"role": "user", "content": q}]
-    insufficiency_reason = REACT_INITIAL_REASON
+    insufficiency_reason = _REACT_CFG.initial_reason
 
-    for attempt in range(1, REACT_MAX_ATTEMPTS + 1):
+    for attempt in range(1, _REACT_CFG.max_attempts + 1):
         if attempt > 1:
             react_messages.append(
                 {
                     "role": "user",
-                    "content": f"{_REACT_RETRY_PROMPT}不足原因：{insufficiency_reason}",
+                    "content": f"{_REACT_CFG.retry_prompt}不足原因：{insufficiency_reason}",
                 }
             )
 
@@ -153,11 +142,11 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
             last_content = getattr(result_messages[-1], "content", "")
             last_answer = str(last_content) if last_content else "未能确定回答～"
 
-        if _REACT_STEP_EXHAUSTED_MARKER in last_answer.lower():
-            insufficiency_reason = REACT_STEP_EXHAUSTED_REASON
+        if _REACT_CFG.step_exhausted_marker in last_answer.lower():
+            insufficiency_reason = _REACT_CFG.step_exhausted_reason
         else:
             transcript_lines: list[str] = []
-            for message in result_messages[-_REACT_TRANSCRIPT_WINDOW:]:
+            for message in result_messages[-_REACT_CFG.transcript_window:]:
                 role = getattr(message, "type", None) or getattr(
                     message,
                     "role",
@@ -185,12 +174,12 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
             if check.decision == "sufficient":
                 return {
                     "messages": [
-                        AIMessage(content=_REACT_PROGRESS_MESSAGE),
+                        AIMessage(content=_REACT_CFG.progress_message),
                         AIMessage(content=last_answer),
                     ],
                 }
 
-            insufficiency_reason = check.reason or REACT_DEFAULT_INSUFFICIENCY_REASON
+            insufficiency_reason = check.reason or _REACT_CFG.default_insufficiency_reason
 
         # 准备下一轮：保留原始问题 + 上一轮候选答案
         react_messages = [
@@ -198,10 +187,10 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
             {"role": "assistant", "content": last_answer},
         ]
 
-    # 5 轮用尽仍未充分
+    # 所有轮次用尽仍未充分
     return {
         "messages": [
-            AIMessage(content=_REACT_PROGRESS_MESSAGE),
-            AIMessage(content=REACT_FALLBACK_ANSWER),
+            AIMessage(content=_REACT_CFG.progress_message),
+            AIMessage(content=_REACT_CFG.fallback_answer),
         ],
     }

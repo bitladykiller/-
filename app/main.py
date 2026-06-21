@@ -4,6 +4,7 @@
 - 声明应用入口常量
 - 构造 FastAPI app
 - 装配生命周期、路由、中间件和静态资源
+- 通过 AppContainer 管理所有应用级依赖的生命周期
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api import api_router
 from app.shared.core.logger import get_logger, setup_logging
+from app.platform.container import AppContainer, set_container, reset_container
 
 STATIC_DIR = Path(__file__).parent / "static" / "dist"
 APP_TITLE = "AssistGen REST API"
@@ -40,20 +42,23 @@ class InfoLogger(Protocol):
 
 
 async def warm_up_runtime_resources(runtime_logger: InfoLogger) -> None:
-    """预热懒加载资源，避免首请求承担初始化延迟。"""
-    from app.chat.infrastructure.memory_bridge.runtime import warm_up_memory_middleware
+    """预热懒加载资源，避免首请求承担初始化延迟。
 
+    通过 AppContainer 统一管理预热逻辑，不再直接调用 memory_bridge.runtime。
+    """
+    from app.platform.container import get_container
+
+    container = await get_container()
     runtime_logger.info("预热 MemoryMiddleware...")
-    await warm_up_memory_middleware()
+    await container.warm_up()
 
 
 async def close_runtime_resources() -> None:
-    """释放应用级运行时资源。"""
-    from app.chat.application.task_queue import close_task_manager
-    from app.chat.infrastructure.memory_bridge.runtime import close_memory_middleware
+    """释放应用级运行时资源。
 
-    await close_memory_middleware()
-    await close_task_manager()
+    通过 AppContainer.close() 统一释放所有外部连接。
+    """
+    await reset_container()
 
 
 def build_lifespan(
@@ -66,6 +71,12 @@ def build_lifespan(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        # 在 lifespan 启动阶段创建 AppContainer
+        from app.shared.core.config import settings
+
+        container = await AppContainer.build(settings)
+        await set_container(container)
+
         await warm_up(runtime_logger)
         runtime_logger.info("启动完成")
         try:

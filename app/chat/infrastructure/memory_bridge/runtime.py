@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from app.shared.core.config import settings
 from app.shared.core.config_models import ServiceType
 from app.shared.core.logger import get_logger
+from app.platform.config.app_config import app_config
 
 if TYPE_CHECKING:
     from app.knowledge.infrastructure.orchestration.memory_middleware import (
@@ -27,7 +28,8 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-_MEMORY_EXTRACTOR_TEMPERATURE = 0.3
+# 记忆抽取温度从统一配置读取
+_MEMORY_EXTRACTOR_TEMPERATURE = app_config.memory.memory_extractor_temperature
 
 _memory_middleware_instance: MemoryMiddleware | None = None
 _memory_middleware_lock: asyncio.Lock = asyncio.Lock()

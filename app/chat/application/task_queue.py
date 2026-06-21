@@ -6,10 +6,11 @@
 - 用 `asyncio.create_task` 托管后台协程
 
 边界：
-- 这里只负责“提交 / 状态流转 / 结果持久化”
+- 这里只负责"提交 / 状态流转 / 结果持久化"
 - 不负责具体的文档解析业务
 - 关闭时只释放 Redis 连接，不主动改写后台任务生命周期
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -26,12 +27,14 @@ from typing_extensions import TypedDict
 import redis.asyncio as aioredis
 
 from app.shared.core.logger import get_logger
+from app.platform.config.app_config import app_config
 
 logger = get_logger(__name__)
 _runtime_instance: "_TaskManager | None" = None
 _runtime_lock: asyncio.Lock = asyncio.Lock()
-_TASK_KEY_PREFIX = "task:doc_parse:"
-_TASK_TTL_SECONDS = 3600 * 24  # 任务状态保留 24 小时
+
+# 从统一配置读取任务队列参数
+_TASK_CFG = app_config.task_queue
 
 
 class TaskStatus(str, Enum):
@@ -51,6 +54,7 @@ class TaskStatusPayload(TypedDict, total=False):
     updated_at: str
     result: Any
     error: str
+
 
 TaskResult: TypeAlias = Any
 TaskCoroutine: TypeAlias = Coroutine[Any, Any, TaskResult]
@@ -98,6 +102,7 @@ def build_task_status_payload(
 def dump_task_status_payload(payload: TaskStatusPayload) -> str:
     """把任务状态序列化为可写入 Redis 的 JSON 字符串。"""
     return json.dumps(payload, ensure_ascii=False, default=str)
+
 
 def load_task_status_payload(raw: str | None) -> TaskStatusPayload | None:
     """从 Redis 原始值解析任务状态。"""
@@ -152,9 +157,9 @@ async def write_task_status(
         error=error,
     )
     await redis_client.set(
-        f"{_TASK_KEY_PREFIX}{task_id}",
+        f"{_TASK_CFG.task_key_prefix}{task_id}",
         dump_task_status_payload(payload),
-        ex=_TASK_TTL_SECONDS,
+        ex=_TASK_CFG.task_ttl_seconds,
     )
 
 
@@ -163,7 +168,7 @@ async def read_task_status(
     task_id: str,
 ) -> TaskStatusPayload | None:
     """读取任务状态，不存在或格式异常时返回 None。"""
-    raw = await redis_client.get(f"{_TASK_KEY_PREFIX}{task_id}")
+    raw = await redis_client.get(f"{_TASK_CFG.task_key_prefix}{task_id}")
     return load_task_status_payload(raw)
 
 
