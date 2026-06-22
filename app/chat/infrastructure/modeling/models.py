@@ -86,6 +86,9 @@ def _get_model(name: ModelRole, temperature: float) -> Any:
 
     缓存键使用 agent/router/react... 这类角色名，调用方只关心
     "这个节点要什么温度和职责"，不必知道底层是 DeepSeek 还是 Ollama。
+
+    注意：调用方必须在异步上下文中通过 await 访问 LazyModelProxy，
+    或者确保没有运行中的事件循环（同步测试/脚本场景）。
     """
     import asyncio as _asyncio
 
@@ -103,6 +106,10 @@ def _get_model(name: ModelRole, temperature: float) -> Any:
             container.llm_models[name] = _create_model(name, temperature)
         return container.llm_models[name]
 
+    # 在已有事件循环但可能在协程内部被同步调用时，直接用 nest_asyncio
+    # 兼容或通过 create_task 提交。但这里保持原有语义：如果循环已在运行
+    # 但无法 run_until_complete，说明调用方在协程中同步访问了代理属性，
+    # 应该用 await 代替直接属性访问。
     return loop.run_until_complete(_resolve())
 
 

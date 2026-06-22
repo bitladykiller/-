@@ -17,6 +17,9 @@ import requests
 from sklearn.metrics.pairwise import cosine_similarity
 
 from app.shared.core.config import settings
+from app.shared.core.logger import get_logger
+
+logger = get_logger(__name__)
 from app.shared.core.json_utils import parse_first_json_object
 
 _DEFAULT_EMBEDDING_DIM = 1024
@@ -156,6 +159,11 @@ class _VectorQueryMatcher:
             response.raise_for_status()
             return extract_embeddings(response.json(), expected_count=len(texts))
         except Exception:
+            logger.warning(
+                "[cypher_utils] embedding 生成失败，降级为零向量 | texts_count=%s",
+                len(texts),
+                exc_info=True,
+            )
             return fallback_embeddings(len(texts))
 
     def match_query(self, user_question: str, top_k: int = 3) -> list[dict[str, Any]]:

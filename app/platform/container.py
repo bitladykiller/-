@@ -155,7 +155,6 @@ async def get_container() -> AppContainer:
     优先返回 lifespan 中由 create_app 初始化的实例，
     如果尚未初始化则自动构建（兼容懒加载路径）。
     """
-    global _container
     if _container is not None:
         return _container
     return await _get_or_build_container()

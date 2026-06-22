@@ -22,8 +22,11 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 
 from app.api.common import INTERNAL_SERVER_ERROR_DETAIL
+from app.shared.core.logger import get_logger
 from app.chat.infrastructure.graph.builder import graph
 from app.chat.infrastructure.graph.state import InputState
+
+logger = get_logger(__name__)
 
 router = APIRouter(tags=["langgraph"])
 

@@ -172,6 +172,13 @@ async def load_memory_state(
             user_input=user_input,
         )
     except Exception:
+        logger.warning(
+            "[memory] 记忆加载失败，将以无记忆状态运行 | tenant=%s user=%s session=%s",
+            tenant_id,
+            user_id,
+            session_id,
+            exc_info=True,
+        )
         return None
 
     state.memory_state = memory_state

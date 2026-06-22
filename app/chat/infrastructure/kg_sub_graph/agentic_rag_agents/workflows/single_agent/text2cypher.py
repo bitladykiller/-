@@ -18,6 +18,10 @@ from typing import Annotated, Any, List, Protocol
 from langchain_core.language_models import BaseChatModel
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
+
+from app.shared.core.logger import get_logger
+
+logger = get_logger(__name__)
 from langchain_neo4j import Neo4jGraph
 from langgraph.constants import END, START
 from langgraph.graph.state import CompiledStateGraph, StateGraph
@@ -204,6 +208,11 @@ def create_text2cypher_agent(
                     params={key: str(value) for key, value in params.items()},
                 )
             except Exception:
+                logger.warning(
+                    "[text2cypher] 预定义查询执行失败 | query=%s",
+                    best_match.get("query_name", "unknown"),
+                    exc_info=True,
+                )
                 records = []
 
             return {

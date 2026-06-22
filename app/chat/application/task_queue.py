@@ -290,6 +290,7 @@ async def close_task_manager() -> None:
     try:
         await manager.close()
     except Exception:
+        logger.debug("关闭 task_manager Redis 连接时出错", exc_info=True)
         return
 
 
