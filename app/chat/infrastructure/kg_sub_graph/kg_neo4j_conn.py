@@ -24,59 +24,18 @@ logging.getLogger("neo4j.bolt").setLevel(logging.ERROR)
 logger = get_logger(__name__)
 
 HEALTH_CHECK_INTERVAL: int = 30
-_cached_graph: Neo4jGraph | None = None
-_last_health_check_ts: float = 0.0
 
 
-def get_neo4j_graph() -> Neo4jGraph | None:
-    """返回缓存的 Neo4jGraph 实例。"""
-    global _cached_graph, _last_health_check_ts
+async def get_neo4j_graph() -> Neo4jGraph | None:
+    """从 AppContainer 获取/创建 Neo4jGraph 缓存实例。"""
+    from app.platform.container import get_container
 
-    now = time.monotonic()
-
-    if _cached_graph is not None:
-        if (now - _last_health_check_ts) < HEALTH_CHECK_INTERVAL:
-            return _cached_graph
-        try:
-            _cached_graph.query("RETURN 1")
-            _last_health_check_ts = now
-            return _cached_graph
-        except Exception:
-            logger.warning("[neo4j] 健康检查失败，连接可能已断开")
-
-        logger.info("[neo4j] 缓存连接失效，尝试重连")
-        _cached_graph = None
-
-    try:
-        _cached_graph = Neo4jGraph(
-            url=settings.NEO4J_URL,
-            username=settings.NEO4J_USERNAME,
-            password=settings.NEO4J_PASSWORD,
-            database=settings.NEO4J_DATABASE,
-        )
-    except Exception:
-        logger.error("[neo4j] 连接失败，KG 查询将不可用", exc_info=True)
-        return None
-
-    if _cached_graph is not None:
-        try:
-            _cached_graph.query("RETURN 1")
-            _last_health_check_ts = now
-            return _cached_graph
-        except Exception:
-            logger.warning("[neo4j] 健康检查失败，连接可能已断开")
-
-        logger.error("[neo4j] 新建连接健康检查失败")
-        _cached_graph = None
-
-    return None
+    container = await get_container()
+    return _get_neo4j_graph(container)
 
 
 def _get_neo4j_graph(container: Any) -> Any:
-    """从 AppContainer 获取/创建 Neo4jGraph 缓存实例。
-
-    供 retriever_runtime 等模块使用，复用容器的 neo4j_graph 字段。
-    """
+    """从 AppContainer 获取/创建 Neo4jGraph 缓存实例。"""
     now = time.monotonic()
 
     if container.neo4j_graph is not None:

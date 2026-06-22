@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from app.api.common import MessageResponse, build_message_response, run_api_action
 from app.shared.core.logger import get_logger
-from app.chat.application.conversation_service import ConversationService, ConversationSummary
+from app.chat.application.conversation_service import conversation_service, ConversationSummary
 
 logger = get_logger(__name__)
 
@@ -50,7 +50,7 @@ async def create_conversation(
     """创建新会话并返回会话 ID。"""
     conversation_id = await run_api_action(
         "create_conversation",
-        ConversationService.create_conversation(request.user_id),
+        conversation_service.create_conversation(request.user_id),
         logger=logger,
         user_id=request.user_id,
     )
@@ -62,7 +62,7 @@ async def get_user_conversations(user_id: int) -> list[ConversationSummary]:
     """查询指定用户的会话列表。"""
     return await run_api_action(
         "get_user_conversations",
-        ConversationService.get_user_conversations(user_id),
+        conversation_service.get_user_conversations(user_id),
         logger=logger,
         user_id=user_id,
     )
@@ -73,7 +73,7 @@ async def delete_conversation(conversation_id: int) -> MessageResponse:
     """删除指定会话。"""
     await run_api_action(
         "delete_conversation",
-        ConversationService.delete_conversation(conversation_id),
+        conversation_service.delete_conversation(conversation_id),
         logger=logger,
         conversation_id=conversation_id,
     )
@@ -88,7 +88,7 @@ async def update_conversation_name(
     """更新指定会话标题。"""
     await run_api_action(
         "update_conversation_name",
-        ConversationService.update_conversation_name(conversation_id, request.name),
+        conversation_service.update_conversation_name(conversation_id, request.name),
         logger=logger,
         conversation_id=conversation_id,
         name=request.name,

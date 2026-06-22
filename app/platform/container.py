@@ -16,10 +16,11 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import Any
 
-if TYPE_CHECKING:
-    from app.knowledge.infrastructure.orchestration.memory_middleware import MemoryMiddleware
+from app.shared.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -107,14 +108,14 @@ class AppContainer:
             try:
                 await self.task_manager.close()
             except Exception:
-                pass
+                logger.debug("关闭 task_manager 时出错", exc_info=True)
             self.task_manager = None
 
         if self.memory_middleware is not None:
             try:
                 await _close_memory_resources(self.memory_middleware)
             except Exception:
-                pass
+                logger.debug("关闭 memory_middleware 资源时出错", exc_info=True)
             self.memory_middleware = None
 
         self.llm_models.clear()
@@ -225,13 +226,13 @@ async def _close_memory_resources(middleware: Any) -> None:
     try:
         await middleware.redis_stm.redis.close()
     except Exception:
-        pass
+        logger.debug("关闭 Redis STM 连接时出错", exc_info=True)
     try:
         milvus_client = getattr(middleware.milvus_ltm, "milvus_client", None)
         if milvus_client:
             milvus_client.close()
     except Exception:
-        pass
+        logger.debug("关闭 Milvus 客户端时出错", exc_info=True)
 
 
 __all__ = [

@@ -73,8 +73,6 @@ class FakeSessionFactory:
 
 
 def test_create_conversation_returns_id(monkeypatch) -> None:
-    fake_session = FakeSession()
-
     async def fake_run(*args, **kwargs):
         return 101
 
@@ -82,7 +80,8 @@ def test_create_conversation_returns_id(monkeypatch) -> None:
         "app.chat.application.conversation_service.run_db_operation", fake_run
     )
 
-    result = _run(ConversationService.create_conversation(5))
+    service = ConversationService()
+    result = _run(service.create_conversation(5))
     assert result == 101
 
 
@@ -98,7 +97,8 @@ def test_get_user_conversations_returns_list(monkeypatch) -> None:
         "app.chat.application.conversation_service.run_db_operation", fake_run
     )
 
-    result = _run(ConversationService.get_user_conversations(1))
+    service = ConversationService()
+    result = _run(service.get_user_conversations(1))
     assert result == expected
 
 
@@ -110,7 +110,8 @@ def test_delete_conversation_succeeds(monkeypatch) -> None:
         "app.chat.application.conversation_service.run_db_operation", fake_run
     )
 
-    result = _run(ConversationService.delete_conversation(1))
+    service = ConversationService()
+    result = _run(service.delete_conversation(1))
     assert result is None
 
 
@@ -122,5 +123,6 @@ def test_update_conversation_name_succeeds(monkeypatch) -> None:
         "app.chat.application.conversation_service.run_db_operation", fake_run
     )
 
-    result = _run(ConversationService.update_conversation_name(1, "new name"))
+    service = ConversationService()
+    result = _run(service.update_conversation_name(1, "new name"))
     assert result is None

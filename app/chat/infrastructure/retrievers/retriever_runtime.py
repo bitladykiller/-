@@ -13,11 +13,6 @@ from typing import Any
 from app.chat.infrastructure.retrievers.retriever_contracts import KG_RETRIEVER_NAME, RAG_RETRIEVER_NAME
 from app.chat.infrastructure.kg_sub_graph.kg_neo4j_conn import _get_neo4j_graph
 
-# 保留模块级属性供旧测试 monkeypatch 使用
-_registry: Any | None = None
-_cypher_example_retriever: Any | None = None
-_t2c_agent: Any | None = None
-
 
 async def get_retriever(name: str) -> Any:
     """获取检索器。

@@ -39,9 +39,6 @@ from app.knowledge.infrastructure.ltm.ltm_collection import (
     upsert_records,
 )
 
-if TYPE_CHECKING:
-    from shared_retrieval import MilvusHybridSearchCore
-
 logger = get_logger(__name__)
 SEARCH_LOG_PREVIEW_LIMIT = 100
 EMBEDDING_LOG_PREVIEW_LIMIT = 200
@@ -248,8 +245,6 @@ def create_default_retrieval_core(
     collection_name: str,
 ) -> MilvusHybridSearchCore:
     """创建默认的 Milvus 混合检索核心。"""
-    from shared_retrieval import MilvusHybridSearchCore
-
     return MilvusHybridSearchCore(
         milvus_client=milvus_client,
         embedding_model=embedding_model,

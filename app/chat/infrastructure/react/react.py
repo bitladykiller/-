@@ -77,7 +77,7 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
     Returns:
         {"messages": [...]} 包含最终回复。
     """
-    if get_neo4j_graph() is None:
+    if await get_neo4j_graph() is None:
         return no_neo4j_response()
 
     q = await enrich_question(state, config, question_from_state(state))

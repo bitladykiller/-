@@ -82,4 +82,5 @@ async def langgraph_query(
         response.headers[_CONVERSATION_ID_HEADER] = thread_id
         return response
     except Exception:
+        logger.exception("[api] SSE 流处理异常")
         raise HTTPException(status_code=500, detail=INTERNAL_SERVER_ERROR_DETAIL)

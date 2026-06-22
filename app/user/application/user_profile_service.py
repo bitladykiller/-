@@ -16,6 +16,7 @@ import json
 from typing import Any, Protocol
 
 from app.shared.core.database import AsyncSessionLocal
+from app.shared.core.logger import get_logger
 from app.knowledge.domain.schemas import UserProfileData, UserProfilePayload
 from app.knowledge.infrastructure.profile.profile_payload_support import (
     coerce_user_profile_payload,
@@ -24,6 +25,8 @@ from app.user.infrastructure.repository.user_profile_repository import (
     user_profile_repository,
 )
 from app.platform.config.app_config import app_config
+
+logger = get_logger(__name__)
 
 _PROFILE_CACHE_TTL = app_config.memory.user_profile_cache_ttl
 _PROFILE_CACHE_PREFIX = "user:profile"
@@ -75,6 +78,11 @@ class UserProfileService:
                 )
             return profile
         except Exception:
+            logger.warning(
+                "[user_profile] 读取画像失败 | user_id=%s",
+                user_id,
+                exc_info=True,
+            )
             return self._repository.empty_profile(user_id)
 
     async def upsert_profile_data(
@@ -98,6 +106,11 @@ class UserProfileService:
                 if data_changed:
                     await db.commit()
         except Exception:
+            logger.warning(
+                "[user_profile] 写入画像失败 | user_id=%s",
+                user_id,
+                exc_info=True,
+            )
             return False
 
         if data_changed and redis_client is not None:

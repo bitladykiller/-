@@ -8,6 +8,7 @@
 设计约束：
 - Service 层不直接写 SQL
 - 所有数据库访问通过 ConversationRepository
+- Session factory 通过构造函数注入，便于测试替换
 """
 
 from __future__ import annotations
@@ -67,16 +68,15 @@ async def run_db_operation(
 
 
 class ConversationService:
-    """会话 CRUD 服务。
+    """会话 CRUD 服务。"""
 
-    通过 Repository 层访问数据库，保持 Service 层只关注业务编排。
-    """
+    def __init__(self, session_factory: _SessionFactory = AsyncSessionLocal):
+        self._session_factory = session_factory
 
-    @staticmethod
-    async def create_conversation(user_id: int) -> int:
+    async def create_conversation(self, user_id: int) -> int:
         """创建新会话并返回会话 id。"""
         return await run_db_operation(
-            AsyncSessionLocal,
+            self._session_factory,
             logger,
             "create_conversation",
             _create_conversation,
@@ -84,11 +84,10 @@ class ConversationService:
             user_id=user_id,
         )
 
-    @staticmethod
-    async def get_user_conversations(user_id: int) -> list[ConversationSummary]:
+    async def get_user_conversations(self, user_id: int) -> list[ConversationSummary]:
         """获取用户的所有非默认标题会话。"""
         return await run_db_operation(
-            AsyncSessionLocal,
+            self._session_factory,
             logger,
             "get_user_conversations",
             _get_user_conversations,
@@ -96,11 +95,10 @@ class ConversationService:
             user_id=user_id,
         )
 
-    @staticmethod
-    async def delete_conversation(conversation_id: int) -> None:
+    async def delete_conversation(self, conversation_id: int) -> None:
         """删除会话。"""
         await run_db_operation(
-            AsyncSessionLocal,
+            self._session_factory,
             logger,
             "delete_conversation",
             _delete_conversation,
@@ -108,11 +106,10 @@ class ConversationService:
             conversation_id=conversation_id,
         )
 
-    @staticmethod
-    async def update_conversation_name(conversation_id: int, name: str) -> None:
+    async def update_conversation_name(self, conversation_id: int, name: str) -> None:
         """更新会话标题。"""
         await run_db_operation(
-            AsyncSessionLocal,
+            self._session_factory,
             logger,
             "update_conversation_name",
             _update_conversation_name,
@@ -121,6 +118,9 @@ class ConversationService:
             conversation_id=conversation_id,
             name=name,
         )
+
+
+conversation_service = ConversationService()
 
 
 # ---- Repository 适配函数 ----
@@ -156,4 +156,4 @@ async def _update_conversation_name(
     await repo.rename(conversation_id, name)
 
 
-__all__ = ["ConversationService", "ConversationSummary"]
+__all__ = ["ConversationService", "ConversationSummary", "conversation_service"]

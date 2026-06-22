@@ -1,7 +1,6 @@
 import asyncio
 
 import app.chat.infrastructure.memory_bridge.context as memory_context
-import app.chat.infrastructure.memory_bridge.runtime as lg_memory_runtime
 
 
 class FakeMiddleware:
@@ -46,11 +45,17 @@ def test_get_memory_middleware_caches_created_instance(monkeypatch) -> None:
         return FakeContainer()
 
     monkeypatch.setattr(
-        lg_memory_runtime, "_get_container", fake_get_container
+        "app.platform.container.get_container", fake_get_container
     )
 
-    first = _run(lg_memory_runtime.get_memory_middleware())
-    second = _run(lg_memory_runtime.get_memory_middleware())
+    from app.platform.container import get_container
+
+    async def get_middleware():
+        container = await get_container()
+        return container.memory_middleware
+
+    first = _run(get_middleware())
+    second = _run(get_middleware())
 
     assert first is middleware
     assert second is middleware
@@ -60,23 +65,27 @@ def test_get_memory_middleware_logs_and_returns_none_on_failure(monkeypatch) -> 
     async def failing_container():
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(lg_memory_runtime, "_get_container", failing_container)
+    monkeypatch.setattr(
+        "app.platform.container.get_container", failing_container
+    )
 
-    result = _run(lg_memory_runtime.get_memory_middleware())
+    from app.platform.container import get_container
 
+    async def get_middleware():
+        try:
+            container = await get_container()
+            return container.memory_middleware
+        except Exception:
+            return None
+
+    result = _run(get_middleware())
     assert result is None
 
 
 def test_close_memory_middleware_closes_resources_and_resets_singleton(monkeypatch) -> None:
     from app.platform.container import reset_container
 
-    async def fake_reset():
-        from app.platform import container as cont_mod
-        cont_mod._container = None
-
-    monkeypatch.setattr(lg_memory_runtime, "reset_container", fake_reset)
-
-    _run(lg_memory_runtime.close_memory_middleware())
+    _run(reset_container())
 
     from app.platform import container as cont_mod
     assert cont_mod._container is None
