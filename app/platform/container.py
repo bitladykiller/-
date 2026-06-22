@@ -4,6 +4,7 @@
 - 在 lifespan 启动阶段按顺序初始化所有依赖
 - 提供统一的依赖获取入口
 - 关闭阶段释放所有外部连接
+- 收敛所有模块级全局状态（模型缓存、检索器运行时、KG连接、记忆中间件）
 
 不负责：
 - 具体依赖的创建逻辑（由各自的 factory 模块负责）
@@ -12,11 +13,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from app.chat.application.task_queue import _TaskManager
     from app.knowledge.infrastructure.orchestration.memory_middleware import MemoryMiddleware
 
 
@@ -24,8 +26,9 @@ if TYPE_CHECKING:
 class AppContainer:
     """应用级依赖容器。
 
-    所有模块级单例（MemoryMiddleware、TaskManager、LLM 模型缓存等）
-    统一收敛到此容器。测试时可以直接替换整个容器实例。
+    所有模块级单例（MemoryMiddleware、TaskManager、LLM 模型缓存、
+    检索器运行时、KG连接等）统一收敛到此容器。
+    测试时可以直接替换整个容器实例。
     """
 
     # ---- 记忆系统 ----
@@ -37,10 +40,15 @@ class AppContainer:
     # ---- LLM 模型实例（替代 models.py 中的 _models_cache 全局变量） ----
     llm_models: dict[str, Any] = field(default_factory=dict)
 
-    # ---- 检索器运行时（替代 retriever_runtime 中的 _registry 等全局变量） ----
+    # ---- 检索器运行时（替代 retriever_runtime 中的全局变量） ----
     retriever_registry: Any = None
-    t2c_agent: Any = None
-    cypher_example_retriever: Any = None
+    retriever_registry_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _cypher_example_retriever: Any = None
+    _t2c_agent: Any = None
+
+    # ---- KG Neo4j 连接缓存（替代 kg_neo4j_conn 中的全局变量） ----
+    neo4j_graph: Any = None
+    neo4j_last_health_check_ts: float = 0.0
 
     _closed: bool = field(default=False, init=False)
 
@@ -49,10 +57,8 @@ class AppContainer:
         """按依赖顺序依次初始化所有组件。
 
         初始化顺序：
-        1. LLM 模型实例
-        2. 检索器运行时
-        3. MemoryMiddleware
-        4. TaskManager
+        1. MemoryMiddleware（含 STM/LTM/Extractor）
+        2. TaskManager
 
         Args:
             config: 应用配置（settings 对象）
@@ -70,38 +76,26 @@ class AppContainer:
             raise
 
     async def _init_task_manager(self, config: Any) -> None:
-        """初始化后台任务管理器。"""
         from app.chat.application.task_queue import create_redis_client, _TaskManager
 
         self.task_manager = _TaskManager(create_redis_client(config.REDIS_URL))
 
     async def _init_memory_middleware(self) -> None:
-        """初始化记忆中间件。"""
-        from app.chat.infrastructure.memory_bridge.runtime import create_memory_middleware_instance
-
-        self.memory_middleware = create_memory_middleware_instance()
+        self.memory_middleware = _create_memory_middleware()
 
     # ---- 生命周期管理 ----
 
     async def warm_up(self) -> None:
-        """预热懒加载资源，减少首请求初始化延迟。
-
-        目前主要预热 MemoryMiddleware。如果后续有其他需要预热的资源，在此扩展。
-        """
-        # MemoryMiddleware 已在 build() 中创建，这里只做显式的初始化确认
+        """预热懒加载资源，减少首请求初始化延迟。"""
         if self.memory_middleware is None:
             await self._init_memory_middleware()
 
     async def close(self) -> None:
-        """关闭所有外部连接（按依赖逆序）。
-
-        保证即使某一步关闭失败，后续步骤也会继续执行。
-        """
+        """关闭所有外部连接（按依赖逆序）。"""
         if self._closed:
             return
         self._closed = True
 
-        # 1. 关闭任务管理器
         if self.task_manager is not None:
             try:
                 await self.task_manager.close()
@@ -109,40 +103,141 @@ class AppContainer:
                 pass
             self.task_manager = None
 
-        # 2. 关闭记忆中间件
         if self.memory_middleware is not None:
-            from app.chat.infrastructure.memory_bridge.runtime import close_memory_resources
-
             try:
-                await close_memory_resources(self.memory_middleware)
+                await _close_memory_resources(self.memory_middleware)
             except Exception:
                 pass
             self.memory_middleware = None
 
+        self.llm_models.clear()
+        self.retriever_registry = None
+        self.neo4j_graph = None
+
+
+# ──────────────────────────────────────────────
+# 容器全局访问 — 单例管理收敛在此模块
+# ──────────────────────────────────────────────
 
 _container: AppContainer | None = None
+_container_lock: asyncio.Lock = asyncio.Lock()
 
 
-async def get_container() -> AppContainer:
-    """获取当前应用容器实例。"""
+async def _get_or_build_container() -> AppContainer:
+    """双检锁获取或创建容器单例。
+
+    用于那些在 AppContainer.build() 调用之前可能被触及的懒加载路径
+    （如 LangGraph 节点首次执行时通过 get_retriever 触碰容器）。
+    """
     global _container
     if _container is None:
-        raise RuntimeError("AppContainer 尚未初始化，请先调用 AppContainer.build()")
+        async with _container_lock:
+            if _container is None:
+                from app.shared.core.config import settings
+
+                _container = await AppContainer.build(settings)
     return _container
 
 
+async def get_container() -> AppContainer:
+    """获取当前应用容器实例。
+
+    优先返回 lifespan 中由 create_app 初始化的实例，
+    如果尚未初始化则自动构建（兼容懒加载路径）。
+    """
+    global _container
+    if _container is not None:
+        return _container
+    return await _get_or_build_container()
+
+
 async def set_container(container: AppContainer) -> None:
-    """设置当前应用容器实例。"""
     global _container
     _container = container
 
 
 async def reset_container() -> None:
-    """销毁当前应用容器实例（主要用于测试清理）。"""
     global _container
     if _container is not None:
         await _container.close()
         _container = None
+
+
+# ──────────────────────────────────────────────
+# 统一工厂函数 — 替代各模块散布的创建/关闭逻辑
+# ──────────────────────────────────────────────
+
+
+def _create_memory_middleware() -> Any:
+    """创建完整的 MemoryMiddleware 依赖栈。
+
+    替代 memory_bridge/runtime.py 中的 create_memory_middleware_instance()。
+    """
+    import redis.asyncio as redis
+    from pymilvus import MilvusClient
+
+    from app.knowledge.infrastructure.ltm.simple_long_term_memory import SimpleLongTermMemory
+    from app.knowledge.infrastructure.orchestration.memory_extractor import MemoryExtractor
+    from app.knowledge.infrastructure.orchestration.memory_middleware import MemoryMiddleware
+    from app.knowledge.infrastructure.stm.redis_short_term_memory import RedisShortTermMemory
+    from app.platform.config.app_config import app_config
+    from app.shared.core.config import settings
+    from app.shared.core.config_models import ServiceType
+
+    if settings.EMBEDDING_TYPE == "ollama":
+        from langchain_ollama import OllamaEmbeddings
+
+        embedding_model = OllamaEmbeddings(
+            model=settings.EMBEDDING_MODEL,
+            base_url=settings.OLLAMA_BASE_URL,
+        )
+    else:
+        from langchain_community.embeddings import HuggingFaceEmbeddings
+
+        embedding_model = HuggingFaceEmbeddings(model_name=settings.EMBEDDING_MODEL)
+
+    if settings.AGENT_SERVICE == ServiceType.DEEPSEEK:
+        from langchain_deepseek import ChatDeepSeek
+
+        memory_extractor_llm = ChatDeepSeek(
+            api_key=settings.DEEPSEEK_API_KEY,
+            model_name=settings.DEEPSEEK_MODEL,
+            temperature=app_config.memory.memory_extractor_temperature,
+        )
+    else:
+        from langchain_ollama import ChatOllama
+
+        memory_extractor_llm = ChatOllama(
+            model=settings.OLLAMA_AGENT_MODEL,
+            base_url=settings.OLLAMA_BASE_URL,
+            temperature=app_config.memory.memory_extractor_temperature,
+        )
+
+    return MemoryMiddleware(
+        redis_stm=RedisShortTermMemory(
+            redis.from_url(settings.REDIS_URL, decode_responses=True)
+        ),
+        milvus_ltm=SimpleLongTermMemory(
+            milvus_client=MilvusClient(uri=settings.MILVUS_URL),
+            embedding_model=embedding_model,
+            collection_name=settings.MILVUS_COLLECTION_NAME,
+        ),
+        memory_extractor=MemoryExtractor(llm_client=memory_extractor_llm),
+    )
+
+
+async def _close_memory_resources(middleware: Any) -> None:
+    """关闭 MemoryMiddleware 底层持有的外部连接。"""
+    try:
+        await middleware.redis_stm.redis.close()
+    except Exception:
+        pass
+    try:
+        milvus_client = getattr(middleware.milvus_ltm, "milvus_client", None)
+        if milvus_client:
+            milvus_client.close()
+    except Exception:
+        pass
 
 
 __all__ = [

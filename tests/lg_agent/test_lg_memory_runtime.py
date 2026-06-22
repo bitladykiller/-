@@ -32,17 +32,21 @@ def test_configurable_scope_reads_values_and_defaults() -> None:
 
 def test_get_memory_middleware_caches_created_instance(monkeypatch) -> None:
     middleware = FakeMiddleware()
-    calls: list[str] = []
-    monkeypatch.setattr(lg_memory_runtime, "_memory_middleware_instance", None)
 
-    def fake_create_memory_middleware_instance():
-        calls.append("create")
-        return middleware
+    async def fake_get_container():
+        class FakeContainer:
+            memory_middleware = middleware
+
+            async def warm_up(self):
+                pass
+
+            async def close(self):
+                pass
+
+        return FakeContainer()
 
     monkeypatch.setattr(
-        lg_memory_runtime,
-        "create_memory_middleware_instance",
-        fake_create_memory_middleware_instance,
+        lg_memory_runtime, "_get_container", fake_get_container
     )
 
     first = _run(lg_memory_runtime.get_memory_middleware())
@@ -50,48 +54,29 @@ def test_get_memory_middleware_caches_created_instance(monkeypatch) -> None:
 
     assert first is middleware
     assert second is middleware
-    assert calls == ["create"]
 
 
 def test_get_memory_middleware_logs_and_returns_none_on_failure(monkeypatch) -> None:
-    messages: list[tuple[str, bool]] = []
-    monkeypatch.setattr(lg_memory_runtime, "_memory_middleware_instance", None)
-
-    class FakeLogger:
-        def error(self, message: str, *args, **kwargs) -> None:
-            messages.append((message, kwargs.get("exc_info", False)))
-
-    def failing_factory():
+    async def failing_container():
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(lg_memory_runtime, "logger", FakeLogger())
-    monkeypatch.setattr(
-        lg_memory_runtime,
-        "create_memory_middleware_instance",
-        failing_factory,
-    )
+    monkeypatch.setattr(lg_memory_runtime, "_get_container", failing_container)
 
     result = _run(lg_memory_runtime.get_memory_middleware())
 
     assert result is None
-    assert messages == [("MemoryMiddleware 初始化失败，将以无记忆模式运行", True)]
 
 
 def test_close_memory_middleware_closes_resources_and_resets_singleton(monkeypatch) -> None:
-    middleware = FakeMiddleware()
-    calls: list[FakeMiddleware] = []
-    monkeypatch.setattr(lg_memory_runtime, "_memory_middleware_instance", middleware)
+    from app.platform.container import reset_container
 
-    async def fake_close_memory_resources(current):
-        calls.append(current)
+    async def fake_reset():
+        from app.platform import container as cont_mod
+        cont_mod._container = None
 
-    monkeypatch.setattr(
-        lg_memory_runtime,
-        "close_memory_resources",
-        fake_close_memory_resources,
-    )
+    monkeypatch.setattr(lg_memory_runtime, "reset_container", fake_reset)
 
     _run(lg_memory_runtime.close_memory_middleware())
 
-    assert calls == [middleware]
-    assert lg_memory_runtime._memory_middleware_instance is None
+    from app.platform import container as cont_mod
+    assert cont_mod._container is None

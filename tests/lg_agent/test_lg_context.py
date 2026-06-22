@@ -40,7 +40,7 @@ def test_load_memory_state_returns_cached_state_without_runtime_lookup(monkeypat
     async def unexpected_get_memory_middleware():
         raise AssertionError("runtime lookup should not happen")
 
-    monkeypatch.setattr(lg_context, "get_memory_middleware", unexpected_get_memory_middleware)
+    monkeypatch.setattr(lg_context, "_get_memory_middleware", unexpected_get_memory_middleware)
 
     result = _run(lg_context.load_memory_state(state, {}, "你好"))
 
@@ -50,10 +50,10 @@ def test_load_memory_state_returns_cached_state_without_runtime_lookup(monkeypat
 def test_load_memory_state_returns_none_when_runtime_unavailable(monkeypatch) -> None:
     state = AgentState(messages=[])
 
-    async def fake_get_memory_middleware():
+    async def         fake_get_memory_middleware2():
         return None
 
-    monkeypatch.setattr(lg_context, "get_memory_middleware", fake_get_memory_middleware)
+    monkeypatch.setattr(lg_context, "_get_memory_middleware", fake_get_memory_middleware2)
 
     result = _run(lg_context.load_memory_state(state, {}, "你好"))
 
@@ -73,10 +73,10 @@ def test_load_memory_state_loads_and_caches_memory_state(monkeypatch) -> None:
         }
     }
 
-    async def fake_get_memory_middleware():
+    async def         fake_get_memory_middleware2():
         return middleware
 
-    monkeypatch.setattr(lg_context, "get_memory_middleware", fake_get_memory_middleware)
+    monkeypatch.setattr(lg_context, "_get_memory_middleware", fake_get_memory_middleware2)
 
     result = _run(lg_context.load_memory_state(state, config, "空调怎么选"))
 
@@ -97,10 +97,10 @@ def test_load_memory_state_uses_default_scope_when_config_missing(monkeypatch) -
     middleware = FakeMemoryMiddleware(loaded_state)
     state = AgentState(messages=[])
 
-    async def fake_get_memory_middleware():
+    async def         fake_get_memory_middleware2():
         return middleware
 
-    monkeypatch.setattr(lg_context, "get_memory_middleware", fake_get_memory_middleware)
+    monkeypatch.setattr(lg_context, "_get_memory_middleware", fake_get_memory_middleware2)
 
     _run(lg_context.load_memory_state(state, {}, "默认范围测试"))
 

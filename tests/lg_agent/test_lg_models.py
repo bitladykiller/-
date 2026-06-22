@@ -22,7 +22,6 @@ class AwaitableDummyModel:
 
 
 def test_get_model_uses_provider_specific_client(monkeypatch) -> None:
-    lg_models._models_cache.clear()
     deepseek_calls: list[dict] = []
     ollama_calls: list[dict] = []
 
@@ -50,11 +49,10 @@ def test_get_model_uses_provider_specific_client(monkeypatch) -> None:
     monkeypatch.setattr(lg_models.settings, "OLLAMA_BASE_URL", "http://ollama.local")
 
     monkeypatch.setattr(lg_models.settings, "AGENT_SERVICE", "deepseek")
-    lg_models._get_model("agent", 0.3)
-    lg_models._models_cache.clear()
+    lg_models._create_model("agent", 0.3)
 
     monkeypatch.setattr(lg_models.settings, "AGENT_SERVICE", "ollama")
-    lg_models._get_model("router", 0.6)
+    lg_models._create_model("router", 0.6)
 
     assert deepseek_calls == [
         {
@@ -70,11 +68,9 @@ def test_get_model_uses_provider_specific_client(monkeypatch) -> None:
             "temperature": 0.6,
         }
     ]
-    lg_models._models_cache.clear()
 
 
-def test_get_model_caches_instances_by_role(monkeypatch) -> None:
-    lg_models._models_cache.clear()
+def test_create_model_creates_new_instance_each_call(monkeypatch) -> None:
     created: list[dict] = []
 
     class FakeOllama:
@@ -90,18 +86,14 @@ def test_get_model_caches_instances_by_role(monkeypatch) -> None:
     monkeypatch.setattr(lg_models.settings, "OLLAMA_AGENT_MODEL", "qwen3")
     monkeypatch.setattr(lg_models.settings, "OLLAMA_BASE_URL", "http://ollama.local")
 
-    first = lg_models._get_model("agent", 0.7)
-    second = lg_models._get_model("agent", 0.7)
+    first = lg_models._create_model("agent", 0.7)
+    second = lg_models._create_model("agent", 0.7)
 
-    assert first is second
+    assert first is not second
     assert created == [
-        {
-            "model": "qwen3",
-            "base_url": "http://ollama.local",
-            "temperature": 0.7,
-        }
+        {"model": "qwen3", "base_url": "http://ollama.local", "temperature": 0.7},
+        {"model": "qwen3", "base_url": "http://ollama.local", "temperature": 0.7},
     ]
-    lg_models._models_cache.clear()
 
 
 def test_lazy_model_proxy_delegates_attribute_access_and_repr(monkeypatch) -> None:

@@ -162,7 +162,7 @@ def test_after_response_writes_latest_user_and_final_assistant_message(monkeypat
     async def fake_get_memory_middleware():
         return middleware
 
-    monkeypatch.setattr(lg_nodes, "get_memory_middleware", fake_get_memory_middleware)
+    monkeypatch.setattr(lg_nodes, "_get_memory_middleware", fake_get_memory_middleware)
     monkeypatch.setattr(
         lg_nodes,
         "configurable_scope",
@@ -189,7 +189,7 @@ def test_after_response_skips_when_missing_complete_message_pair(monkeypatch) ->
     async def fake_get_memory_middleware():
         return middleware
 
-    monkeypatch.setattr(lg_nodes, "get_memory_middleware", fake_get_memory_middleware)
+    monkeypatch.setattr(lg_nodes, "_get_memory_middleware", fake_get_memory_middleware)
     monkeypatch.setattr(
         lg_nodes,
         "configurable_scope",

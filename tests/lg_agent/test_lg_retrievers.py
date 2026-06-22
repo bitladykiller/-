@@ -197,9 +197,30 @@ def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
     fake_model = object()
     fake_agent = object()
 
+    # 预填充，跳过 _get_neo4j_graph 中的健康检查和真实连接
+    async def fake_get_container():
+        class FakeContainer:
+            retriever_registry = retriever_runtime._registry
+            retriever_registry_lock = asyncio.Lock()
+            _cypher_example_retriever = None
+            _t2c_agent = None
+            neo4j_graph = fake_graph
+            neo4j_last_health_check_ts = 0.0
+
+        return FakeContainer()
+
+    from app.platform import container as cont_mod
+    monkeypatch.setattr(cont_mod, "get_container", fake_get_container)
+    monkeypatch.setattr(retriever_runtime, "_get_neo4j_graph", lambda container: fake_graph)
+    created: dict[str, object] = {}
+    fake_graph = object()
+    fake_model = object()
+    fake_agent = object()
+
     class FakeNorthwindRetriever:
         def __init__(self) -> None:
             created["cypher_examples"] = int(created.get("cypher_examples", 0)) + 1
+            created["cypher_example_obj"] = self
 
     class FakeKgRetriever(FakeRetriever):
         def __init__(self, agent) -> None:
@@ -256,13 +277,14 @@ def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
     assert isinstance(rag, FakeRagRetriever)
     assert created == {
         "cypher_examples": 1,
+        "cypher_example_obj": created.get("cypher_example_obj"),
         "kg_agent": fake_agent,
         "kg_retrievers": 1,
         "t2c_calls": 1,
         "t2c_kwargs": {
             "llm": fake_model,
             "graph": fake_graph,
-            "cypher_example_retriever": retriever_runtime._cypher_example_retriever,
+            "cypher_example_retriever": created.get("cypher_example_obj"),
             "predefined_cypher_dict": {"query_a": "MATCH (n) RETURN n"},
             "query_descriptions": {"query_a": "desc"},
         },

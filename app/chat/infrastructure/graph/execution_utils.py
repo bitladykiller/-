@@ -23,7 +23,7 @@ from app.chat.infrastructure.graph.message_utils import MessagePayload, build_pr
 from app.chat.infrastructure.retrievers.retriever_contracts import Retriever
 
 RetrieverRecord: TypeAlias = dict[str, Any]
-_summarize_chain = None
+_summarize_chain = None  # 模块级懒缓存摘要链（仅 _SUMMARIZE_PROMPT + cypher_model + StrOutputParser）
 
 _SUMMARIZE_PROMPT = ChatPromptTemplate.from_messages(
     [
