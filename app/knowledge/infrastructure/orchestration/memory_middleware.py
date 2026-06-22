@@ -23,7 +23,7 @@ from app.knowledge.domain.schemas import (
     MessageRecord,
     UserProfileData,
 )
-from app.knowledge.infrastructure.config import LongTermMemoryConfig, long_term_config
+from app.shared.core.config import settings
 from app.knowledge.infrastructure.orchestration.profile_adapter import (
     load_user_profile,
     save_user_profile,
@@ -59,8 +59,7 @@ class MemoryMiddleware:
         self.memory_extractor = memory_extractor
         self.profile_reader = profile_reader
         self.profile_writer = profile_writer
-        self.ltm_config: LongTermMemoryConfig = long_term_config()
-        self.ltm_enabled = self.ltm_config["enabled"]
+        self.ltm_enabled = settings.app_config.memory.ltm.enabled
         self._errors_warned: set[str] = set()
 
     def _warn_once(self, key: str, message: str) -> None:

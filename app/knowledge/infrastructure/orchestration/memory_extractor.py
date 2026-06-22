@@ -13,10 +13,7 @@ from typing import Any
 
 from app.shared.core.logger import get_logger
 from app.shared.core.json_utils import parse_first_json_object
-from app.knowledge.infrastructure.config import (
-    compiled_sensitive_patterns,
-    long_term_memory_type_values,
-)
+from app.shared.core.config import settings
 from app.knowledge.infrastructure.profile.profile_payload_support import (
     normalize_profile_data,
 )
@@ -27,7 +24,7 @@ from app.knowledge.domain.schemas import (
 )
 
 logger = get_logger(__name__)
-_SAVEABLE_MEMORY_TYPES = long_term_memory_type_values()
+_SAVEABLE_MEMORY_TYPES = frozenset(settings.app_config.memory.ltm_memory_types.values())
 _GREETING_MESSAGES = frozenset(
     {
         "你好",
@@ -144,7 +141,9 @@ class MemoryExtractor:
 
     def __init__(self, llm_client):
         self.llm_client = llm_client
-        self.sensitive_patterns = compiled_sensitive_patterns()
+        self.sensitive_patterns = tuple(
+            re.compile(p, re.IGNORECASE) for p in settings.app_config.memory.sensitive_patterns
+        )
 
     async def extract(
         self,

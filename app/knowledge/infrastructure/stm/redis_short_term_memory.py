@@ -24,12 +24,12 @@ from pydantic import BaseModel
 
 from app.shared.core.json_utils import extract_first_json_object
 from app.shared.core.logger import get_logger
-from app.knowledge.infrastructure.config import (
-    ShortTermMemoryConfig,
-    short_term_compression_config,
-    short_term_config,
-    short_term_redis_config,
-    short_term_window_config,
+from app.shared.core.config import settings
+from app.platform.config.app_config import (
+    STMConfig,
+    STMCompressionConfig,
+    STMRedisConfig,
+    STMWindowConfig,
 )
 from app.knowledge.domain.schemas import MessageRecord, SessionMeta, SessionSummary
 from app.knowledge.infrastructure.stm.stm_compressor import (
@@ -154,22 +154,22 @@ class CompressionContext:
 
 def build_runtime_settings(
     *,
-    config: ShortTermMemoryConfig,
-    redis_config: dict[str, Any],
-    window_config: dict[str, Any],
-    compression_config: dict[str, Any],
+    config: STMConfig,
+    redis_config: STMRedisConfig,
+    window_config: STMWindowConfig,
+    compression_config: STMCompressionConfig,
 ) -> ShortTermMemoryRuntimeSettings:
     """从配置模块收口出存储层运行时参数。"""
     return ShortTermMemoryRuntimeSettings(
-        key_prefix=redis_config["key_prefix"],
-        ttl_seconds=redis_config["ttl_seconds"],
-        lock_ttl_seconds=redis_config["lock_ttl_seconds"],
-        max_messages=window_config["max_messages"],
-        compression_enabled=compression_config["enabled"],
-        trigger_rounds=compression_config["trigger_rounds"],
-        trigger_messages=compression_config["trigger_messages"],
-        keep_recent_rounds=compression_config["keep_recent_rounds"],
-        time_window_seconds=config["time_window_seconds"],
+        key_prefix=redis_config.key_prefix,
+        ttl_seconds=redis_config.ttl_seconds,
+        lock_ttl_seconds=redis_config.lock_ttl_seconds,
+        max_messages=window_config.max_messages,
+        compression_enabled=compression_config.enabled,
+        trigger_rounds=compression_config.trigger_rounds,
+        trigger_messages=compression_config.trigger_messages,
+        keep_recent_rounds=compression_config.keep_recent_rounds,
+        time_window_seconds=config.time_window_seconds,
     )
 
 
@@ -305,12 +305,13 @@ class RedisShortTermMemory:
 
     def __init__(self, redis_client: redis.Redis):
         self.redis = redis_client
-        self.config: ShortTermMemoryConfig = short_term_config()
+        stm_cfg = settings.app_config.memory.stm
+        self.config: STMConfig = stm_cfg
         self.settings = build_runtime_settings(
-            config=self.config,
-            redis_config=short_term_redis_config(),
-            window_config=short_term_window_config(),
-            compression_config=short_term_compression_config(),
+            config=stm_cfg,
+            redis_config=stm_cfg.redis,
+            window_config=stm_cfg.window,
+            compression_config=stm_cfg.compression,
         )
 
     def _build_session_keys(

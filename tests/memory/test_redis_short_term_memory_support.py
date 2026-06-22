@@ -1,12 +1,7 @@
 import asyncio
 
 import app.knowledge.infrastructure.stm.redis_short_term_memory as stm_memory
-from app.knowledge.infrastructure.config import (
-    short_term_compression_config,
-    short_term_config,
-    short_term_redis_config,
-    short_term_window_config,
-)
+from app.shared.core.config import settings as _settings
 from app.knowledge.domain.schemas import MessageRecord, SessionMeta, SessionSummary
 from app.knowledge.infrastructure.stm.redis_short_term_memory import (
     run_compression_pipeline,
@@ -53,11 +48,12 @@ def _run(awaitable):
 
 
 def test_build_runtime_settings_collects_nested_config() -> None:
+    stm = _settings.app_config.memory.stm
     settings = build_runtime_settings(
-        config=short_term_config(),
-        redis_config=short_term_redis_config(),
-        window_config=short_term_window_config(),
-        compression_config=short_term_compression_config(),
+        config=stm,
+        redis_config=stm.redis,
+        window_config=stm.window,
+        compression_config=stm.compression,
     )
 
     assert settings.key_prefix == "agent:stm"
@@ -69,11 +65,13 @@ def test_build_runtime_settings_collects_nested_config() -> None:
 
 
 def test_should_compress_session_respects_disable_and_thresholds() -> None:
+    stm = _settings.app_config.memory.stm
     settings = build_runtime_settings(
-        config=short_term_config(),
-        redis_config=short_term_redis_config(),
-        window_config=short_term_window_config(),
-        compression_config=short_term_compression_config(),
+        config=stm,
+        redis_config=stm.redis,
+        window_config=stm.window,
+        compression_config=stm.compression,
+    )
     )
 
     assert should_compress_session(
@@ -98,11 +96,12 @@ def test_should_compress_session_respects_disable_and_thresholds() -> None:
 
 
 def test_build_compression_context_splits_messages_and_carries_summary() -> None:
+    stm = _settings.app_config.memory.stm
     settings = build_runtime_settings(
-        config=short_term_config(),
-        redis_config=short_term_redis_config(),
-        window_config=short_term_window_config(),
-        compression_config=short_term_compression_config(),
+        config=stm,
+        redis_config=stm.redis,
+        window_config=stm.window,
+        compression_config=stm.compression,
     )
     keys = stm_memory.build_session_keys("agent:stm", "tenant-1", "user-1", "session-1")
     meta = SessionMeta(total_turns=8, last_updated_at=0, last_compressed_turn=1)

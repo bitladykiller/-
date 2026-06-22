@@ -4,7 +4,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 import app.chat.infrastructure.react.react as lg_react
 from app.chat.infrastructure.graph.state import AgentState
-from app.platform.config.app_config import app_config
+from app.shared.core.config import settings
 
 
 class FakeAnswerCheck:
@@ -120,7 +120,7 @@ def test_execute_react_returns_checked_answer_with_progress_message(monkeypatch)
     assert subgraph.calls == [
         (
             {"messages": [{"role": "user", "content": "怎么修空调"}]},
-            {"recursion_limit": app_config.react.recursion_limit},
+            {"recursion_limit": settings.app_config.react.recursion_limit},
         )
     ]
     assert judge_model.messages == [
@@ -139,14 +139,12 @@ def test_execute_react_returns_checked_answer_with_progress_message(monkeypatch)
 
 
 def test_execute_react_retries_on_step_exhaustion_and_returns_fallback(monkeypatch) -> None:
-    # 通过 monkeypatch lg_react 模块中的 app_config 引用来控制重试次数
     from dataclasses import replace
-    from app.platform.config.app_config import app_config as real_app_config, ReactConfig
+    from app.platform.config.app_config import ReactConfig
+    from app.shared.core.config import settings as real_settings
 
-    # 创建新的 ReactConfig 实例，max_attempts=2
     fake_react_config = ReactConfig(max_attempts=2)
-    # 创建新的 AppConfig 实例
-    fake_app_config = replace(real_app_config, react=fake_react_config)
+    fake_app_config = replace(real_settings.app_config, react=fake_react_config)
     # 替换 lg_react 模块中的 app_config 引用
     monkeypatch.setattr(lg_react, "app_config", fake_app_config)
 
@@ -172,12 +170,12 @@ def test_execute_react_retries_on_step_exhaustion_and_returns_fallback(monkeypat
 
     assert [message.content for message in result["messages"]] == [
         "正在综合分析...",
-        app_config.react.fallback_answer,
+        settings.app_config.react.fallback_answer,
     ]
     assert subgraph.calls == [
         (
             {"messages": [{"role": "user", "content": "帮我查订单"}]},
-            {"recursion_limit": app_config.react.recursion_limit},
+            {"recursion_limit": settings.app_config.react.recursion_limit},
         ),
         (
             {
@@ -187,12 +185,12 @@ def test_execute_react_retries_on_step_exhaustion_and_returns_fallback(monkeypat
                     {
                         "role": "user",
                         "content": (
-                            f"{app_config.react.retry_prompt}"
-                            f"不足原因：{app_config.react.step_exhausted_reason}"
+                            f"{settings.app_config.react.retry_prompt}"
+                            f"不足原因：{settings.app_config.react.step_exhausted_reason}"
                         ),
                     },
                 ]
             },
-            {"recursion_limit": app_config.react.recursion_limit},
+            {"recursion_limit": settings.app_config.react.recursion_limit},
         ),
     ]

@@ -20,12 +20,7 @@ from typing_extensions import TypedDict
 
 from pymilvus import MilvusClient
 
-from app.knowledge.infrastructure.config import (
-    long_term_collection_name,
-    long_term_deduplication_config,
-    long_term_search_config,
-    long_term_update_on_hit_config,
-)
+from app.shared.core.config import settings
 from app.knowledge.domain.schemas import LongTermMemory, MemorySearchResult
 from app.shared.core.logger import get_logger
 from shared_retrieval import MilvusHybridSearchCore
@@ -470,10 +465,10 @@ class SimpleLongTermMemory:
         """
         self.milvus_client = milvus_client
         self.embedding_model = embedding_model
-        self.search_config = long_term_search_config()
-        self.deduplication_config = long_term_deduplication_config()
-        self.update_on_hit_config = long_term_update_on_hit_config()
-        self.collection_name = collection_name or long_term_collection_name()
+        self.search_config = settings.app_config.memory.ltm.search
+        self.deduplication_config = settings.app_config.memory.ltm.deduplication
+        self.update_on_hit_config = settings.app_config.memory.ltm.update_on_hit
+        self.collection_name = collection_name or settings.app_config.memory.ltm.collection_name
 
         # 初始化 Collection
         ensure_collection_ready_or_raise(

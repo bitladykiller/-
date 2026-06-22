@@ -4,6 +4,7 @@
 - 作为所有配置项的单一入口
 - 将代码中的硬编码常量集中管理
 - 提供分层的配置访问接口
+- 统一管理 STM/LTM 配置（合并自 knowledge/infrastructure/config/）
 
 不负责：
 - 环境变量解析（由 config_models.py 的 BaseSettings 处理）
@@ -24,36 +25,17 @@ class ReactConfig:
     """ReAct 兜底执行策略的运行时配置。"""
 
     max_attempts: int = 5
-    """最大重试轮数。"""
-
     recursion_limit: int = 11
-    """单次 ReAct 子图的最大 agent/tools 步数。"""
-
     transcript_window: int = 20
-    """传递给答案充分性检查的最近消息条数。"""
-
     progress_message: str = "正在综合分析..."
-    """ReAct 执行中返回给用户的进度提示。"""
-
     fallback_answer: str = "亲～这个问题回答不了哦～"
-    """所有重试用尽后的兜底回复。"""
-
     retry_prompt: str = (
         "上一次候选答案仍然不充分，请继续按标准 ReAct 检索并补足关键事实。"
     )
-    """重试时注入的提示。"""
-
     step_exhausted_marker: str = "need more steps"
-    """判断 ReAct 步数耗尽的标记字符串。"""
-
     step_exhausted_reason: str = "单次 ReAct 内部步数耗尽，仍未得到足够答案。"
-    """步数耗尽时的不足原因说明。"""
-
     default_insufficiency_reason: str = "答案信息不足。"
-    """默认的不足原因。"""
-
     initial_reason: str = "初始状态：尚未完成充分回答。"
-    """初始不足原因。"""
 
 
 # ====================================================================
@@ -65,8 +47,6 @@ class UploadConfig:
     """文档上传的运行时配置。"""
 
     max_upload_size_mb: int = 50
-    """最大上传文件大小（MB）。"""
-
     max_upload_size_bytes: int = field(init=False)
 
     def __post_init__(self) -> None:
@@ -86,25 +66,123 @@ class TaskQueueConfig:
     """异步任务队列的运行时配置。"""
 
     task_key_prefix: str = "task:doc_parse:"
-    """Redis 中任务状态的 key 前缀。"""
-
     task_ttl_seconds: int = 3600 * 24
-    """任务状态在 Redis 中的保留时间（24 小时）。"""
+
+
+# ====================================================================
+# 短期记忆 (STM) 配置 — 合并自 knowledge/infrastructure/config
+# ====================================================================
+
+@dataclass(frozen=True)
+class STMRedisConfig:
+    """短期记忆的 Redis 相关配置。"""
+
+    key_prefix: str = "agent:stm"
+    ttl_seconds: int = 86400
+    lock_ttl_seconds: int = 10
+
+
+@dataclass(frozen=True)
+class STMWindowConfig:
+    """短期记忆的消息窗口配置。"""
+
+    max_messages: int = 16
+
+
+@dataclass(frozen=True)
+class STMCompressionConfig:
+    """短期记忆压缩阈值配置。"""
+
+    enabled: bool = True
+    trigger_rounds: int = 6
+    trigger_messages: int = 20
+    keep_recent_rounds: int = 4
+
+
+@dataclass(frozen=True)
+class STMConfig:
+    """短期记忆总配置。"""
+
+    enabled: bool = True
+    time_window_seconds: int = 86400
+    redis: STMRedisConfig = field(default_factory=STMRedisConfig)
+    window: STMWindowConfig = field(default_factory=STMWindowConfig)
+    compression: STMCompressionConfig = field(default_factory=STMCompressionConfig)
+
+
+# ====================================================================
+# 长期记忆 (LTM) 配置 — 合并自 knowledge/infrastructure/config
+# ====================================================================
+
+@dataclass(frozen=True)
+class LTMSearchConfig:
+    """长期记忆检索配置。"""
+
+    top_k: int = 5
+    score_threshold: float = 0.72
+
+
+@dataclass(frozen=True)
+class LTMDeduplicationConfig:
+    """长期记忆去重配置。"""
+
+    top_k: int = 3
+    similarity_threshold: float = 0.88
+
+
+@dataclass(frozen=True)
+class LTMUpdateOnHitConfig:
+    """长期记忆命中后更新策略。"""
+
+    enabled: bool = True
+    update_last_hit_at: bool = True
+    increase_hit_count: bool = True
+
+
+@dataclass(frozen=True)
+class LTMConfig:
+    """长期记忆总配置。"""
+
+    enabled: bool = True
+    collection_name: str = "customer_agent_long_memory"
+    search: LTMSearchConfig = field(default_factory=LTMSearchConfig)
+    deduplication: LTMDeduplicationConfig = field(default_factory=LTMDeduplicationConfig)
+    update_on_hit: LTMUpdateOnHitConfig = field(default_factory=LTMUpdateOnHitConfig)
 
 
 # ====================================================================
 # 记忆系统配置
 # ====================================================================
 
+LTM_MEMORY_TYPES: dict[str, str] = {
+    "ISSUE_HISTORY": "issue_history",
+    "SOLUTION_NOTE": "solution_note",
+}
+
+SENSITIVE_PATTERNS: tuple[str, ...] = (
+    r"password|密码|passwd",
+    r"验证码|verification.code|captcha",
+    r"\d{17}[\dXx]",
+    r"\d{16,19}",
+    r"token|secret|access.key|api.key",
+    r"1[3-9]\d{9}",
+)
+
+
 @dataclass(frozen=True)
 class MemoryConfig:
     """记忆系统的运行时配置。"""
 
     memory_extractor_temperature: float = 0.3
-    """记忆抽取 LLM 的温度参数。"""
-
     user_profile_cache_ttl: int = 1800
-    """用户画像 Redis 缓存过期时间（秒）。"""
+    stm: STMConfig = field(default_factory=STMConfig)
+    ltm: LTMConfig = field(default_factory=LTMConfig)
+    ltm_memory_types: dict[str, str] = field(
+        default_factory=lambda: dict(LTM_MEMORY_TYPES)
+    )
+    sensitive_patterns: tuple[str, ...] = field(
+        default_factory=lambda: SENSITIVE_PATTERNS
+    )
 
 
 # ====================================================================
@@ -124,13 +202,20 @@ class AppConfig:
     memory: MemoryConfig = field(default_factory=MemoryConfig)
 
 
-# 模块级单例（不可变，无需锁）
 app_config = AppConfig()
 
 __all__ = [
     "AppConfig",
+    "LTMConfig",
+    "LTMDeduplicationConfig",
+    "LTMSearchConfig",
+    "LTMUpdateOnHitConfig",
     "MemoryConfig",
     "ReactConfig",
+    "STMCompressionConfig",
+    "STMConfig",
+    "STMRedisConfig",
+    "STMWindowConfig",
     "TaskQueueConfig",
     "UploadConfig",
     "app_config",
