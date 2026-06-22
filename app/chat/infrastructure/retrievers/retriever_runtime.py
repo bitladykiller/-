@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.chat.infrastructure.retrievers.retriever_contracts import KG_RETRIEVER_NAME, RAG_RETRIEVER_NAME
-from app.chat.infrastructure.retrievers._neo4j_cache import _get_neo4j_graph
+from app.chat.infrastructure.kg_sub_graph.kg_neo4j_conn import _get_neo4j_graph
 
 # 保留模块级属性供旧测试 monkeypatch 使用
 _registry: Any | None = None
