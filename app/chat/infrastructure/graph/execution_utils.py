@@ -23,7 +23,6 @@ from app.chat.infrastructure.graph.message_utils import MessagePayload, build_pr
 from app.chat.infrastructure.retrievers.retriever_contracts import Retriever
 
 RetrieverRecord: TypeAlias = dict[str, Any]
-_summarize_chain = None  # 模块级懒缓存摘要链（仅 _SUMMARIZE_PROMPT + cypher_model + StrOutputParser）
 
 _SUMMARIZE_PROMPT = ChatPromptTemplate.from_messages(
     [
@@ -137,13 +136,15 @@ async def summarize_records(
     if not records:
         return fallback
 
-    global _summarize_chain
-    if _summarize_chain is None:
+    from app.platform.container import get_container
+
+    container = await get_container()
+    if container.summarize_chain is None:
         from app.chat.infrastructure.modeling.models import cypher_model
 
-        _summarize_chain = _SUMMARIZE_PROMPT | cypher_model | StrOutputParser()
+        container.summarize_chain = _SUMMARIZE_PROMPT | cypher_model | StrOutputParser()
 
-    summary = await _summarize_chain.ainvoke({
+    summary = await container.summarize_chain.ainvoke({
         "question": query,
         "results": [records],
     })

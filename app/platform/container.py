@@ -54,6 +54,9 @@ class AppContainer:
     react_subgraph: Any = None
     react_subgraph_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
+    # ---- 摘要链缓存 ----
+    summarize_chain: Any = None
+
     _closed: bool = field(default=False, init=False)
 
     @classmethod
@@ -118,6 +121,7 @@ class AppContainer:
         self.retriever_registry = None
         self.neo4j_graph = None
         self.react_subgraph = None
+        self.summarize_chain = None
 
 
 # ──────────────────────────────────────────────
