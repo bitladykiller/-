@@ -1,8 +1,13 @@
+"""用户画像服务测试。
+
+测试 UserProfileService 实例方法（非静态方法）。
+"""
+
 import asyncio
 import json
 
-import app.user.application.user_profile_service as profile_service
 from app.user.application.user_profile_service import UserProfileService
+from app.user.infrastructure.repository.user_profile_repository import UserProfileRepository
 
 
 class FakeProfileCache:
@@ -48,6 +53,47 @@ class FakeSessionFactory:
         return _SessionContext()
 
 
+class FakeRepository:
+    """用于测试的假 Repository，记录调用并返回预设值。"""
+
+    def __init__(self) -> None:
+        self.get_profile_calls: list[int] = []
+        self.upsert_profile_data_calls: list[tuple[int, dict]] = []
+        self._profile_result: dict | None = None
+        self._upsert_result: bool = True
+        self._raise_on_get: Exception | None = None
+        self._raise_on_upsert: Exception | None = None
+
+    def set_profile_result(self, profile: dict) -> None:
+        self._profile_result = profile
+
+    def set_upsert_result(self, changed: bool) -> None:
+        self._upsert_result = changed
+
+    def set_raise_on_get(self, exc: Exception) -> None:
+        self._raise_on_get = exc
+
+    def set_raise_on_upsert(self, exc: Exception) -> None:
+        self._raise_on_upsert = exc
+
+    def empty_profile(self, user_id: int) -> dict:
+        return UserProfileRepository.empty_profile(user_id)
+
+    async def get_profile(self, db, user_id: int) -> dict:
+        self.get_profile_calls.append(user_id)
+        if self._raise_on_get:
+            raise self._raise_on_get
+        if self._profile_result is not None:
+            return self._profile_result
+        return self.empty_profile(user_id)
+
+    async def upsert_profile_data(self, db, *, user_id: int, profile: dict) -> bool:
+        self.upsert_profile_data_calls.append((user_id, profile))
+        if self._raise_on_upsert:
+            raise self._raise_on_upsert
+        return self._upsert_result
+
+
 def _run(awaitable):
     return asyncio.run(awaitable)
 
@@ -62,20 +108,22 @@ def test_get_profile_uses_cached_profile(monkeypatch) -> None:
         "tags": ["家电"],
         "facts": [{"key": "city", "value": "杭州"}],
     }
-    cache.values["user:profile:7"] = json.dumps(
-        expected,
-        ensure_ascii=False,
+    cache.values["user:profile:7"] = json.dumps(expected, ensure_ascii=False)
+
+    repo = FakeRepository()
+    repo.set_raise_on_get(AssertionError("unexpected db query"))
+
+    monkeypatch.setattr(
+        "app.user.application.user_profile_service.AsyncSessionLocal",
+        FakeSessionFactory(FakeSession()),
     )
 
-    async def unexpected_query(user_id: int):
-        raise AssertionError(f"unexpected db query for {user_id}")
-
-    monkeypatch.setattr(profile_service, "query_profile_from_db", unexpected_query)
-
-    result = _run(UserProfileService.get_profile(7, redis_client=cache))
+    service = UserProfileService(repository=repo)
+    result = _run(service.get_profile(7, redis_client=cache))
 
     assert result == expected
     assert cache.setex_calls == []
+    assert repo.get_profile_calls == []
 
 
 def test_get_profile_ignores_invalid_cached_json_and_queries_db(monkeypatch) -> None:
@@ -90,13 +138,16 @@ def test_get_profile_ignores_invalid_cached_json_and_queries_db(monkeypatch) -> 
         "facts": [{"key": "city", "value": "杭州"}],
     }
 
-    async def fake_query(user_id: int):
-        assert user_id == 3
-        return expected
+    repo = FakeRepository()
+    repo.set_profile_result(expected)
 
-    monkeypatch.setattr(profile_service, "query_profile_from_db", fake_query)
+    monkeypatch.setattr(
+        "app.user.application.user_profile_service.AsyncSessionLocal",
+        FakeSessionFactory(FakeSession()),
+    )
 
-    result = _run(UserProfileService.get_profile(3, redis_client=cache))
+    service = UserProfileService(repository=repo)
+    result = _run(service.get_profile(3, redis_client=cache))
 
     assert result == expected
     assert cache.setex_calls == [
@@ -119,13 +170,16 @@ def test_get_profile_queries_db_and_backfills_cache(monkeypatch) -> None:
         "facts": [{"key": "city", "value": "杭州"}],
     }
 
-    async def fake_query(user_id: int):
-        assert user_id == 9
-        return expected
+    repo = FakeRepository()
+    repo.set_profile_result(expected)
 
-    monkeypatch.setattr(profile_service, "query_profile_from_db", fake_query)
+    monkeypatch.setattr(
+        "app.user.application.user_profile_service.AsyncSessionLocal",
+        FakeSessionFactory(FakeSession()),
+    )
 
-    result = _run(UserProfileService.get_profile(9, redis_client=cache))
+    service = UserProfileService(repository=repo)
+    result = _run(service.get_profile(9, redis_client=cache))
 
     assert result == expected
     assert len(cache.setex_calls) == 1
@@ -136,12 +190,16 @@ def test_get_profile_queries_db_and_backfills_cache(monkeypatch) -> None:
 
 
 def test_get_profile_returns_empty_profile_when_query_fails(monkeypatch) -> None:
-    async def failing_query(user_id: int):
-        raise RuntimeError(f"boom-{user_id}")
+    repo = FakeRepository()
+    repo.set_raise_on_get(RuntimeError("boom"))
 
-    monkeypatch.setattr(profile_service, "query_profile_from_db", failing_query)
+    monkeypatch.setattr(
+        "app.user.application.user_profile_service.AsyncSessionLocal",
+        FakeSessionFactory(FakeSession()),
+    )
 
-    result = _run(UserProfileService.get_profile(11))
+    service = UserProfileService(repository=repo)
+    result = _run(service.get_profile(11))
 
     assert result == {
         "user_id": 11,
@@ -154,14 +212,19 @@ def test_get_profile_returns_empty_profile_when_query_fails(monkeypatch) -> None
 
 
 def test_upsert_profile_data_short_circuits_on_empty_payload(monkeypatch) -> None:
-    async def unexpected_write(*args, **kwargs):
-        raise AssertionError(f"unexpected write call: {args}, {kwargs}")
+    repo = FakeRepository()
+    repo.set_raise_on_upsert(AssertionError("unexpected write call"))
 
-    monkeypatch.setattr(profile_service, "upsert_profile_data_in_db", unexpected_write)
+    monkeypatch.setattr(
+        "app.user.application.user_profile_service.AsyncSessionLocal",
+        FakeSessionFactory(FakeSession()),
+    )
 
-    result = _run(UserProfileService.upsert_profile_data(3, {}))
+    service = UserProfileService(repository=repo)
+    result = _run(service.upsert_profile_data(3, {}))
 
     assert result is True
+    assert repo.upsert_profile_data_calls == []
 
 
 def test_upsert_profile_data_commits_and_invalidates_cache_on_change(monkeypatch) -> None:
@@ -169,25 +232,21 @@ def test_upsert_profile_data_commits_and_invalidates_cache_on_change(monkeypatch
     cache = FakeProfileCache()
     profile = {"preferred_brand": "海尔"}
 
-    async def fake_upsert_profile_data_in_db(db, **kwargs):
-        assert db is session
-        assert kwargs == {"user_id": 5, "profile": profile}
-        return True
+    repo = FakeRepository()
+    repo.set_upsert_result(True)
 
-    monkeypatch.setattr(profile_service, "AsyncSessionLocal", FakeSessionFactory(session))
     monkeypatch.setattr(
-        profile_service,
-        "upsert_profile_data_in_db",
-        fake_upsert_profile_data_in_db,
+        "app.user.application.user_profile_service.AsyncSessionLocal",
+        FakeSessionFactory(session),
     )
 
-    result = _run(
-        UserProfileService.upsert_profile_data(5, profile, redis_client=cache)
-    )
+    service = UserProfileService(repository=repo)
+    result = _run(service.upsert_profile_data(5, profile, redis_client=cache))
 
     assert result is True
     assert session.committed is True
     assert cache.deleted_keys == ["user:profile:5"]
+    assert repo.upsert_profile_data_calls == [(5, profile)]
 
 
 def test_upsert_profile_data_skips_commit_and_invalidation_when_store_reports_no_change(
@@ -196,19 +255,17 @@ def test_upsert_profile_data_skips_commit_and_invalidation_when_store_reports_no
     session = FakeSession()
     cache = FakeProfileCache()
 
-    async def fake_upsert_profile_data_in_db(db, **kwargs):
-        assert db is session
-        return False
+    repo = FakeRepository()
+    repo.set_upsert_result(False)
 
-    monkeypatch.setattr(profile_service, "AsyncSessionLocal", FakeSessionFactory(session))
     monkeypatch.setattr(
-        profile_service,
-        "upsert_profile_data_in_db",
-        fake_upsert_profile_data_in_db,
+        "app.user.application.user_profile_service.AsyncSessionLocal",
+        FakeSessionFactory(session),
     )
 
+    service = UserProfileService(repository=repo)
     result = _run(
-        UserProfileService.upsert_profile_data(
+        service.upsert_profile_data(
             8,
             {"preferred_brand": "海尔"},
             redis_client=cache,
@@ -224,19 +281,17 @@ def test_upsert_profile_data_returns_false_when_write_raises(monkeypatch) -> Non
     session = FakeSession()
     cache = FakeProfileCache()
 
-    async def failing_upsert_profile_data_in_db(db, **kwargs):
-        assert db is session
-        raise RuntimeError("boom")
+    repo = FakeRepository()
+    repo.set_raise_on_upsert(RuntimeError("boom"))
 
-    monkeypatch.setattr(profile_service, "AsyncSessionLocal", FakeSessionFactory(session))
     monkeypatch.setattr(
-        profile_service,
-        "upsert_profile_data_in_db",
-        failing_upsert_profile_data_in_db,
+        "app.user.application.user_profile_service.AsyncSessionLocal",
+        FakeSessionFactory(session),
     )
 
+    service = UserProfileService(repository=repo)
     result = _run(
-        UserProfileService.upsert_profile_data(
+        service.upsert_profile_data(
             5,
             {"preferred_brand": "海尔"},
             redis_client=cache,

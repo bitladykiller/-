@@ -1,3 +1,8 @@
+"""用户画像工具函数测试。
+
+测试 UserProfileRepository 内部的辅助函数。
+"""
+
 from app.knowledge.infrastructure.profile.profile_payload_support import (
     coerce_user_profile_payload,
     normalize_optional_text,
@@ -6,7 +11,11 @@ from app.knowledge.infrastructure.profile.profile_payload_support import (
     normalize_profile_tags,
     PROFILE_FIELD_NAMES,
 )
-import app.user.application.user_profile_store as profile_store
+from app.user.infrastructure.repository.user_profile_repository import (
+    _decode_profile_tags_json,
+    _build_user_profile_facts,
+    _build_profile_field_values,
+)
 
 
 def test_coerce_user_profile_payload_returns_stable_defaults() -> None:
@@ -67,12 +76,12 @@ def test_profile_normalization_filters_text_tags_and_facts() -> None:
 
 
 def test_decode_profile_tags_json_filters_invalid_values() -> None:
-    assert profile_store.decode_profile_tags_json('["空调", "空调", "", "高端"]') == ["空调", "高端"]
-    assert profile_store.decode_profile_tags_json("not-json") == []
+    assert _decode_profile_tags_json('["空调", "空调", "", "高端"]') == ["空调", "高端"]
+    assert _decode_profile_tags_json("not-json") == []
 
 
 def test_build_user_profile_facts_filters_invalid_rows() -> None:
-    facts = profile_store.build_user_profile_facts(
+    facts = _build_user_profile_facts(
         [
             {"fact_key": "workspace", "fact_value": "阿里"},
             {"fact_key": "workspace", "fact_value": ""},
@@ -84,7 +93,7 @@ def test_build_user_profile_facts_filters_invalid_rows() -> None:
 
 
 def test_build_profile_field_values_keeps_explicit_empty_tags() -> None:
-    field_values = profile_store.build_profile_field_values(
+    field_values = _build_profile_field_values(
         preferred_brand="  小米 ",
         budget_range=None,
         preferred_category="",
@@ -98,15 +107,15 @@ def test_build_profile_field_values_keeps_explicit_empty_tags() -> None:
 
 
 def test_profile_store_helpers_handle_db_rows_and_write_fields() -> None:
-    assert profile_store.decode_profile_tags_json('["高端", "", "高端"]') == ["高端"]
-    assert profile_store.decode_profile_tags_json(None) == []
-    assert profile_store.build_user_profile_facts(
+    assert _decode_profile_tags_json('["高端", "", "高端"]') == ["高端"]
+    assert _decode_profile_tags_json(None) == []
+    assert _build_user_profile_facts(
         [
             {"fact_key": "workspace", "fact_value": "阿里"},
             {"fact_key": None, "fact_value": "ignored"},
         ]
     ) == [{"key": "workspace", "value": "阿里"}]
-    assert profile_store.build_profile_field_values(
+    assert _build_profile_field_values(
         preferred_brand="  华为 ",
         budget_range=" 3000-5000 ",
         preferred_category=None,

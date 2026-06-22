@@ -41,9 +41,9 @@ async def load_user_profile(
     redis_client: Any | None = None,
 ) -> UserProfileData:
     """通过用户画像服务读取结构化画像。"""
-    from app.user.application.user_profile_service import UserProfileService
+    from app.user.application.user_profile_service import user_profile_service
 
-    return await UserProfileService.get_profile(
+    return await user_profile_service.get_profile(
         user_id,
         redis_client=redis_client,
     )
@@ -55,9 +55,9 @@ async def save_user_profile(
     redis_client: Any | None = None,
 ) -> bool:
     """通过用户画像服务回写结构化画像。"""
-    from app.user.application.user_profile_service import UserProfileService
+    from app.user.application.user_profile_service import user_profile_service
 
-    return await UserProfileService.upsert_profile_data(
+    return await user_profile_service.upsert_profile_data(
         user_id=user_id,
         profile=profile,
         redis_client=redis_client,

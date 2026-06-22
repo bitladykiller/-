@@ -30,10 +30,9 @@ from app.shared.core.logger import get_logger
 from app.platform.config.app_config import app_config
 
 logger = get_logger(__name__)
-_runtime_instance: "_TaskManager | None" = None
-_runtime_lock: asyncio.Lock = asyncio.Lock()
 
-# 从统一配置读取任务队列参数
+from app.platform.config.app_config import app_config
+
 _TASK_CFG = app_config.task_queue
 
 
@@ -265,27 +264,26 @@ class _TaskManager:
 
 
 async def get_task_manager() -> _TaskManager:
-    """获取任务管理器单例。首次调用时创建 Redis 连接。"""
-    global _runtime_instance
-    manager = _runtime_instance
-    if manager is not None:
-        return manager
+    """获取任务管理器单例（通过 AppContainer 统一管理）。"""
+    from app.platform.container import get_container
 
-    from app.shared.core.config import settings
+    container = await get_container()
+    manager = container.task_manager
+    if manager is None:
+        from app.shared.core.config import settings
 
-    async with _runtime_lock:
-        manager = _runtime_instance
-        if manager is None:
-            manager = _TaskManager(create_redis_client(settings.REDIS_URL))
-            _runtime_instance = manager
-        return manager
+        manager = _TaskManager(create_redis_client(settings.REDIS_URL))
+        container.task_manager = manager
+    return manager
 
 
 async def close_task_manager() -> None:
-    """关闭任务管理器的 Redis 连接。"""
-    global _runtime_instance
-    manager = _runtime_instance
-    _runtime_instance = None
+    """关闭任务管理器的 Redis 连接（由 AppContainer.close 统一调用）。"""
+    from app.platform.container import get_container
+
+    container = await get_container()
+    manager = container.task_manager
+    container.task_manager = None
     if manager is None:
         return
 

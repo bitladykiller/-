@@ -1,6 +1,11 @@
+"""用户画像 Repository 层测试。
+
+测试 UserProfileRepository 实例方法。
+"""
+
 import asyncio
 
-import app.user.application.user_profile_store as profile_store
+from app.user.infrastructure.repository.user_profile_repository import UserProfileRepository
 
 
 class FakeResult:
@@ -39,29 +44,13 @@ class FakeSession:
         return self._results.pop(0)
 
 
-class FakeSessionFactory:
-    def __init__(self, session) -> None:
-        self.session = session
-
-    def __call__(self):
-        session = self.session
-
-        class _SessionContext:
-            async def __aenter__(self_inner):
-                return session
-
-            async def __aexit__(self_inner, exc_type, exc, tb) -> bool:
-                return False
-
-        return _SessionContext()
-
-
 def _run(awaitable):
     return asyncio.run(awaitable)
 
 
-def test_empty_user_profile_returns_stable_default_payload() -> None:
-    assert profile_store.empty_user_profile(8) == {
+def test_empty_profile_returns_stable_default_payload() -> None:
+    repo = UserProfileRepository()
+    assert repo.empty_profile(8) == {
         "user_id": 8,
         "preferred_brand": None,
         "budget_range": None,
@@ -71,7 +60,7 @@ def test_empty_user_profile_returns_stable_default_payload() -> None:
     }
 
 
-def test_query_profile_from_db_reads_rows_and_normalizes_payload(monkeypatch) -> None:
+def test_get_profile_reads_rows_and_normalizes_payload() -> None:
     session = FakeSession(
         [
             FakeResult(
@@ -90,9 +79,9 @@ def test_query_profile_from_db_reads_rows_and_normalizes_payload(monkeypatch) ->
             ),
         ]
     )
-    monkeypatch.setattr(profile_store, "AsyncSessionLocal", FakeSessionFactory(session))
 
-    result = _run(profile_store.query_profile_from_db(7))
+    repo = UserProfileRepository()
+    result = _run(repo.get_profile(session, 7))
 
     assert result == {
         "user_id": 7,
@@ -107,29 +96,27 @@ def test_query_profile_from_db_reads_rows_and_normalizes_payload(monkeypatch) ->
     assert "FROM user_facts" in session.calls[1][0]
 
 
-def test_upsert_profile_data_in_db_orchestrates_profile_fields_and_facts(monkeypatch) -> None:
+def test_upsert_profile_data_orchestrates_profile_fields_and_facts() -> None:
     calls: list[tuple[str, object]] = []
     fake_session = object()
 
-    async def fake_upsert_profile_fields_in_db(db, **kwargs):
+    repo = UserProfileRepository()
+
+    async def fake_upsert_profile_fields(db, **kwargs):
         assert db is fake_session
         calls.append(("profile_fields", kwargs))
         return True
 
-    async def fake_upsert_fact_in_db(db, **kwargs):
+    async def fake_upsert_fact(db, **kwargs):
         assert db is fake_session
         calls.append(("fact", kwargs))
         return kwargs["fact_key"] == "city"
 
-    monkeypatch.setattr(
-        profile_store,
-        "upsert_profile_fields_in_db",
-        fake_upsert_profile_fields_in_db,
-    )
-    monkeypatch.setattr(profile_store, "upsert_fact_in_db", fake_upsert_fact_in_db)
+    repo.upsert_profile_fields = fake_upsert_profile_fields
+    repo.upsert_fact = fake_upsert_fact
 
     changed = _run(
-        profile_store.upsert_profile_data_in_db(
+        repo.upsert_profile_data(
             fake_session,
             user_id=5,
             profile={
@@ -165,27 +152,25 @@ def test_upsert_profile_data_in_db_orchestrates_profile_fields_and_facts(monkeyp
     ]
 
 
-def test_upsert_profile_data_in_db_skips_empty_fields_and_invalid_facts(monkeypatch) -> None:
+def test_upsert_profile_data_skips_empty_fields_and_invalid_facts() -> None:
     calls: list[tuple[str, object]] = []
     fake_session = object()
 
-    async def fake_upsert_profile_fields_in_db(db, **kwargs):
+    repo = UserProfileRepository()
+
+    async def fake_upsert_profile_fields(db, **kwargs):
         calls.append(("profile_fields", kwargs))
         return False
 
-    async def fake_upsert_fact_in_db(db, **kwargs):
+    async def fake_upsert_fact(db, **kwargs):
         calls.append(("fact", kwargs))
         return False
 
-    monkeypatch.setattr(
-        profile_store,
-        "upsert_profile_fields_in_db",
-        fake_upsert_profile_fields_in_db,
-    )
-    monkeypatch.setattr(profile_store, "upsert_fact_in_db", fake_upsert_fact_in_db)
+    repo.upsert_profile_fields = fake_upsert_profile_fields
+    repo.upsert_fact = fake_upsert_fact
 
     changed = _run(
-        profile_store.upsert_profile_data_in_db(
+        repo.upsert_profile_data(
             fake_session,
             user_id=6,
             profile={
@@ -208,15 +193,16 @@ def test_upsert_profile_data_in_db_skips_empty_fields_and_invalid_facts(monkeypa
     ]
 
 
-def test_upsert_fact_in_db_returns_false_when_value_did_not_change() -> None:
+def test_upsert_fact_returns_false_when_value_did_not_change() -> None:
     session = FakeSession(
         [
             FakeResult(first={"id": 3, "fact_value": "杭州", "version": 2}),
         ]
     )
 
+    repo = UserProfileRepository()
     changed = _run(
-        profile_store.upsert_fact_in_db(
+        repo.upsert_fact(
             session,
             user_id=8,
             fact_key="city",
@@ -228,7 +214,7 @@ def test_upsert_fact_in_db_returns_false_when_value_did_not_change() -> None:
     assert len(session.calls) == 1
 
 
-def test_upsert_fact_in_db_replaces_existing_fact_when_value_changes() -> None:
+def test_upsert_fact_replaces_existing_fact_when_value_changes() -> None:
     session = FakeSession(
         [
             FakeResult(first={"id": 5, "fact_value": "杭州", "version": 2}),
@@ -239,8 +225,9 @@ def test_upsert_fact_in_db_replaces_existing_fact_when_value_changes() -> None:
         ]
     )
 
+    repo = UserProfileRepository()
     changed = _run(
-        profile_store.upsert_fact_in_db(
+        repo.upsert_fact(
             session,
             user_id=9,
             fact_key="city",
@@ -256,7 +243,7 @@ def test_upsert_fact_in_db_replaces_existing_fact_when_value_changes() -> None:
     assert session.calls[4][1] == {"new_id": 19, "old_id": 5}
 
 
-def test_upsert_fact_in_db_inserts_first_version_when_missing() -> None:
+def test_upsert_fact_inserts_first_version_when_missing() -> None:
     session = FakeSession(
         [
             FakeResult(first=None),
@@ -264,8 +251,9 @@ def test_upsert_fact_in_db_inserts_first_version_when_missing() -> None:
         ]
     )
 
+    repo = UserProfileRepository()
     changed = _run(
-        profile_store.upsert_fact_in_db(
+        repo.upsert_fact(
             session,
             user_id=6,
             fact_key="budget",
@@ -278,11 +266,12 @@ def test_upsert_fact_in_db_inserts_first_version_when_missing() -> None:
     assert "INSERT INTO user_facts (user_id, fact_key, fact_value)" in session.calls[1][0]
 
 
-def test_upsert_profile_fields_in_db_returns_false_for_empty_fields() -> None:
+def test_upsert_profile_fields_returns_false_for_empty_fields() -> None:
     session = FakeSession([])
 
+    repo = UserProfileRepository()
     changed = _run(
-        profile_store.upsert_profile_fields_in_db(
+        repo.upsert_profile_fields(
             session,
             user_id=4,
             preferred_brand="",
@@ -296,11 +285,12 @@ def test_upsert_profile_fields_in_db_returns_false_for_empty_fields() -> None:
     assert session.calls == []
 
 
-def test_upsert_profile_fields_in_db_executes_generated_upsert_sql() -> None:
+def test_upsert_profile_fields_executes_generated_upsert_sql() -> None:
     session = FakeSession([FakeResult()])
 
+    repo = UserProfileRepository()
     changed = _run(
-        profile_store.upsert_profile_fields_in_db(
+        repo.upsert_profile_fields(
             session,
             user_id=4,
             preferred_brand="海尔",

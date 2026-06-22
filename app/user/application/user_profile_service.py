@@ -6,7 +6,7 @@
 - 用户画像写操作的事务提交与缓存失效编排
 
 设计约束：
-- MySQL 读写细节下沉到 `user_profile_store.py`
+- MySQL 读写细节下沉到 `user_profile_repository.py`
 - 服务层只保留对外 API 和缓存编排
 """
 
@@ -20,14 +20,11 @@ from app.knowledge.domain.schemas import UserProfileData, UserProfilePayload
 from app.knowledge.infrastructure.profile.profile_payload_support import (
     coerce_user_profile_payload,
 )
-from app.user.application.user_profile_store import (
-    empty_user_profile,
-    query_profile_from_db,
-    upsert_profile_data_in_db,
+from app.user.infrastructure.repository.user_profile_repository import (
+    user_profile_repository,
 )
 from app.platform.config.app_config import app_config
 
-# 缓存 TTL 从统一配置读取
 _PROFILE_CACHE_TTL = app_config.memory.user_profile_cache_ttl
 _PROFILE_CACHE_PREFIX = "user:profile"
 
@@ -48,13 +45,17 @@ class UserProfileService:
     CACHE_TTL = _PROFILE_CACHE_TTL
     CACHE_PREFIX = _PROFILE_CACHE_PREFIX
 
-    @staticmethod
+    def __init__(self, repository: Any = None):
+        """初始化服务，可注入自定义 Repository（用于测试）。"""
+        self._repository = repository or user_profile_repository
+
     async def get_profile(
+        self,
         user_id: int,
         redis_client: ProfileCache | None = None,
     ) -> UserProfilePayload:
         """获取用户画像，优先读 Redis，未命中再查 MySQL。"""
-        cache_key = f"{UserProfileService.CACHE_PREFIX}:{user_id}"
+        cache_key = f"{self.CACHE_PREFIX}:{user_id}"
         if redis_client is not None:
             cached = await redis_client.get(cache_key)
             if cached:
@@ -64,19 +65,20 @@ class UserProfileService:
                     pass
 
         try:
-            profile = await query_profile_from_db(user_id)
+            async with AsyncSessionLocal() as db:
+                profile = await self._repository.get_profile(db, user_id)
             if redis_client is not None:
                 await redis_client.setex(
                     cache_key,
-                    UserProfileService.CACHE_TTL,
+                    self.CACHE_TTL,
                     json.dumps(profile, ensure_ascii=False),
                 )
             return profile
         except Exception:
-            return empty_user_profile(user_id)
+            return self._repository.empty_profile(user_id)
 
-    @staticmethod
     async def upsert_profile_data(
+        self,
         user_id: int,
         profile: UserProfileData,
         redis_client: ProfileCache | None = None,
@@ -88,7 +90,7 @@ class UserProfileService:
         data_changed = False
         try:
             async with AsyncSessionLocal() as db:
-                data_changed = await upsert_profile_data_in_db(
+                data_changed = await self._repository.upsert_profile_data(
                     db,
                     user_id=user_id,
                     profile=profile,
@@ -99,5 +101,10 @@ class UserProfileService:
             return False
 
         if data_changed and redis_client is not None:
-            await redis_client.delete(f"{UserProfileService.CACHE_PREFIX}:{user_id}")
+            await redis_client.delete(f"{self.CACHE_PREFIX}:{user_id}")
         return True
+
+
+user_profile_service = UserProfileService()
+
+__all__ = ["UserProfileService", "user_profile_service"]
