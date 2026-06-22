@@ -8,9 +8,12 @@
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TypeAlias
+
+import redis.asyncio as aioredis
 
 from app.shared.core.logger import get_logger
 from app.knowledge.domain.prompt_builder import build_compression_prompt
@@ -21,6 +24,10 @@ from app.knowledge.domain.schemas import (
     UserProfileData,
 )
 from app.knowledge.infrastructure.config import LongTermMemoryConfig, long_term_config
+from app.knowledge.infrastructure.orchestration.profile_adapter import (
+    load_user_profile,
+    save_user_profile,
+)
 
 if TYPE_CHECKING:
     from app.knowledge.infrastructure.orchestration.memory_extractor import MemoryExtractor
@@ -34,34 +41,6 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 ProfileReader: TypeAlias = Callable[[int, Any | None], Awaitable[UserProfileData]]
 ProfileWriter: TypeAlias = Callable[[int, UserProfileData, Any | None], Awaitable[bool]]
-
-
-async def load_user_profile(
-    user_id: int,
-    redis_client: Any | None = None,
-) -> UserProfileData:
-    """通过用户画像服务读取结构化画像。"""
-    from app.user.application.user_profile_service import user_profile_service
-
-    return await user_profile_service.get_profile(
-        user_id,
-        redis_client=redis_client,
-    )
-
-
-async def save_user_profile(
-    user_id: int,
-    profile: UserProfileData,
-    redis_client: Any | None = None,
-) -> bool:
-    """通过用户画像服务回写结构化画像。"""
-    from app.user.application.user_profile_service import user_profile_service
-
-    return await user_profile_service.upsert_profile_data(
-        user_id=user_id,
-        profile=profile,
-        redis_client=redis_client,
-    )
 
 
 class MemoryMiddleware:
@@ -111,7 +90,7 @@ class MemoryMiddleware:
                 user_id,
                 session_id,
             )
-        except Exception:
+        except (aioredis.RedisError, asyncio.TimeoutError, ConnectionError):
             self._warn_once("redis_stm_read", "[memory] Redis STM 读取失败，短期记忆降级")
             memory_state.session_summary = None
             memory_state.recent_messages = []
@@ -123,9 +102,12 @@ class MemoryMiddleware:
                     uid,
                     getattr(self.redis_stm, "redis", None),
                 )
-            except Exception:
-                self._warn_once("user_profile", "[memory] 用户画像读取失败，降级为空画像")
-                memory_state.user_profile = {}
+        except (aioredis.RedisError, asyncio.TimeoutError, ConnectionError):
+            self._warn_once("user_profile", "[memory] 用户画像读取失败，降级为空画像")
+            memory_state.user_profile = {}
+        except Exception:
+            self._warn_once("user_profile", "[memory] 用户画像读取失败（未知错误），降级为空画像")
+            memory_state.user_profile = {}
 
         if self.ltm_enabled:
             try:
@@ -134,10 +116,16 @@ class MemoryMiddleware:
                     user_id,
                     user_input,
                 )
-            except Exception:
+            except (asyncio.TimeoutError, ConnectionError):
                 self._warn_once(
                     "milvus_ltm",
                     "[memory] Milvus LTM 检索失败，长期记忆降级",
+                )
+                memory_state.long_term_memories = []
+            except Exception:
+                self._warn_once(
+                    "milvus_ltm",
+                    "[memory] Milvus LTM 检索失败（未知错误），长期记忆降级",
                 )
                 memory_state.long_term_memories = []
         return memory_state
@@ -183,8 +171,10 @@ class MemoryMiddleware:
 
             await self.redis_stm.save_meta(tenant_id, user_id, session_id, meta)
             await self.redis_stm.refresh_ttl(tenant_id, user_id, session_id)
-        except Exception:
+        except (aioredis.RedisError, asyncio.TimeoutError, ConnectionError):
             self._warn_once("redis_stm_write", "[memory] Redis STM 写入失败")
+        except Exception:
+            self._warn_once("redis_stm_write", "[memory] Redis STM 写入失败（未知错误）")
 
         try:
             meta = await self.redis_stm.get_meta(tenant_id, user_id, session_id)
@@ -249,17 +239,21 @@ class MemoryMiddleware:
                             profile,
                             getattr(self.redis_stm, "redis", None),
                         )
-                    except Exception as exc:
+                    except (aioredis.RedisError, asyncio.TimeoutError, ConnectionError) as exc:
                         logger.debug(f"[memory] 用户画像更新失败(user_id={user_id}): {exc}")
-        except Exception:
+        except (asyncio.TimeoutError, ConnectionError):
             self._warn_once("compress", "[memory] 记忆压缩失败")
+        except Exception:
+            self._warn_once("compress", "[memory] 记忆压缩失败（未知错误）")
 
         if long_term_memories:
             try:
                 for result in long_term_memories:
                     try:
                         await self.milvus_ltm.update_memory_hit_info(result.memory)
-                    except Exception:
+                    except (asyncio.TimeoutError, ConnectionError):
                         continue
-            except Exception:
+            except (asyncio.TimeoutError, ConnectionError):
                 self._warn_once("ltm_hit_update", "[memory] LTM 命中统计刷新失败")
+            except Exception:
+                self._warn_once("ltm_hit_update", "[memory] LTM 命中统计刷新失败（未知错误）")

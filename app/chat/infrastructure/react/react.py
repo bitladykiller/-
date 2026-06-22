@@ -39,8 +39,8 @@ from app.chat.infrastructure.modeling.models import (
 )
 from app.chat.infrastructure.memory_bridge.context import enrich_question
 from app.chat.infrastructure.kg_sub_graph.kg_neo4j_conn import get_neo4j_graph
-from app.chat.domain.utils import question_from_state, no_neo4j_response
-from app.platform.config.app_config import app_config
+from app.chat.infrastructure.shared.utils import question_from_state, no_neo4j_response
+from app.shared.core.config import settings
 
 
 async def get_react_subgraph(
@@ -117,16 +117,16 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
 
     sg = await get_react_subgraph(build_react_subgraph)
     subgraph_config = dict(config) if config else {}
-    subgraph_config["recursion_limit"] = app_config.react.recursion_limit
+    subgraph_config["recursion_limit"] = settings.app_config.react.recursion_limit
     react_messages: list[dict[str, str]] = [{"role": "user", "content": q}]
-    insufficiency_reason = app_config.react.initial_reason
+    insufficiency_reason = settings.app_config.react.initial_reason
 
-    for attempt in range(1, app_config.react.max_attempts + 1):
+    for attempt in range(1, settings.app_config.react.max_attempts + 1):
         if attempt > 1:
             react_messages.append(
                 {
                     "role": "user",
-                    "content": f"{app_config.react.retry_prompt}不足原因：{insufficiency_reason}",
+                    "content": f"{settings.app_config.react.retry_prompt}不足原因：{insufficiency_reason}",
                 }
             )
 
@@ -138,11 +138,11 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
             last_content = getattr(result_messages[-1], "content", "")
             last_answer = str(last_content) if last_content else "未能确定回答～"
 
-        if app_config.react.step_exhausted_marker in last_answer.lower():
-            insufficiency_reason = app_config.react.step_exhausted_reason
+        if settings.app_config.react.step_exhausted_marker in last_answer.lower():
+            insufficiency_reason = settings.app_config.react.step_exhausted_reason
         else:
             transcript_lines: list[str] = []
-            for message in result_messages[-app_config.react.transcript_window:]:
+            for message in result_messages[-settings.app_config.react.transcript_window:]:
                 role = getattr(message, "type", None) or getattr(
                     message,
                     "role",
@@ -170,12 +170,12 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
             if check.decision == "sufficient":
                 return {
                     "messages": [
-                        AIMessage(content=app_config.react.progress_message),
+                        AIMessage(content=settings.app_config.react.progress_message),
                         AIMessage(content=last_answer),
                     ],
                 }
 
-            insufficiency_reason = check.reason or app_config.react.default_insufficiency_reason
+            insufficiency_reason = check.reason or settings.app_config.react.default_insufficiency_reason
 
         # 准备下一轮：保留原始问题 + 上一轮候选答案
         react_messages = [
@@ -186,7 +186,7 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
     # 所有轮次用尽仍未充分
     return {
         "messages": [
-            AIMessage(content=app_config.react.progress_message),
-            AIMessage(content=app_config.react.fallback_answer),
+            AIMessage(content=settings.app_config.react.progress_message),
+            AIMessage(content=settings.app_config.react.fallback_answer),
         ],
     }

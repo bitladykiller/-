@@ -12,6 +12,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol, TypeAlias
 
+import yaml
+
 from app.shared.core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -36,8 +38,6 @@ def load_prompts_from_yaml(
         return {}
 
     try:
-        import yaml
-
         with yaml_path.open("r", encoding="utf-8") as prompt_file:
             data = yaml.safe_load(prompt_file)
         if data is None:

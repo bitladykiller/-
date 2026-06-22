@@ -3,6 +3,11 @@
 职责：
 - 提供跨节点共享的小型纯函数
 - 避免把问题提取、统一降级响应散落到多个节点文件
+
+注意：
+- 此模块位于 infrastructure/shared/ 而非 domain/，
+  因为 question_from_state 依赖 AgentState（infrastructure/graph/state.py），
+  domain 层不应反向依赖 infrastructure 层。
 """
 
 from langchain_core.messages import AIMessage

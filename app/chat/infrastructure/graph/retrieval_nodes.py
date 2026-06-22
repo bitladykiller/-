@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from langchain_core.runnables import RunnableConfig
 
-from app.chat.domain.utils import no_neo4j_response
+from app.chat.infrastructure.shared.utils import no_neo4j_response
 from app.chat.infrastructure.graph.execution_pipeline import ExecutionPipeline
 from app.chat.infrastructure.graph.message_utils import (
     build_simple_message_response,

@@ -27,13 +27,11 @@ from typing_extensions import TypedDict
 import redis.asyncio as aioredis
 
 from app.shared.core.logger import get_logger
-from app.platform.config.app_config import app_config
+from app.shared.core.config import settings
 
 logger = get_logger(__name__)
 
-from app.platform.config.app_config import app_config
-
-_TASK_CFG = app_config.task_queue
+_TASK_CFG = settings.app_config.task_queue
 
 
 class TaskStatus(str, Enum):

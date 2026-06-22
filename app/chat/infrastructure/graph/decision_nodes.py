@@ -19,7 +19,7 @@ from typing import Literal
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
 
-from app.chat.domain.utils import question_from_state
+from app.chat.infrastructure.shared.utils import question_from_state
 from app.chat.infrastructure.graph.execution_utils import (
     ainvoke_structured_question_output,
 )

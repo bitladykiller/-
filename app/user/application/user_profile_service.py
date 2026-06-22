@@ -24,11 +24,11 @@ from app.knowledge.infrastructure.profile.profile_payload_support import (
 from app.user.infrastructure.repository.user_profile_repository import (
     user_profile_repository,
 )
-from app.platform.config.app_config import app_config
+from app.shared.core.config import settings
 
 logger = get_logger(__name__)
 
-_PROFILE_CACHE_TTL = app_config.memory.user_profile_cache_ttl
+_PROFILE_CACHE_TTL = settings.app_config.memory.user_profile_cache_ttl
 _PROFILE_CACHE_PREFIX = "user:profile"
 
 
