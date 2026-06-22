@@ -30,3 +30,6 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+
+
+from app.chat.infrastructure.models.conversation import Conversation  # noqa: E402,F401

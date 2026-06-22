@@ -2,7 +2,13 @@
 
 这里只持久化会话元信息，不保存逐条聊天消息。
 消息内容当前由短期记忆层维护。
+
+注意：
+- Conversation 和 User 之间存在 SQLAlchemy relationship 双向绑定。
+- 因此 Conversation 需要引用 User，User 也需要引用 Conversation。
+- 模型放在 chat/infrastructure/models/ 下，通过延迟 import 解决循环引用。
 """
+
 from __future__ import annotations
 
 import enum
@@ -57,5 +63,4 @@ class Conversation(Base):
     user: Mapped["User"] = relationship("User", back_populates="conversations")
 
 
-# 显式导入关联模型，避免 relationship("User") 继续隐式依赖包级聚合导入。
 from app.user.infrastructure.models.user import User  # noqa: E402,F401

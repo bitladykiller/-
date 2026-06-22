@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from app.shared.core.json_utils import extract_first_json_object
 from app.shared.core.logger import get_logger
 from app.shared.core.config import settings
-from app.platform.config.app_config import (
+from app.shared.core.app_config import (
     STMConfig,
     STMCompressionConfig,
     STMRedisConfig,

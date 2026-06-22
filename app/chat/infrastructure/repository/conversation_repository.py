@@ -8,11 +8,6 @@
 边界：
 - 不处理业务规则（如缓存、事务编排）
 - 不直接暴露给 API 层
-
-注意：
-- Conversation ORM 模型位于 app/user/infrastructure/models/ 下，
-  这是因为 User ↔ Conversation 之间存在 SQLAlchemy relationship 双向绑定。
-  这是已知的跨域依赖，待后续将模型提取到 shared 域解决。
 """
 
 from __future__ import annotations
@@ -20,7 +15,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.user.infrastructure.models.conversation import Conversation, DialogueType
+from app.chat.infrastructure.models.conversation import Conversation, DialogueType
 
 _DEFAULT_CONVERSATION_TITLE = "新会话"
 

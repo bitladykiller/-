@@ -93,6 +93,10 @@ class MemoryMiddleware:
             self._warn_once("redis_stm_read", "[memory] Redis STM 读取失败，短期记忆降级")
             memory_state.session_summary = None
             memory_state.recent_messages = []
+        except Exception:
+            self._warn_once("redis_stm_read", "[memory] Redis STM 读取失败（未知错误），短期记忆降级")
+            memory_state.session_summary = None
+            memory_state.recent_messages = []
 
         uid = int(user_id) if user_id and user_id.isdigit() else 0
         if uid > 0:
@@ -101,12 +105,12 @@ class MemoryMiddleware:
                     uid,
                     getattr(self.redis_stm, "redis", None),
                 )
-        except (aioredis.RedisError, asyncio.TimeoutError, ConnectionError):
-            self._warn_once("user_profile", "[memory] 用户画像读取失败，降级为空画像")
-            memory_state.user_profile = {}
-        except Exception:
-            self._warn_once("user_profile", "[memory] 用户画像读取失败（未知错误），降级为空画像")
-            memory_state.user_profile = {}
+            except (aioredis.RedisError, asyncio.TimeoutError, ConnectionError):
+                self._warn_once("user_profile", "[memory] 用户画像读取失败，降级为空画像")
+                memory_state.user_profile = {}
+            except Exception:
+                self._warn_once("user_profile", "[memory] 用户画像读取失败（未知错误），降级为空画像")
+                memory_state.user_profile = {}
 
         if self.ltm_enabled:
             try:
@@ -239,6 +243,8 @@ class MemoryMiddleware:
                             getattr(self.redis_stm, "redis", None),
                         )
                     except (aioredis.RedisError, asyncio.TimeoutError, ConnectionError) as exc:
+                        logger.debug(f"[memory] 用户画像更新失败(user_id={user_id}): {exc}")
+                    except Exception as exc:
                         logger.debug(f"[memory] 用户画像更新失败(user_id={user_id}): {exc}")
         except (asyncio.TimeoutError, ConnectionError):
             self._warn_once("compress", "[memory] 记忆压缩失败")

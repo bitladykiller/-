@@ -13,7 +13,7 @@ from app.chat.application.conversation_service import (
     ConversationSummary,
     run_db_operation,
 )
-from app.user.infrastructure.models.conversation import Conversation, DialogueType
+from app.chat.infrastructure.models.conversation import Conversation, DialogueType
 
 
 def _run(awaitable):

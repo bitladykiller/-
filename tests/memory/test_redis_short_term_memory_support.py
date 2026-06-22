@@ -72,7 +72,6 @@ def test_should_compress_session_respects_disable_and_thresholds() -> None:
         window_config=stm.window,
         compression_config=stm.compression,
     )
-    )
 
     assert should_compress_session(
         settings,

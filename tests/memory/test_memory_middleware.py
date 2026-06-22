@@ -281,9 +281,9 @@ def test_before_agent_degrades_and_warns_once_on_memory_load_failures(monkeypatc
     assert second.user_profile == {}
     assert second.long_term_memories == []
     assert logger.warnings == [
-        "[memory] Redis STM 读取失败，短期记忆降级",
-        "[memory] 用户画像读取失败，降级为空画像",
-        "[memory] Milvus LTM 检索失败，长期记忆降级",
+        "[memory] Redis STM 读取失败（未知错误），短期记忆降级",
+        "[memory] 用户画像读取失败（未知错误），降级为空画像",
+        "[memory] Milvus LTM 检索失败（未知错误），长期记忆降级",
     ]
 
 

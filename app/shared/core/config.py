@@ -19,7 +19,7 @@ from app.shared.core.config_models import (
     InfrastructureSettings,
     ProjectBaseSettings,
 )
-from app.platform.config.app_config import AppConfig, app_config as _app_config
+from app.shared.core.app_config import AppConfig, app_config as _app_config
 
 
 class _Settings:
@@ -117,6 +117,20 @@ class _Settings:
     @property
     def user_profile_cache_ttl(self) -> int:
         return self._app_config.memory.user_profile_cache_ttl
+
+    # ── STM/LTM 快捷属性 ──
+
+    @property
+    def stm_enabled(self) -> bool:
+        return self._app_config.memory.stm.enabled
+
+    @property
+    def ltm_enabled(self) -> bool:
+        return self._app_config.memory.ltm.enabled
+
+    @property
+    def ltm_collection_name(self) -> str:
+        return self._app_config.memory.ltm.collection_name
 
     # ── 连接 URL 计算属性 ──
 

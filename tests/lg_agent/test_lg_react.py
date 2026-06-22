@@ -42,6 +42,14 @@ def _run(awaitable):
     return asyncio.run(awaitable)
 
 
+async def _async_return_none():
+    return None
+
+
+async def _async_return_obj():
+    return object()
+
+
 def test_react_runtime_caches_builder_result(monkeypatch) -> None:
     # 通过 FakeContainer 管理 react_subgraph 缓存
     fake_container = type("FakeContainer", (), {
@@ -71,8 +79,8 @@ def test_react_runtime_caches_builder_result(monkeypatch) -> None:
 
 
 def test_execute_react_returns_no_neo4j_response_when_graph_missing(monkeypatch) -> None:
-    monkeypatch.setattr(lg_react, "get_neo4j_graph", lambda: None)
-    expected = {"messages": [AIMessage(content="图谱不可用")]}
+    monkeypatch.setattr(lg_react, "get_neo4j_graph", _async_return_none)
+    expected = {"messages": [AIMessage(content="抱歉，知识库服务暂时不可用，请稍后重试。")]}
     monkeypatch.setattr(lg_react, "no_neo4j_response", lambda: expected)
 
     result = _run(
@@ -101,14 +109,14 @@ def test_execute_react_returns_checked_answer_with_progress_message(monkeypatch)
     async def fake_get_react_subgraph(_builder):
         return subgraph
 
-    monkeypatch.setattr(lg_react, "get_neo4j_graph", lambda: object())
+    monkeypatch.setattr(lg_react, "get_neo4j_graph", _async_return_obj)
     monkeypatch.setattr(lg_react, "enrich_question", fake_enrich_question)
     monkeypatch.setattr(lg_react, "get_react_subgraph", fake_get_react_subgraph)
     monkeypatch.setattr(lg_react, "react_judge_model", judge_model)
 
     result = _run(
         lg_react.execute_react(
-            AgentState(messages=[HumanMessage(content="帮我修空调")]),
+            AgentState(messages=[HumanMessage(content="空调不制冷")]),
             config={},
         )
     )
@@ -140,13 +148,15 @@ def test_execute_react_returns_checked_answer_with_progress_message(monkeypatch)
 
 def test_execute_react_retries_on_step_exhaustion_and_returns_fallback(monkeypatch) -> None:
     from dataclasses import replace
-    from app.platform.config.app_config import ReactConfig
+    from app.shared.core.app_config import ReactConfig
     from app.shared.core.config import settings as real_settings
 
     fake_react_config = ReactConfig(max_attempts=2)
     fake_app_config = replace(real_settings.app_config, react=fake_react_config)
-    # 替换 lg_react 模块中的 app_config 引用
-    monkeypatch.setattr(lg_react, "app_config", fake_app_config)
+    monkeypatch.setattr(
+        lg_react, "settings",
+        real_settings.__class__(app_config=fake_app_config),
+    )
 
     subgraph = FakeCompiledSubgraph(
         {"messages": [AIMessage(content="Need more steps before finish")]}
@@ -157,7 +167,7 @@ def test_execute_react_retries_on_step_exhaustion_and_returns_fallback(monkeypat
     async def fake_get_react_subgraph(_builder):
         return subgraph
 
-    monkeypatch.setattr(lg_react, "get_neo4j_graph", lambda: object())
+    monkeypatch.setattr(lg_react, "get_neo4j_graph", _async_return_obj)
     monkeypatch.setattr(lg_react, "enrich_question", fake_enrich_question)
     monkeypatch.setattr(lg_react, "get_react_subgraph", fake_get_react_subgraph)
 
