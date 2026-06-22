@@ -44,8 +44,7 @@ class InfoLogger(Protocol):
 async def warm_up_runtime_resources(runtime_logger: InfoLogger) -> None:
     """预热懒加载资源，避免首请求承担初始化延迟。
 
-    通过 AppContainer 统一管理预热逻辑，不再直接调用 memory_bridge.runtime。
-    """
+    通过 AppContainer 统一管理预热逻辑。"""
     from app.platform.container import get_container
 
     container = await get_container()

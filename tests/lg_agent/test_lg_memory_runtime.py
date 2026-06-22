@@ -1,6 +1,6 @@
 import asyncio
 
-import app.chat.infrastructure.memory_bridge.context as memory_context
+import app.chat.infrastructure.graph.memory_context as memory_context
 
 
 class FakeMiddleware:

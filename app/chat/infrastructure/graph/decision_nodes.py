@@ -27,7 +27,7 @@ from app.chat.infrastructure.graph.message_utils import (
     build_safe_messages,
 )
 from app.chat.infrastructure.graph.state import AgentState, RetrievalPlan, Router
-from app.chat.infrastructure.memory_bridge.context import (
+from app.chat.infrastructure.graph.memory_context import (
     build_memory_context,
     load_memory_state,
 )

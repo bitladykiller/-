@@ -14,7 +14,7 @@ from app.chat.infrastructure.graph.message_utils import (
     find_last_user_message,
 )
 from app.chat.infrastructure.graph.state import AgentState
-from app.chat.infrastructure.memory_bridge.context import _get_memory_middleware, configurable_scope
+from app.chat.infrastructure.graph.memory_context import _get_memory_middleware, configurable_scope
 from app.shared.core.logger import get_logger
 
 logger = get_logger(__name__)

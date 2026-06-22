@@ -180,7 +180,6 @@ async def reset_container() -> None:
 def _create_memory_middleware() -> Any:
     """创建完整的 MemoryMiddleware 依赖栈。
 
-    替代 memory_bridge/runtime.py 中的 create_memory_middleware_instance()。
     使用统一的 create_llm_for_role 工厂函数。
     """
     import redis.asyncio as redis

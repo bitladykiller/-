@@ -152,7 +152,7 @@ def test_register_middleware_logs_elapsed_ms() -> None:
 
 
 def test_warm_up_runtime_resources_delegates_to_container(monkeypatch) -> None:
-    """重构后 warm_up 通过 AppContainer 统一管理，不再直接调用 memory_bridge。"""
+    """重构后 warm_up 通过 AppContainer 统一管理。"""
     main_module = importlib.import_module("app.main")
     logger = FakeLogger()
     called: list[str] = []

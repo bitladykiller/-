@@ -1,4 +1,4 @@
-from app.chat.infrastructure.memory_bridge.context import (
+from app.chat.infrastructure.graph.memory_context import (
     build_enriched_question,
     build_memory_context,
 )

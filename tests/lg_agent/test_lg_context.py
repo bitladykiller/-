@@ -1,6 +1,6 @@
 import asyncio
 
-from app.chat.infrastructure.memory_bridge import context as lg_context
+from app.chat.infrastructure.graph import memory_context as lg_context
 from app.chat.infrastructure.graph.state import AgentState
 from app.knowledge.domain.schemas import AgentMemoryState
 
