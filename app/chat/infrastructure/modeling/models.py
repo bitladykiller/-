@@ -16,6 +16,7 @@ from typing import Any, Literal, TypeAlias
 from pydantic import BaseModel, Field
 
 from app.shared.core.config import settings
+from app.shared.core.config_models import ServiceType
 from app.shared.core.logger import get_logger
 from app.chat.infrastructure.graph.state import (
     RetrievalPlanType,
@@ -33,6 +34,7 @@ ModelRole = Literal[
     "cypher",
     "react",
     "react_judge",
+    "memory_extractor",
 ]
 ModelResolver: TypeAlias = Callable[[ModelRole, float], Any]
 
@@ -44,6 +46,7 @@ MODEL_TEMPERATURES: dict[ModelRole, float] = {
     "cypher": 0.2,
     "react": 0.4,
     "react_judge": 0.1,
+    "memory_extractor": 0.3,
 }
 
 
@@ -105,7 +108,7 @@ def _get_model(name: ModelRole, temperature: float) -> Any:
 
 def _create_model(name: ModelRole, temperature: float) -> Any:
     """直接创建模型实例（同步，不依赖容器）。"""
-    if settings.AGENT_SERVICE == "deepseek":
+    if settings.AGENT_SERVICE == ServiceType.DEEPSEEK:
         from langchain_deepseek import ChatDeepSeek
 
         return ChatDeepSeek(
@@ -121,6 +124,15 @@ def _create_model(name: ModelRole, temperature: float) -> Any:
             base_url=settings.OLLAMA_BASE_URL,
             temperature=temperature,
         )
+
+
+def create_llm_for_role(role: ModelRole) -> Any:
+    """统一的 LLM 创建工厂。
+
+    供 models.py 和 container.py 共用，消除重复的 ServiceType 判断逻辑。
+    """
+    temperature = MODEL_TEMPERATURES.get(role, 0.7)
+    return _create_model(role, temperature)
 
 
 # 模块级模型入口（懒加载代理）
@@ -172,4 +184,5 @@ __all__ = [
     "react_model",
     "retrieval_plan_model",
     "router_model",
+    "create_llm_for_role",
 ]

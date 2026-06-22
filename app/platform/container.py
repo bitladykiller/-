@@ -50,6 +50,10 @@ class AppContainer:
     neo4j_graph: Any = None
     neo4j_last_health_check_ts: float = 0.0
 
+    # ---- ReAct 子图缓存 ----
+    react_subgraph: Any = None
+    react_subgraph_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
     _closed: bool = field(default=False, init=False)
 
     @classmethod
@@ -113,6 +117,7 @@ class AppContainer:
         self.llm_models.clear()
         self.retriever_registry = None
         self.neo4j_graph = None
+        self.react_subgraph = None
 
 
 # ──────────────────────────────────────────────
@@ -172,6 +177,7 @@ def _create_memory_middleware() -> Any:
     """创建完整的 MemoryMiddleware 依赖栈。
 
     替代 memory_bridge/runtime.py 中的 create_memory_middleware_instance()。
+    使用统一的 create_llm_for_role 工厂函数。
     """
     import redis.asyncio as redis
     from pymilvus import MilvusClient
@@ -180,9 +186,8 @@ def _create_memory_middleware() -> Any:
     from app.knowledge.infrastructure.orchestration.memory_extractor import MemoryExtractor
     from app.knowledge.infrastructure.orchestration.memory_middleware import MemoryMiddleware
     from app.knowledge.infrastructure.stm.redis_short_term_memory import RedisShortTermMemory
-    from app.platform.config.app_config import app_config
+    from app.chat.infrastructure.modeling.models import create_llm_for_role
     from app.shared.core.config import settings
-    from app.shared.core.config_models import ServiceType
 
     if settings.EMBEDDING_TYPE == "ollama":
         from langchain_ollama import OllamaEmbeddings
@@ -196,22 +201,7 @@ def _create_memory_middleware() -> Any:
 
         embedding_model = HuggingFaceEmbeddings(model_name=settings.EMBEDDING_MODEL)
 
-    if settings.AGENT_SERVICE == ServiceType.DEEPSEEK:
-        from langchain_deepseek import ChatDeepSeek
-
-        memory_extractor_llm = ChatDeepSeek(
-            api_key=settings.DEEPSEEK_API_KEY,
-            model_name=settings.DEEPSEEK_MODEL,
-            temperature=app_config.memory.memory_extractor_temperature,
-        )
-    else:
-        from langchain_ollama import ChatOllama
-
-        memory_extractor_llm = ChatOllama(
-            model=settings.OLLAMA_AGENT_MODEL,
-            base_url=settings.OLLAMA_BASE_URL,
-            temperature=app_config.memory.memory_extractor_temperature,
-        )
+    memory_extractor_llm = create_llm_for_role("memory_extractor")
 
     return MemoryMiddleware(
         redis_stm=RedisShortTermMemory(

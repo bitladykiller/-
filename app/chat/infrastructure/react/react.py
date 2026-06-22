@@ -42,23 +42,19 @@ from app.chat.infrastructure.kg_sub_graph.kg_neo4j_conn import get_neo4j_graph
 from app.chat.domain.utils import question_from_state, no_neo4j_response
 from app.platform.config.app_config import app_config
 
-# 所有运行时行为常量统一从 app_config 读取
-_REACT_CFG = app_config.react
-
-_react_subgraph: CompiledStateGraph | None = None
-_react_lock: asyncio.Lock = asyncio.Lock()
-
 
 async def get_react_subgraph(
     builder: Callable[[], Awaitable[CompiledStateGraph]],
 ) -> CompiledStateGraph:
-    """获取 ReAct 子图单例（双检锁防并发创建）。"""
-    global _react_subgraph
-    if _react_subgraph is None:
-        async with _react_lock:
-            if _react_subgraph is None:
-                _react_subgraph = await builder()
-    return _react_subgraph
+    """获取 ReAct 子图单例（通过 AppContainer 管理）。"""
+    from app.platform.container import get_container
+
+    container = await get_container()
+    if container.react_subgraph is None:
+        async with container.react_subgraph_lock:
+            if container.react_subgraph is None:
+                container.react_subgraph = await builder()
+    return container.react_subgraph
 
 
 # ================================================================== #
@@ -121,16 +117,16 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
 
     sg = await get_react_subgraph(build_react_subgraph)
     subgraph_config = dict(config) if config else {}
-    subgraph_config["recursion_limit"] = _REACT_CFG.recursion_limit
+    subgraph_config["recursion_limit"] = app_config.react.recursion_limit
     react_messages: list[dict[str, str]] = [{"role": "user", "content": q}]
-    insufficiency_reason = _REACT_CFG.initial_reason
+    insufficiency_reason = app_config.react.initial_reason
 
-    for attempt in range(1, _REACT_CFG.max_attempts + 1):
+    for attempt in range(1, app_config.react.max_attempts + 1):
         if attempt > 1:
             react_messages.append(
                 {
                     "role": "user",
-                    "content": f"{_REACT_CFG.retry_prompt}不足原因：{insufficiency_reason}",
+                    "content": f"{app_config.react.retry_prompt}不足原因：{insufficiency_reason}",
                 }
             )
 
@@ -142,11 +138,11 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
             last_content = getattr(result_messages[-1], "content", "")
             last_answer = str(last_content) if last_content else "未能确定回答～"
 
-        if _REACT_CFG.step_exhausted_marker in last_answer.lower():
-            insufficiency_reason = _REACT_CFG.step_exhausted_reason
+        if app_config.react.step_exhausted_marker in last_answer.lower():
+            insufficiency_reason = app_config.react.step_exhausted_reason
         else:
             transcript_lines: list[str] = []
-            for message in result_messages[-_REACT_CFG.transcript_window:]:
+            for message in result_messages[-app_config.react.transcript_window:]:
                 role = getattr(message, "type", None) or getattr(
                     message,
                     "role",
@@ -174,12 +170,12 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
             if check.decision == "sufficient":
                 return {
                     "messages": [
-                        AIMessage(content=_REACT_CFG.progress_message),
+                        AIMessage(content=app_config.react.progress_message),
                         AIMessage(content=last_answer),
                     ],
                 }
 
-            insufficiency_reason = check.reason or _REACT_CFG.default_insufficiency_reason
+            insufficiency_reason = check.reason or app_config.react.default_insufficiency_reason
 
         # 准备下一轮：保留原始问题 + 上一轮候选答案
         react_messages = [
@@ -190,7 +186,7 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
     # 所有轮次用尽仍未充分
     return {
         "messages": [
-            AIMessage(content=_REACT_CFG.progress_message),
-            AIMessage(content=_REACT_CFG.fallback_answer),
+            AIMessage(content=app_config.react.progress_message),
+            AIMessage(content=app_config.react.fallback_answer),
         ],
     }

@@ -43,7 +43,18 @@ def _run(awaitable):
 
 
 def test_react_runtime_caches_builder_result(monkeypatch) -> None:
-    monkeypatch.setattr(lg_react, "_react_subgraph", None)
+    # 通过 FakeContainer 管理 react_subgraph 缓存
+    fake_container = type("FakeContainer", (), {
+        "react_subgraph": None,
+        "react_subgraph_lock": asyncio.Lock(),
+    })()
+
+    async def fake_get_container():
+        return fake_container
+
+    from app.platform import container as cont_mod
+    monkeypatch.setattr(cont_mod, "get_container", fake_get_container)
+
     build_count = {"count": 0}
     built = FakeCompiledSubgraph()
 
@@ -128,9 +139,17 @@ def test_execute_react_returns_checked_answer_with_progress_message(monkeypatch)
 
 
 def test_execute_react_retries_on_step_exhaustion_and_returns_fallback(monkeypatch) -> None:
-    # 用 replace() 创建新的 frozen dataclass 实例，max_attempts=2
+    # 通过 monkeypatch lg_react 模块中的 app_config 引用来控制重试次数
     from dataclasses import replace
-    monkeypatch.setattr(lg_react, "_REACT_CFG", replace(lg_react._REACT_CFG, max_attempts=2))
+    from app.platform.config.app_config import app_config as real_app_config, ReactConfig
+
+    # 创建新的 ReactConfig 实例，max_attempts=2
+    fake_react_config = ReactConfig(max_attempts=2)
+    # 创建新的 AppConfig 实例
+    fake_app_config = replace(real_app_config, react=fake_react_config)
+    # 替换 lg_react 模块中的 app_config 引用
+    monkeypatch.setattr(lg_react, "app_config", fake_app_config)
+
     subgraph = FakeCompiledSubgraph(
         {"messages": [AIMessage(content="Need more steps before finish")]}
     )
