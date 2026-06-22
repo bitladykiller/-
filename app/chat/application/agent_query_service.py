@@ -1,0 +1,58 @@
+"""Agent 查询应用门面。
+
+职责：
+- 为 API 层提供稳定的 LangGraph 查询入口
+- 封装 InputState / graph.astream 细节
+
+边界：
+- 不负责 HTTP / SSE 协议转换
+- 不负责节点内部业务逻辑
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator, Mapping
+from typing import Any, Literal, TypeAlias, cast
+
+from app.chat.infrastructure.graph.builder import graph
+from app.chat.infrastructure.graph.state import InputState
+from langchain_core.messages import HumanMessage
+
+_ChunkMetadata: TypeAlias = Mapping[str, Any]
+_GraphStreamChunk: TypeAlias = tuple[Any, _ChunkMetadata]
+GraphStream: TypeAlias = AsyncIterator[_GraphStreamChunk]
+STREAM_MODE_MESSAGES = "messages"
+
+
+def stream_agent_query(
+    *,
+    query: str,
+    user_id: int | str,
+    tenant_id: str,
+    thread_id: str,
+) -> GraphStream:
+    """启动 Agent 图流式执行（messages 模式）。
+
+    configurable 约定（记忆与检索都依赖）：
+    - thread_id → STM/LTM 的 session_id
+    - user_id → 画像与记忆作用域（字符串化）
+    - tenant_id → 记忆/检索的租户边界（SaaS 隔离维度）
+    """
+    # cast: langgraph 对 stream_mode 字面量类型较严，运行时 "messages" 合法
+    return cast(
+        GraphStream,
+        graph.astream(
+            input=InputState(messages=[HumanMessage(content=query)]),
+            stream_mode=cast(Literal["messages"], STREAM_MODE_MESSAGES),
+            config={
+                "configurable": {
+                    "thread_id": thread_id,
+                    "user_id": str(user_id),
+                    "tenant_id": tenant_id,
+                }
+            },
+        ),
+    )
+
+
+__all__ = ["stream_agent_query", "STREAM_MODE_MESSAGES", "GraphStream"]
