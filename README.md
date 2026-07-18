@@ -24,12 +24,12 @@
 
 ### 4. Neo4j 知识图谱
 - 电商知识图谱（8 节点 + 8 关系，16 个 CSV 初始化）
-- 28 个预定义 Cypher 模板（bge-m3 语义匹配自动选择）
+- 27 个预定义 Cypher 模板（bge-m3 语义匹配自动选择）
 - Text2Cypher 动态生成（Few-Shot + 5 层验证 + 最多 3 次修正循环）
 - 快速路径 + 兜底链路：PredefinedTemplateStrategy 命中模板，否则回退到 LLM 生成与校验链路
 
 ### 5. RAG 文档检索
-- 支持 PDF / DOCX 上传 + rag_doc_parser 解析管道
+- 支持 PDF / DOCX 上传 + 内置文档解析管道
 - 混合检索（向量 + BM25 + RRF 融合）
 
 ### 6. 会话管理
@@ -117,18 +117,20 @@ ruff check app scripts tests
 ```
 deepseek_agent/
 ├── app/                         # 主应用目录
-│   ├── api/                     # FastAPI 路由与请求组装
-│   ├── chat/                    # 对话域
-│   ├── knowledge/               # 记忆 / 检索 / 画像域
-│   ├── user/                    # 用户与会话模型域
+│   ├── api/                     # FastAPI 路由
+│   ├── chat/                    # 对话 / Agent / KG
+│   ├── knowledge/               # 记忆 / 文档解析 / 索引
+│   ├── user/                    # 用户与画像
 │   ├── shared/                  # 共享基础设施
-│   └── scripts/                 # 应用内维护脚本
-├── docs/                        # 架构、部署、迁移文档
+│   ├── platform/                # 应用容器
+│   └── scripts/                 # Compose 内部脚本
+├── configs/                     # Docker 初始化配置
+├── docs/                        # 架构与迁移文档
 ├── scripts/                     # 仓库级辅助脚本
-├── tests/                       # 测试目录
-├── docker-compose.yml           # Docker Compose 配置
-├── pyproject.toml               # Python / Ruff / Pytest 配置
-└── README.md                    # 项目说明
+├── tests/                       # 与领域对齐的测试
+├── docker-compose.yml
+├── pyproject.toml
+└── README.md
 ```
 
 ### 架构特点
@@ -140,18 +142,21 @@ deepseek_agent/
 
 ## 相关文档
 
+- [docs/全流程文档索引.md](docs/全流程文档索引.md) — **全流程详细文档索引（推荐，模块 00–10）**
+- [docs/modules/00-全流程图集.md](docs/modules/00-全流程图集.md) — **30 张 Mermaid 全流程图集（强烈推荐）**
+
+
 - [CHANGELOG.md](CHANGELOG.md) — 版本更新日志
 - [app/README.md](app/README.md) — 当前主代码树说明
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 当前架构和目录边界
-- [docs/MIGRATION.md](docs/MIGRATION.md) — 新旧导入路径和迁移策略
-- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — Docker Compose 部署方式
-- [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) — 开发规范
-- [rag_doc_parser/README.md](rag_doc_parser/README.md) — RAG 文档解析模块
+- [docs/架构概览.md](docs/架构概览.md) — 当前架构和目录边界
+- [docs/迁移指南.md](docs/迁移指南.md) — 新旧导入路径和迁移策略
+- [docs/部署说明.md](docs/部署说明.md) — Docker Compose 部署方式
+- [docs/开发规范.md](docs/开发规范.md) — 开发规范
 - [app/scripts/README.md](app/scripts/README.md) — 应用内维护脚本说明
 - [app/shared/core/README.md](app/shared/core/README.md) — 共享基础设施说明
 - [app/shared/security/README.md](app/shared/security/README.md) — Prompt 防护说明
 - [app/user/infrastructure/models/README.md](app/user/infrastructure/models/README.md) — 持久化模型说明
-- [app/chat/infrastructure/kg_sub_graph/README.md](app/chat/infrastructure/kg_sub_graph/README.md) — KG 子图说明
+- [app/chat/infrastructure/kg/README.md](app/chat/infrastructure/kg/README.md) — KG 子图说明
 
 ## License
 

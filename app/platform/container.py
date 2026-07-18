@@ -84,7 +84,7 @@ class AppContainer:
             raise
 
     async def _init_task_manager(self, config: Any) -> None:
-        from app.chat.application.task_queue import create_redis_client, _TaskManager
+        from app.shared.task_queue import create_redis_client, _TaskManager
 
         self.task_manager = _TaskManager(create_redis_client(config.REDIS_URL))
 

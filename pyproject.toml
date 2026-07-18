@@ -44,7 +44,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["app*", "rag_doc_parser*", "shared_retrieval*"]
+include = ["app*"]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers"
@@ -60,7 +60,7 @@ markers = [
 [tool.ruff]
 target-version = "py310"
 line-length = 100
-src = ["app", "rag_doc_parser", "shared_retrieval"]
+src = ["app"]
 extend-exclude = ["uploads", "app/static/dist"]
 
 [tool.ruff.lint]

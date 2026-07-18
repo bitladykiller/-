@@ -52,7 +52,7 @@ services:
       NEO4J_USERNAME: neo4j
       NEO4J_PASSWORD: 12345678
     volumes:
-      - ./neo4j-import.sh:/scripts/neo4j-import.sh:ro
+      - ./scripts/neo4j-import.sh:/scripts/neo4j-import.sh:ro
       - ./configs/docker/neo4j-import:/import-data:ro
     command: ["/bin/bash", "/scripts/neo4j-import.sh"]
 

@@ -15,7 +15,7 @@ def test_bootstrap_compose_db_import_prepares_environment(monkeypatch) -> None:
     def fake_import_module(name: str, package: str | None = None):
         if name in {
             "app.user.infrastructure.models.user",
-            "app.user.infrastructure.models.conversation",
+            "app.chat.infrastructure.models.conversation",
         }:
             imported_modules.append(name)
             return types.ModuleType(name)
@@ -27,7 +27,7 @@ def test_bootstrap_compose_db_import_prepares_environment(monkeypatch) -> None:
 
     assert imported_modules == [
         "app.user.infrastructure.models.user",
-        "app.user.infrastructure.models.conversation",
+        "app.chat.infrastructure.models.conversation",
     ]
 
 
@@ -38,7 +38,7 @@ def test_init_db_import_prepares_environment(monkeypatch) -> None:
     def fake_import_module(name: str, package: str | None = None):
         if name in {
             "app.user.infrastructure.models.user",
-            "app.user.infrastructure.models.conversation",
+            "app.chat.infrastructure.models.conversation",
         }:
             imported_modules.append(name)
             return types.ModuleType(name)
@@ -50,7 +50,7 @@ def test_init_db_import_prepares_environment(monkeypatch) -> None:
 
     assert imported_modules == [
         "app.user.infrastructure.models.user",
-        "app.user.infrastructure.models.conversation",
+        "app.chat.infrastructure.models.conversation",
     ]
 
 
@@ -86,7 +86,7 @@ def test_create_all_tables_runs_create_all(monkeypatch) -> None:
         importlib,
         "import_module",
         lambda name, package=None: types.ModuleType(name)
-        if name.startswith("app.user.infrastructure.models.")
+        if name.startswith(("app.user.infrastructure.models.", "app.chat.infrastructure.models."))
         else importlib.__import__(name, fromlist=["*"]),
     )
 
@@ -128,7 +128,7 @@ def test_reset_all_tables_runs_drop_then_create(monkeypatch) -> None:
         importlib,
         "import_module",
         lambda name, package=None: types.ModuleType(name)
-        if name.startswith("app.user.infrastructure.models.")
+        if name.startswith(("app.user.infrastructure.models.", "app.chat.infrastructure.models."))
         else importlib.__import__(name, fromlist=["*"]),
     )
 

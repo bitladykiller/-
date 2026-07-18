@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.chat.infrastructure.retrievers.retriever_contracts import KG_RETRIEVER_NAME, RAG_RETRIEVER_NAME
-from app.chat.infrastructure.kg_sub_graph.kg_neo4j_conn import _get_neo4j_graph
+from app.chat.infrastructure.kg.neo4j_conn import _get_neo4j_graph
 
 
 async def get_retriever(name: str) -> Any:
@@ -39,20 +39,20 @@ async def get_retriever(name: str) -> Any:
                 neo4j_graph = _get_neo4j_graph(container)
                 if neo4j_graph is not None:
                     if container._cypher_example_retriever is None:
-                        from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.retrievers.cypher_examples.northwind_retriever import (
+                        from app.chat.infrastructure.kg.northwind_retriever import (
                             NorthwindCypherRetriever,
                         )
 
                         container._cypher_example_retriever = NorthwindCypherRetriever()
 
                     if container._t2c_agent is None:
-                        from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.cypher_dict import (
+                        from app.chat.infrastructure.kg.predefined_cypher.cypher_dict import (
                             predefined_cypher_dict,
                         )
-                        from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.components.predefined_cypher.descriptions import (
+                        from app.chat.infrastructure.kg.predefined_cypher.descriptions import (
                             QUERY_DESCRIPTIONS,
                         )
-                        from app.chat.infrastructure.kg_sub_graph.agentic_rag_agents.workflows.single_agent.text2cypher import (
+                        from app.chat.infrastructure.kg.text2cypher_workflow import (
                             create_text2cypher_agent,
                         )
                         from app.chat.infrastructure.modeling.models import cypher_model

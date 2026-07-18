@@ -20,7 +20,7 @@ from app.knowledge.application.indexing_service import (
     supports_document_indexing,
 )
 from app.knowledge.application.indexing_contracts import UploadFileInfo
-from app.chat.application.task_queue import TaskStatusPayload, get_task_manager
+from app.shared.task_queue import TaskStatusPayload, get_task_manager
 from app.shared.core.config import settings
 
 logger = get_logger(__name__)

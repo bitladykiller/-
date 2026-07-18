@@ -7,7 +7,7 @@ import importlib
 def prepare_db_models() -> None:
     """导入模型以触发 SQLAlchemy metadata 注册。"""
     importlib.import_module("app.user.infrastructure.models.user")
-    importlib.import_module("app.user.infrastructure.models.conversation")
+    importlib.import_module("app.chat.infrastructure.models.conversation")
 
 
 async def run_metadata_operations(*operation_names: str) -> None:

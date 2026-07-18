@@ -14,32 +14,10 @@ from __future__ import annotations
 
 from typing import Literal
 
-from typing_extensions import TypedDict
-
 from pydantic import BaseModel, Field
 
+from app.user.domain.schemas import UserProfileData
 
-class UserProfileFact(TypedDict):
-    """用户画像中的单条结构化事实。"""
-
-    key: str
-    value: str
-
-
-class UserProfileData(TypedDict, total=False):
-    """记忆上下文里使用的标准化用户画像结构。"""
-
-    preferred_brand: str | None
-    budget_range: str | None
-    preferred_category: str | None
-    tags: list[str]
-    facts: list[UserProfileFact]
-
-
-class UserProfilePayload(UserProfileData):
-    """用户画像服务对外返回的完整结构，额外包含 user_id。"""
-
-    user_id: int
 
 
 class MessageRecord(BaseModel):

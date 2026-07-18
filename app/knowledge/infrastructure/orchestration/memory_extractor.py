@@ -14,14 +14,14 @@ from typing import Any
 from app.shared.core.logger import get_logger
 from app.shared.core.json_utils import parse_first_json_object
 from app.shared.core.config import settings
-from app.knowledge.infrastructure.profile.profile_payload_support import (
+from app.user.domain.profile_payload_support import (
     normalize_profile_data,
 )
 from app.knowledge.domain.schemas import (
     MemoryExtractorResult,
     SessionSummary,
-    UserProfileData,
 )
+from app.user.domain.schemas import UserProfileData
 
 logger = get_logger(__name__)
 _SAVEABLE_MEMORY_TYPES = frozenset(settings.app_config.memory.ltm_memory_types.values())

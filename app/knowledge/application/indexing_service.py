@@ -1,6 +1,6 @@
 """文档索引服务。
 
-上传后的文件通过 `rag_doc_parser` 解析，再写入 Milvus / BM25 检索索引。
+上传后的文件通过 `app.knowledge.infrastructure.doc_parser` 解析，再写入检索索引。
 本文件只保留"校验输入文件 + 调用解析索引管道"这一层，不承载上传或任务编排逻辑。
 
 重构后:
@@ -40,14 +40,14 @@ STATUS_ERROR = "error"
 _STATUS_WARNING = "warning"
 FILE_NOT_FOUND_MESSAGE = "文件不存在"
 _EMPTY_DOCUMENT_MESSAGE = "文档无有效内容"
-_MISSING_DEPENDENCY_MESSAGE = "rag_doc_parser 模块未安装，文档已保存但未索引"
+_MISSING_DEPENDENCY_MESSAGE = "app.knowledge.infrastructure.doc_parser 模块未安装，文档已保存但未索引"
 
 
 def load_pipeline_dependencies() -> tuple:
     """延迟导入解析函数和检索索引器，降低模块 import 成本。"""
-    from rag_doc_parser.pipeline import parse_document
-    from rag_doc_parser.retrieval.config import RetrievalConfig
-    from rag_doc_parser.retrieval.hybrid_search import HybridSearcher
+    from app.knowledge.infrastructure.doc_parser.pipeline import parse_document
+    from app.knowledge.infrastructure.doc_parser.retrieval.config import RetrievalConfig
+    from app.knowledge.infrastructure.doc_parser.retrieval.hybrid_search import HybridSearcher
 
     return parse_document, HybridSearcher(RetrievalConfig())
 

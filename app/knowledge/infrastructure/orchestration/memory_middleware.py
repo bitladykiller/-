@@ -21,8 +21,8 @@ from app.knowledge.domain.schemas import (
     AgentMemoryState,
     MemorySearchResult,
     MessageRecord,
-    UserProfileData,
 )
+from app.user.domain.schemas import UserProfileData
 from app.shared.core.config import settings
 from app.knowledge.infrastructure.orchestration.profile_adapter import (
     load_user_profile,

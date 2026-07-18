@@ -38,7 +38,7 @@ from app.chat.infrastructure.modeling.models import (
     ReactAnswerCheckOutput,
 )
 from app.chat.infrastructure.graph.memory_context import enrich_question
-from app.chat.infrastructure.kg_sub_graph.kg_neo4j_conn import get_neo4j_graph
+from app.chat.infrastructure.kg.neo4j_conn import get_neo4j_graph
 from app.chat.infrastructure.shared.utils import question_from_state, no_neo4j_response
 from app.shared.core.config import settings
 

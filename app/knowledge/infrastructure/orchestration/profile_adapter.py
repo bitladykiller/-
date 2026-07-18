@@ -1,14 +1,14 @@
 """用户画像适配器。
 
 将 user 域的 UserProfileService 适配为 knowledge 域所需的
-ProfileReader / ProfileWriter 接口，避免 knowledge 域直接依赖 user 域。
+ProfileReader / ProfileWriter 接口。
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from app.knowledge.domain.schemas import UserProfileData
+from app.user.domain.schemas import UserProfileData
 
 
 async def load_user_profile(

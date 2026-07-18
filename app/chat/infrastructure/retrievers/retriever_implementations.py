@@ -20,11 +20,11 @@ from app.chat.infrastructure.retrievers.retriever_contracts import (
 
 
 class MilvusDocRetriever(Retriever):
-    """基于 rag_doc_parser + Milvus 的文档检索器。"""
+    """基于 doc_parser + Milvus 的文档检索器。"""
 
     def __init__(self) -> None:
-        from rag_doc_parser.retrieval.config import RetrievalConfig
-        from rag_doc_parser.retrieval.hybrid_search import HybridSearcher
+        from app.knowledge.infrastructure.doc_parser.retrieval.config import RetrievalConfig
+        from app.knowledge.infrastructure.doc_parser.retrieval.hybrid_search import HybridSearcher
 
         self._searcher = HybridSearcher(RetrievalConfig())
 
@@ -51,7 +51,7 @@ class MilvusDocRetriever(Retriever):
             )
         except ImportError:
             records = [{"message": "文档检索模块未安装。请先上传文档建立知识库。"}]
-            errors.append("rag_doc_parser 模块未安装")
+            errors.append("app.knowledge.infrastructure.doc_parser 模块未安装")
         except Exception as exc:
             records = [{"message": "文档检索暂时不可用。"}]
             errors.append(str(exc))

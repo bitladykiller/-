@@ -17,13 +17,13 @@ test-cov: ## 运行测试并生成覆盖率报告
 	pytest tests/ --cov=app --cov-report=html --cov-report=term
 
 lint: ## 代码检查
-	ruff check app/ rag_doc_parser/ shared_retrieval/ scripts/ tests/
+	ruff check app/ scripts/ tests/
 
 format: ## 格式化代码
-	ruff format app/ rag_doc_parser/ shared_retrieval/ scripts/ tests/
+	ruff format app/ scripts/ tests/
 
 type-check: ## 类型检查
-	mypy app/ rag_doc_parser/ shared_retrieval/
+	mypy app/
 
 clean: ## 清理构建产物
 	find . -type d -name "__pycache__" -exec rm -rf {} +

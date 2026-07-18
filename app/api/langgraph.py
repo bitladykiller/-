@@ -2,7 +2,7 @@
 
 这个模块只负责：
 - 接收 HTTP 表单参数
-- 把用户输入包装成 LangGraph 期望的输入状态
+- 调用 chat.application 查询门面
 - 把图执行流转换成 SSE 响应
 
 不负责：
@@ -14,29 +14,22 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import AsyncIterator, Mapping
-from typing import Any, TypeAlias
+from collections.abc import Mapping
 
-from fastapi import APIRouter, HTTPException, Form
+from fastapi import APIRouter, Form, HTTPException
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import HumanMessage
 
 from app.api.common import INTERNAL_SERVER_ERROR_DETAIL
+from app.chat.application.agent_query_service import stream_agent_query
 from app.shared.core.logger import get_logger
-from app.chat.infrastructure.graph.builder import graph
-from app.chat.infrastructure.graph.state import InputState
 
 logger = get_logger(__name__)
 
 router = APIRouter(tags=["langgraph"])
 
-_ChunkMetadata: TypeAlias = Mapping[str, Any]
-_GraphStreamChunk: TypeAlias = tuple[Any, _ChunkMetadata]
-GraphStream: TypeAlias = AsyncIterator[_GraphStreamChunk]
 _SSE_MEDIA_TYPE = "text/event-stream"
 _CONVERSATION_ID_HEADER = "X-Conversation-ID"
 _RESEARCH_PLAN_TAG = "research_plan"
-STREAM_MODE_MESSAGES = "messages"
 _SSE_DATA_PREFIX = "data: "
 
 
@@ -49,15 +42,10 @@ async def langgraph_query(
     """LangGraph Agent 查询接口。"""
     try:
         thread_id = conversation_id or str(uuid.uuid4())
-        graph_stream: GraphStream = graph.astream(
-            input=InputState(messages=[HumanMessage(content=query)]),
-            stream_mode=STREAM_MODE_MESSAGES,
-            config={
-                "configurable": {
-                    "thread_id": thread_id,
-                    "user_id": str(user_id),
-                }
-            },
+        graph_stream = stream_agent_query(
+            query=query,
+            user_id=user_id,
+            thread_id=thread_id,
         )
 
         async def response_stream():

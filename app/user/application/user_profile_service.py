@@ -17,8 +17,8 @@ from typing import Any, Protocol
 
 from app.shared.core.database import AsyncSessionLocal
 from app.shared.core.logger import get_logger
-from app.knowledge.domain.schemas import UserProfileData, UserProfilePayload
-from app.knowledge.infrastructure.profile.profile_payload_support import (
+from app.user.domain.schemas import UserProfileData, UserProfilePayload
+from app.user.domain.profile_payload_support import (
     coerce_user_profile_payload,
 )
 from app.user.infrastructure.repository.user_profile_repository import (

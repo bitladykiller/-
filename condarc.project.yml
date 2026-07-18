@@ -1,5 +1,0 @@
-channels:
-  - conda-forge
-  - nodefaults
-channel_priority: strict
-solver: classic

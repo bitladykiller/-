@@ -19,8 +19,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.knowledge.domain.schemas import UserProfileData, UserProfileFact, UserProfilePayload
-from app.knowledge.infrastructure.profile.profile_payload_support import (
+from app.user.domain.schemas import UserProfileData, UserProfileFact, UserProfilePayload
+from app.user.domain.profile_payload_support import (
     PROFILE_FIELD_NAMES,
     normalize_optional_text,
     normalize_profile_tags,

@@ -1,6 +1,7 @@
 import asyncio
 
 from app.api import langgraph as langgraph_api
+from app.chat.application import agent_query_service
 
 
 class FakeChunk:
@@ -27,18 +28,23 @@ def test_langgraph_query_builds_streaming_response(monkeypatch) -> None:
     async def scenario() -> None:
         monkeypatch.setattr(langgraph_api.uuid, "uuid4", lambda: "thread-1")
 
-        def fake_astream(*, input, stream_mode, config):
-            assert input.messages[0].content == "空调推荐"
-            assert stream_mode == langgraph_api.STREAM_MODE_MESSAGES
-            assert config == {
-                "configurable": {
-                    "thread_id": "thread-1",
-                    "user_id": "3",
-                }
-            }
+        def fake_stream_agent_query(*, query, user_id, thread_id):
+            assert query == "空调推荐"
+            assert user_id == 3
+            assert thread_id == "thread-1"
             return fake_graph_stream()
 
-        monkeypatch.setattr(langgraph_api.graph, "astream", fake_astream)
+        monkeypatch.setattr(
+            langgraph_api,
+            "stream_agent_query",
+            fake_stream_agent_query,
+        )
+        # also keep service module consistent if re-imported
+        monkeypatch.setattr(
+            agent_query_service,
+            "stream_agent_query",
+            fake_stream_agent_query,
+        )
 
         response = await langgraph_api.langgraph_query(
             query="空调推荐",

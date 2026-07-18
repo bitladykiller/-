@@ -23,7 +23,7 @@ from pymilvus import MilvusClient
 from app.shared.core.config import settings
 from app.knowledge.domain.schemas import LongTermMemory, MemorySearchResult
 from app.shared.core.logger import get_logger
-from shared_retrieval import MilvusHybridSearchCore
+from app.shared.retrieval import MilvusHybridSearchCore
 from app.knowledge.infrastructure.ltm.ltm_collection import (
     DEDUP_OUTPUT_FIELDS,
     MEMORY_OUTPUT_FIELDS,

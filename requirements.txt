@@ -1,7 +1,3 @@
-# --- 本地可编辑模块 --- #
--e ./shared_retrieval
--e ./rag_doc_parser
-
 # --- Web 框架 --- #
 fastapi>=0.110.0
 uvicorn>=0.15.0

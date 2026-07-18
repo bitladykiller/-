@@ -26,8 +26,8 @@ from app.knowledge.domain.schemas import (
     MemorySearchResult,
     MessageRecord,
     SessionSummary,
-    UserProfileData,
 )
+from app.user.domain.schemas import UserProfileData
 
 _DEFAULT_TENANT_ID = "default"
 _DEFAULT_USER_ID = "anonymous"
