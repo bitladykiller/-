@@ -68,7 +68,14 @@ async def get_user_conversations(user_id: int) -> list[ConversationSummary]:
 
 @router.delete("/conversations/{conversation_id}")
 async def delete_conversation(conversation_id: int) -> MessageResponse:
-    """删除指定会话。"""
+    """删除指定会话及其关联记忆。
+
+    会清理：
+    - MySQL 会话元信息
+    - MySQL messages 兼容数据（若存在）
+    - Redis STM 该会话短期记忆
+    - Milvus LTM 中带 session_id 的长期记忆（软删除）
+    """
     await run_api_action(
         "delete_conversation",
         conversation_service.delete_conversation(conversation_id),

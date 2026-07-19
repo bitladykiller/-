@@ -1,6 +1,6 @@
 [project]
 name = "deepseek-agent"
-version = "3.20.0"
+version = "3.21.0"
 description = "基于大语言模型的智能客服系统"
 authors = [{name = "Your Name", email = "your.email@example.com"}]
 readme = "README.md"

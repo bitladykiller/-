@@ -38,6 +38,7 @@ def test_build_memory_record_and_partial_update_record_return_stable_payloads() 
         "memory_id": "mem-1",
         "tenant_id": "tenant-1",
         "user_id": "user-1",
+        "session_id": "",
         "memory_type": "solution_note",
         "content": "建议检查网络",
         "embedding": [0.1, 0.2],

@@ -97,16 +97,29 @@ def test_get_user_conversations_returns_list(monkeypatch) -> None:
 
 
 def test_delete_conversation_succeeds(monkeypatch) -> None:
+    class _DeletedConversation:
+        user_id = 7
+
     async def fake_run(*args, **kwargs):
-        return None
+        return _DeletedConversation()
+
+    cleared: list[tuple[str, str]] = []
+
+    async def fake_clear(*, user_id: str, session_id: str) -> None:
+        cleared.append((user_id, session_id))
 
     monkeypatch.setattr(
         "app.chat.application.conversation_service.run_db_operation", fake_run
+    )
+    monkeypatch.setattr(
+        "app.chat.application.conversation_service._clear_conversation_memories",
+        fake_clear,
     )
 
     service = ConversationService()
     result = _run(service.delete_conversation(1))
     assert result is None
+    assert cleared == [("7", "1")]
 
 
 def test_update_conversation_name_succeeds(monkeypatch) -> None:

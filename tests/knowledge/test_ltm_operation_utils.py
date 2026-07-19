@@ -51,6 +51,7 @@ def test_build_new_memory_insert_record_returns_full_payload() -> None:
         "memory_id": "mem-1",
         "tenant_id": "tenant-1",
         "user_id": "user-1",
+        "session_id": "",
         "memory_type": "solution_note",
         "content": "建议重启网关",
         "embedding": [0.1, 0.2],

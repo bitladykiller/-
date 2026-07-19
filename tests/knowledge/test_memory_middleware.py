@@ -128,8 +128,8 @@ class FakeLongTermMemory:
     def __init__(self) -> None:
         self.hybrid_results: list[MemorySearchResult] = []
         self.hybrid_search_calls: list[tuple[str, str, str]] = []
-        self.deduplicate_calls: list[tuple[str, str, str, str]] = []
-        self.saved_memories: list[tuple[str, str, str, str]] = []
+        self.deduplicate_calls: list[tuple[str, str, str, str, str]] = []
+        self.saved_memories: list[tuple[str, str, str, str, str]] = []
         self.updated_memory_ids: list[str] = []
 
     async def hybrid_search(
@@ -157,8 +157,10 @@ class FakeLongTermMemory:
         user_id: str,
         memory_type: str,
         content: str,
+        *,
+        session_id: str = "",
     ) -> str:
-        self.saved_memories.append((tenant_id, user_id, memory_type, content))
+        self.saved_memories.append((tenant_id, user_id, memory_type, content, session_id))
         return "mem-saved"
 
     async def update_memory_hit_info(self, memory: LongTermMemory) -> bool:
@@ -351,7 +353,7 @@ def test_after_agent_persists_turn_extracts_memory_and_updates_hits() -> None:
         ("tenant-1", "5", "solution_note", "建议先检查电源和 WiFi")
     ]
     assert milvus_ltm.saved_memories == [
-        ("tenant-1", "5", "solution_note", "建议先检查电源和 WiFi")
+        ("tenant-1", "5", "solution_note", "建议先检查电源和 WiFi", "session-1")
     ]
     assert milvus_ltm.updated_memory_ids == ["mem-hit"]
     assert profile_writer_calls == [
@@ -398,7 +400,7 @@ def test_after_agent_logs_profile_write_failure_without_aborting(monkeypatch) ->
         ("tenant-1", "5", "solution_note", "建议先检查电源和 WiFi")
     ]
     assert milvus_ltm.saved_memories == [
-        ("tenant-1", "5", "solution_note", "建议先检查电源和 WiFi")
+        ("tenant-1", "5", "solution_note", "建议先检查电源和 WiFi", "session-1")
     ]
     assert logger.debugs == ["[memory] 用户画像更新失败(user_id=5): profile failed"]
 

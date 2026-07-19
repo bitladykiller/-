@@ -48,6 +48,7 @@ def entity_to_memory(entity: Mapping[str, Any]) -> LongTermMemory:
         "memory_id": "",
         "tenant_id": "",
         "user_id": "",
+        "session_id": "",
         "memory_type": "",
         "content": "",
         "created_at": 0,
@@ -91,12 +92,14 @@ def build_memory_record(
     content: str,
     embedding: list[float],
     now_ts: int,
+    session_id: str = "",
 ) -> MilvusRecord:
     """构造一条待写入 Milvus 的长期记忆记录。"""
     return {
         "memory_id": memory_id,
         "tenant_id": tenant_id,
         "user_id": user_id,
+        "session_id": session_id,
         "memory_type": memory_type,
         "content": content,
         "embedding": embedding,
@@ -168,6 +171,7 @@ def build_new_memory_insert_record(
     embedding: list[float],
     now_ts: int,
     memory_id: str | None = None,
+    session_id: str = "",
 ) -> tuple[str, MilvusRecord]:
     """构造一条新长期记忆的写入计划。"""
     resolved_memory_id = memory_id or str(uuid.uuid4())
@@ -179,6 +183,7 @@ def build_new_memory_insert_record(
         content=content,
         embedding=embedding,
         now_ts=now_ts,
+        session_id=session_id,
     )
     return resolved_memory_id, record
 
@@ -287,6 +292,7 @@ async def save_memory_record(
     insert_records: Callable[[Any, str, Sequence[MilvusRecord]], None],
     milvus_client: Any,
     collection_name: str,
+    session_id: str = "",
 ) -> str | None:
     """执行长期记忆保存流程。"""
     try:
@@ -305,6 +311,7 @@ async def save_memory_record(
             content=content,
             embedding=embedding,
             now_ts=now_ts(),
+            session_id=session_id,
         )
         insert_records(milvus_client, collection_name, [memory_data])
         return memory_id
@@ -499,6 +506,8 @@ class SimpleLongTermMemory:
         user_id: str,
         memory_type: str,
         content: str,
+        *,
+        session_id: str = "",
     ) -> str | None:
         """
         保存长期记忆。
@@ -508,6 +517,7 @@ class SimpleLongTermMemory:
         - user_id：用户 ID
         - memory_type：记忆类型
         - content：记忆内容
+        - session_id：关联会话 ID（可选，用于会话级清理）
 
         返回：
         - memory_id：保存成功返回记忆 ID，失败返回 None
@@ -524,7 +534,62 @@ class SimpleLongTermMemory:
             insert_records=insert_records,
             milvus_client=self.milvus_client,
             collection_name=self.collection_name,
+            session_id=session_id,
         )
+
+    async def soft_delete_session_memories(
+        self,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+    ) -> int:
+        """软删除指定会话关联的长期记忆。
+
+        依赖动态字段 session_id（enable_dynamic_field=True）。
+        历史无 session_id 的记录不会被匹配，避免误删跨会话记忆。
+        """
+        if not session_id:
+            return 0
+        try:
+            filter_expr = (
+                f'tenant_id == "{tenant_id}" and '
+                f'user_id == "{user_id}" and '
+                f'session_id == "{session_id}" and '
+                "is_deleted == false"
+            )
+            rows = self.milvus_client.query(
+                collection_name=self.collection_name,
+                filter=filter_expr,
+                output_fields=["memory_id"],
+                limit=16384,
+            )
+            if not rows:
+                return 0
+
+            now_ts = self._now_ts()
+            records = [
+                build_partial_update_record(
+                    str(row["memory_id"]),
+                    updated_at=now_ts,
+                    is_deleted=True,
+                )
+                for row in rows
+                if isinstance(row, dict) and row.get("memory_id")
+            ]
+            if not records:
+                return 0
+            upsert_records(self.milvus_client, self.collection_name, records)
+            return len(records)
+        except Exception as exc:
+            logger.error(
+                "soft_delete_session_memories 异常 | tenant=%s user=%s session=%s | %s",
+                tenant_id,
+                user_id,
+                session_id,
+                exc,
+                exc_info=True,
+            )
+            return 0
 
     async def update_memory_hit_info(self, memory: LongTermMemory) -> bool:
         """

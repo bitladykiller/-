@@ -521,3 +521,33 @@ class RedisShortTermMemory:
             )
         except Exception as exc:
             logger.debug(f"[stm] 刷新 TTL 失败: {exc}")
+
+    async def clear_session(
+        self,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+    ) -> int:
+        """删除指定 session 的全部短期记忆 key。
+
+        会清理 messages / summary / meta / lock，返回实际删除的 key 数量。
+        """
+        try:
+            keys = self._build_session_keys(tenant_id, user_id, session_id)
+            deleted = await self.redis.delete(
+                keys["messages"],
+                keys["summary"],
+                keys["meta"],
+                keys["lock"],
+            )
+            return int(deleted or 0)
+        except Exception as exc:
+            logger.warning(
+                "[stm] clear_session 失败 | tenant=%s user=%s session=%s | %s",
+                tenant_id,
+                user_id,
+                session_id,
+                exc,
+                exc_info=True,
+            )
+            return 0

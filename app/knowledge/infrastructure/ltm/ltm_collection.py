@@ -25,6 +25,7 @@ MEMORY_OUTPUT_FIELDS = [
     "memory_id",
     "tenant_id",
     "user_id",
+    "session_id",
     "memory_type",
     "content",
     "created_at",

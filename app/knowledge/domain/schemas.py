@@ -86,6 +86,11 @@ class LongTermMemory(BaseModel):
 
     user_id: str = Field(..., description="用户 ID")
 
+    session_id: str = Field(
+        default="",
+        description="关联会话 ID；删除会话时可按 session 清理 LTM",
+    )
+
     memory_type: Literal[
         "issue_history",
         "solution_note"

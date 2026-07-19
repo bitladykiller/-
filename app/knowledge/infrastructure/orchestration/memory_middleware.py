@@ -231,6 +231,7 @@ class MemoryMiddleware:
                         user_id,
                         memory.memory_type,
                         memory.content,
+                        session_id=session_id,
                     )
 
                 uid = int(user_id) if user_id and user_id.isdigit() else 0

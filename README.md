@@ -36,6 +36,10 @@
 - MySQL `conversations` 表只存会话元信息（标题、时间、类型）
 - **消息不存 MySQL**，只保留在 Redis STM（ZSET 滑动窗口，24h TTL）
 - 会话创建 / 列表 / 删除 / 改名
+- **删除会话会联动清理记忆**：
+  - MySQL：删除 `conversations` 元信息，并兼容清理历史 `messages` 表数据
+  - Redis STM：删除该 `session_id` 下 messages/summary/meta/lock
+  - Milvus LTM：软删除带 `session_id` 的长期记忆（`is_deleted=true`）
 
 ## 技术栈
 

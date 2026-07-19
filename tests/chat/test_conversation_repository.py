@@ -59,6 +59,7 @@ class FakeSession:
         self.added = []
         self.deleted = []
         self.refreshed = []
+        self.executed = []
         self._execute_results: list = []
         self._execute_results_iter = 0
 
@@ -68,6 +69,9 @@ class FakeSession:
 
     async def commit(self):
         self.committed = True
+
+    async def rollback(self):
+        return None
 
     def add(self, obj):
         self.added.append(obj)
@@ -79,7 +83,8 @@ class FakeSession:
         obj.id = 101
         self.refreshed.append(obj)
 
-    async def execute(self, stmt):
+    async def execute(self, stmt, params=None):
+        self.executed.append((stmt, params))
         if self._execute_results_iter < len(self._execute_results):
             result = self._execute_results[self._execute_results_iter]
             self._execute_results_iter += 1
@@ -150,10 +155,12 @@ def test_delete_removes_and_commits() -> None:
     ])
     repo = ConversationRepository(session)
 
-    _run(repo.delete(conversation_id=10))
+    deleted = _run(repo.delete(conversation_id=10))
 
+    assert deleted is conv
     assert session.committed is True
     assert len(session.deleted) == 1
+    assert len(session.executed) >= 2
 
 
 def test_delete_raises_value_error_when_not_found() -> None:

@@ -5,6 +5,21 @@
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v3.21.0] - 2026-07-19
+### 改进
+- `DELETE /api/conversations/{conversation_id}` 删除会话时联动清理记忆：
+  - Redis STM：清空该会话 messages/summary/meta/lock
+  - Milvus LTM：按 `session_id` 软删除长期记忆
+  - MySQL：删除会话元信息，并兼容清理历史 `messages` 表
+- LTM 写入新增 `session_id` 字段，便于会话级清理
+
+### 涉及文件
+- `app/chat/application/conversation_service.py`
+- `app/chat/infrastructure/repository/conversation_repository.py`
+- `app/knowledge/infrastructure/stm/redis_short_term_memory.py`
+- `app/knowledge/infrastructure/ltm/simple_long_term_memory.py`
+- `app/knowledge/domain/schemas.py`
+
 ## [v3.20.0] - 2026-06-13
 ### 新增
 - 完善异常日志记录，所有异常捕获都有 debug 级别日志
