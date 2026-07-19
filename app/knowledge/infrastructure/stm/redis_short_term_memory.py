@@ -17,25 +17,23 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeAlias, TypeVar
 
-from typing_extensions import TypedDict
-
 import redis.asyncio as redis
-from pydantic import BaseModel
-
-from app.shared.core.json_utils import extract_first_json_object
-from app.shared.core.logger import get_logger
-from app.shared.core.config import settings
-from app.shared.core.app_config import (
-    STMConfig,
-    STMCompressionConfig,
-    STMRedisConfig,
-    STMWindowConfig,
-)
 from app.knowledge.domain.schemas import MessageRecord, SessionMeta, SessionSummary
 from app.knowledge.infrastructure.stm.stm_compressor import (
     compress_message,
     decompress_message,
 )
+from app.shared.core.app_config import (
+    STMCompressionConfig,
+    STMConfig,
+    STMRedisConfig,
+    STMWindowConfig,
+)
+from app.shared.core.config import settings
+from app.shared.core.json_utils import extract_first_json_object
+from app.shared.core.logger import get_logger
+from pydantic import BaseModel
+from typing_extensions import TypedDict
 
 logger = get_logger(__name__)
 COMPRESS_FETCH_LIMIT = 100

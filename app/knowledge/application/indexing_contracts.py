@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Protocol, TypeAlias
+from typing import TypeAlias
 
 from typing_extensions import TypedDict
 

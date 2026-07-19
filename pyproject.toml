@@ -65,10 +65,15 @@ extend-exclude = ["uploads", "app/static/dist"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "C", "B", "UP"]
-ignore = ["E501", "B008"]
+# E501: Cypher/SQL 长字符串不适合强制折行
+# B008: FastAPI Depends 常见写法
+# C901: 复杂业务函数（workflow/react/parser）暂不机械拆分
+ignore = ["E501", "B008", "C901"]
 
 [tool.mypy]
 python_version = "3.10"
+explicit_package_bases = true
+mypy_path = "."
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
@@ -78,6 +83,7 @@ strict_optional = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 show_error_codes = true
+namespace_packages = true
 
 [[tool.mypy.overrides]]
 module = [
@@ -85,6 +91,9 @@ module = [
     "langgraph.*",
     "pymilvus.*",
     "neo4j.*",
+    "sklearn.*",
+    "msgpack.*",
+    "pyzstd.*",
 ]
 ignore_missing_imports = true
 

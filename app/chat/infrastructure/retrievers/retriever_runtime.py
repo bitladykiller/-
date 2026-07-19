@@ -10,8 +10,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.chat.infrastructure.retrievers.retriever_contracts import KG_RETRIEVER_NAME, RAG_RETRIEVER_NAME
 from app.chat.infrastructure.kg.neo4j_conn import _get_neo4j_graph
+from app.chat.infrastructure.retrievers.retriever_contracts import (
+    KG_RETRIEVER_NAME,
+    RAG_RETRIEVER_NAME,
+)
 
 
 async def get_retriever(name: str) -> Any:
@@ -72,7 +75,9 @@ async def get_retriever(name: str) -> Any:
                     registry.register(KG_RETRIEVER_NAME, KnowledgeGraphRetriever(container._t2c_agent))
 
             if RAG_RETRIEVER_NAME not in registry:
-                from app.chat.infrastructure.retrievers.retriever_implementations import MilvusDocRetriever
+                from app.chat.infrastructure.retrievers.retriever_implementations import (
+                    MilvusDocRetriever,
+                )
 
                 registry.register(RAG_RETRIEVER_NAME, MilvusDocRetriever())
 

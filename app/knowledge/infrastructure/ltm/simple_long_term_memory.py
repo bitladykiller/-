@@ -14,16 +14,9 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import Any, TypeAlias
 
-from typing_extensions import TypedDict
-
-from pymilvus import MilvusClient
-
-from app.shared.core.config import settings
 from app.knowledge.domain.schemas import LongTermMemory, MemorySearchResult
-from app.shared.core.logger import get_logger
-from app.shared.retrieval import MilvusHybridSearchCore
 from app.knowledge.infrastructure.ltm.ltm_collection import (
     DEDUP_OUTPUT_FIELDS,
     MEMORY_OUTPUT_FIELDS,
@@ -33,6 +26,11 @@ from app.knowledge.infrastructure.ltm.ltm_collection import (
     search_records,
     upsert_records,
 )
+from app.shared.core.config import settings
+from app.shared.core.logger import get_logger
+from app.shared.retrieval import MilvusHybridSearchCore
+from pymilvus import MilvusClient
+from typing_extensions import TypedDict
 
 logger = get_logger(__name__)
 SEARCH_LOG_PREVIEW_LIMIT = 100

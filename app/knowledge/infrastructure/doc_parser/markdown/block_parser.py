@@ -8,7 +8,6 @@ RAG 文档解析器 — Markdown 内容块解析器。
 from __future__ import annotations
 
 import re
-from typing import List
 
 from app.knowledge.infrastructure.doc_parser.markdown.table_utils import is_markdown_table
 from app.knowledge.infrastructure.doc_parser.models import MarkdownBlock, MarkdownSection, new_uuid
@@ -38,7 +37,7 @@ class BlockParser:
     输出的 MarkdownBlock 继承 section 的标题信息。
     """
 
-    def parse(self, section: MarkdownSection) -> List[MarkdownBlock]:
+    def parse(self, section: MarkdownSection) -> list[MarkdownBlock]:
         """将 section 的 content 拆分为 MarkdownBlock 列表。
 
         Args:
@@ -52,7 +51,7 @@ class BlockParser:
             return []
 
         lines = content.split("\n")
-        blocks: List[MarkdownBlock] = []
+        blocks: list[MarkdownBlock] = []
 
         # 状态机
         i = 0
@@ -123,8 +122,8 @@ class BlockParser:
         return blocks
 
     def _extract_code_block(
-        self, lines: List[str], start: int
-    ) -> tuple[List[str], int]:
+        self, lines: list[str], start: int
+    ) -> tuple[list[str], int]:
         """提取代码块内容（不含开始/结束标记行）。
 
         Args:
@@ -134,7 +133,7 @@ class BlockParser:
         Returns:
             (代码行列表, 结束行索引)。
         """
-        code_lines: List[str] = []
+        code_lines: list[str] = []
         i = start + 1  # 跳过开始标记
 
         while i < len(lines):
@@ -147,8 +146,8 @@ class BlockParser:
         return code_lines, len(lines) - 1
 
     def _extract_table(
-        self, lines: List[str], start: int
-    ) -> tuple[List[str], int]:
+        self, lines: list[str], start: int
+    ) -> tuple[list[str], int]:
         """提取表格行。
 
         Args:
@@ -158,7 +157,7 @@ class BlockParser:
         Returns:
             (表格行列表, 结束行索引)。
         """
-        table_lines: List[str] = []
+        table_lines: list[str] = []
         i = start
 
         while i < len(lines):
@@ -171,8 +170,8 @@ class BlockParser:
         return table_lines, i - 1
 
     def _extract_image_caption(
-        self, lines: List[str], start: int
-    ) -> tuple[List[str], int]:
+        self, lines: list[str], start: int
+    ) -> tuple[list[str], int]:
         """提取图片说明行。
 
         图片说明通常是连续的以 ** 开头的行。
@@ -184,7 +183,7 @@ class BlockParser:
         Returns:
             (图片说明行列表, 结束行索引)。
         """
-        caption_lines: List[str] = []
+        caption_lines: list[str] = []
         i = start
 
         inside_caption_block = False
@@ -225,8 +224,8 @@ class BlockParser:
         return caption_lines, i - 1
 
     def _extract_text(
-        self, lines: List[str], start: int
-    ) -> tuple[List[str], int]:
+        self, lines: list[str], start: int
+    ) -> tuple[list[str], int]:
         """提取连续的普通文本行。
 
         遇到代码块标记、表格行、图片说明行时停止。
@@ -238,7 +237,7 @@ class BlockParser:
         Returns:
             (文本行列表, 结束行索引)。
         """
-        text_lines: List[str] = []
+        text_lines: list[str] = []
         i = start
 
         while i < len(lines):

@@ -12,7 +12,7 @@ returned entities into their own business objects.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pymilvus import AnnSearchRequest, MilvusClient, RRFRanker
 
@@ -39,7 +39,7 @@ class MilvusHybridSearchCore:
         dense_field: str = "embedding",
         sparse_field: str = "sparse_vector",
         dense_metric_type: str = "COSINE",
-        dense_search_params: Optional[Dict[str, Any]] = None,
+        dense_search_params: dict[str, Any] | None = None,
         hybrid_rrf_k: int = 60,
     ) -> None:
         self.milvus_client = milvus_client
@@ -51,7 +51,7 @@ class MilvusHybridSearchCore:
         self.dense_search_params = dense_search_params or {"nprobe": 16}
         self.hybrid_rrf_k = hybrid_rrf_k
 
-    async def embed_query(self, text: str) -> Optional[List[float]]:
+    async def embed_query(self, text: str) -> list[float] | None:
         """Generate a dense embedding for a query string."""
         try:
             return self.embedding_model.embed_query(text)
@@ -64,7 +64,7 @@ class MilvusHybridSearchCore:
             )
             return None
 
-    def encode_query_sparse(self, query: str) -> Dict[int, float]:
+    def encode_query_sparse(self, query: str) -> dict[int, float]:
         """Encode a query into the sparse BM25 vector format expected by Milvus."""
         try:
             from pymilvus.model.sparse.bm25.tokenizers import build_default_analyzer
@@ -72,7 +72,7 @@ class MilvusHybridSearchCore:
             analyzer = build_default_analyzer(language="zh")
             tokens = analyzer(query)
 
-            sparse: Dict[int, float] = {}
+            sparse: dict[int, float] = {}
             for token in tokens:
                 token_id = abs(hash(token)) % (2**24)
                 sparse[token_id] = sparse.get(token_id, 0.0) + 1.0
@@ -94,10 +94,10 @@ class MilvusHybridSearchCore:
         query: str,
         *,
         limit: int,
-        filter_expr: Optional[str] = None,
-        output_fields: Optional[List[str]] = None,
-        score_threshold: Optional[float] = None,
-    ) -> List[Dict[str, Any]]:
+        filter_expr: str | None = None,
+        output_fields: list[str] | None = None,
+        score_threshold: float | None = None,
+    ) -> list[dict[str, Any]]:
         """Run dense-only Milvus search and normalize hits."""
         query_vector = await self.embed_query(query)
         if not query_vector:
@@ -117,11 +117,11 @@ class MilvusHybridSearchCore:
         query: str,
         *,
         limit: int,
-        filter_expr: Optional[str] = None,
-        output_fields: Optional[List[str]] = None,
-        score_threshold: Optional[float] = None,
-        search_limit: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+        filter_expr: str | None = None,
+        output_fields: list[str] | None = None,
+        score_threshold: float | None = None,
+        search_limit: int | None = None,
+    ) -> list[dict[str, Any]]:
         """Run native Milvus hybrid search with dense + BM25 sparse retrieval.
 
         Falls back to dense-only search when sparse encoding or hybrid search is
@@ -180,13 +180,13 @@ class MilvusHybridSearchCore:
         self,
         raw_results: Any,
         *,
-        score_threshold: Optional[float] = None,
-    ) -> List[Dict[str, Any]]:
+        score_threshold: float | None = None,
+    ) -> list[dict[str, Any]]:
         """Normalize Milvus hits into {'score': float, 'entity': dict}."""
         if not raw_results or not raw_results[0]:
             return []
 
-        normalized: List[Dict[str, Any]] = []
+        normalized: list[dict[str, Any]] = []
         for item in raw_results[0]:
             score = float(item.get("distance", 0.0))
             if score_threshold is not None and score < score_threshold:

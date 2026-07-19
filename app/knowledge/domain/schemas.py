@@ -14,10 +14,8 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
-
 from app.user.domain.schemas import UserProfileData
-
+from pydantic import BaseModel, Field
 
 
 class MessageRecord(BaseModel):

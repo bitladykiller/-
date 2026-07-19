@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.knowledge.infrastructure.doc_parser.retrieval.config import RetrievalConfig
 from app.knowledge.infrastructure.doc_parser.retrieval.milvus_store import MilvusStore
@@ -30,7 +30,7 @@ class HybridSearcher:
 
     def __init__(
         self,
-        config: Optional[RetrievalConfig] = None,
+        config: RetrievalConfig | None = None,
         embedding_model=None,
     ):
         self.config = config or RetrievalConfig()
@@ -41,7 +41,7 @@ class HybridSearcher:
     # 索引
     # ------------------------------------------------------------------ #
 
-    async def index(self, chunks: List[Any]) -> int:
+    async def index(self, chunks: list[Any]) -> int:
         """将 DocumentChunk 列表写入 Milvus 检索集合。
 
         Args:
@@ -63,9 +63,9 @@ class HybridSearcher:
     async def search(
         self,
         query: str,
-        top_k: Optional[int] = None,
-        filter_expr: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        top_k: int | None = None,
+        filter_expr: str | None = None,
+    ) -> list[dict[str, Any]]:
         """混合检索。
 
         流程:

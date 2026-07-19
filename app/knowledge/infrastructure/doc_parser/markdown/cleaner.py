@@ -12,7 +12,6 @@ RAG 文档解析器 — Markdown 清洗器。
 from __future__ import annotations
 
 import re
-from typing import List
 
 
 class MarkdownCleaner:
@@ -59,7 +58,7 @@ class MarkdownCleaner:
         in_code_block = self._mark_code_blocks(lines)
 
         # 4. 逐行处理
-        cleaned_lines: List[str] = []
+        cleaned_lines: list[str] = []
         for i, line in enumerate(lines):
             # 在代码块内的行不做任何修改
             if in_code_block[i]:
@@ -81,7 +80,7 @@ class MarkdownCleaner:
         return result
 
     @staticmethod
-    def _mark_code_blocks(lines: List[str]) -> List[bool]:
+    def _mark_code_blocks(lines: list[str]) -> list[bool]:
         """标记每一行是否在代码块（``` ... ```）内部。
 
         Args:
@@ -121,7 +120,7 @@ class MarkdownCleaner:
         return False
 
     @staticmethod
-    def _collapse_blank_lines(lines: List[str]) -> str:
+    def _collapse_blank_lines(lines: list[str]) -> str:
         """合并连续 3 个以上空行为 2 个空行。
 
         Args:
@@ -130,7 +129,7 @@ class MarkdownCleaner:
         Returns:
             合并空行后的完整文本。
         """
-        result_parts: List[str] = []
+        result_parts: list[str] = []
         blank_count = 0
 
         for line in lines:

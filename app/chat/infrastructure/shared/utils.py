@@ -10,9 +10,8 @@
   domain 层不应反向依赖 infrastructure 层。
 """
 
-from langchain_core.messages import AIMessage
-
 from app.chat.infrastructure.graph.state import AgentState
+from langchain_core.messages import AIMessage
 
 
 def question_from_state(state: AgentState) -> str:

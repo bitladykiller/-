@@ -16,21 +16,17 @@ from __future__ import annotations
 
 from typing import Literal
 
-from langchain_core.messages import AIMessage, BaseMessage
-from langchain_core.runnables import RunnableConfig
-
-from app.chat.infrastructure.shared.utils import question_from_state
 from app.chat.infrastructure.graph.execution_utils import (
     ainvoke_structured_question_output,
+)
+from app.chat.infrastructure.graph.memory_context import (
+    build_memory_context,
+    load_memory_state,
 )
 from app.chat.infrastructure.graph.message_utils import (
     build_safe_messages,
 )
 from app.chat.infrastructure.graph.state import AgentState, RetrievalPlan, Router
-from app.chat.infrastructure.graph.memory_context import (
-    build_memory_context,
-    load_memory_state,
-)
 from app.chat.infrastructure.modeling.models import (
     GuardrailsDecision,
     RetrievalPlanOutput,
@@ -45,7 +41,10 @@ from app.chat.infrastructure.modeling.prompts import (
     RETRIEVAL_PLAN_ROUTER_PROMPT,
     ROUTER_SYSTEM_PROMPT,
 )
+from app.chat.infrastructure.shared.utils import question_from_state
 from app.shared.security import wrap_user_message
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.runnables import RunnableConfig
 
 GeneralRouteName = Literal["respond_to_general_query", "retrieval_plan_router"]
 GuardrailsEdgeName = Literal["retrieval_plan_route", "after_response"]

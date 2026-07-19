@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -61,7 +60,7 @@ class AppContainer:
     _closed: bool = field(default=False, init=False)
 
     @classmethod
-    async def build(cls, config: Any) -> "AppContainer":
+    async def build(cls, config: Any) -> AppContainer:
         """按依赖顺序依次初始化所有组件。
 
         初始化顺序：
@@ -84,7 +83,7 @@ class AppContainer:
             raise
 
     async def _init_task_manager(self, config: Any) -> None:
-        from app.shared.task_queue import create_redis_client, _TaskManager
+        from app.shared.task_queue import _TaskManager, create_redis_client
 
         self.task_manager = _TaskManager(create_redis_client(config.REDIS_URL))
 
@@ -183,14 +182,13 @@ def _create_memory_middleware() -> Any:
     使用统一的 create_llm_for_role 工厂函数。
     """
     import redis.asyncio as redis
-    from pymilvus import MilvusClient
-
+    from app.chat.infrastructure.modeling.models import create_llm_for_role
     from app.knowledge.infrastructure.ltm.simple_long_term_memory import SimpleLongTermMemory
     from app.knowledge.infrastructure.orchestration.memory_extractor import MemoryExtractor
     from app.knowledge.infrastructure.orchestration.memory_middleware import MemoryMiddleware
     from app.knowledge.infrastructure.stm.redis_short_term_memory import RedisShortTermMemory
-    from app.chat.infrastructure.modeling.models import create_llm_for_role
     from app.shared.core.config import settings
+    from pymilvus import MilvusClient
 
     if settings.EMBEDDING_TYPE == "ollama":
         from langchain_ollama import OllamaEmbeddings

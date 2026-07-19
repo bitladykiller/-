@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-from langchain_core.runnables import RunnableConfig
-
 from app.chat.infrastructure.graph.state import AgentState
 from app.knowledge.domain.prompt_builder import (
     build_memory_injection_prompt,
@@ -27,7 +25,11 @@ from app.knowledge.domain.schemas import (
     MessageRecord,
     SessionSummary,
 )
+from app.shared.core.logger import get_logger
 from app.user.domain.schemas import UserProfileData
+from langchain_core.runnables import RunnableConfig
+
+logger = get_logger(__name__)
 
 _DEFAULT_TENANT_ID = "default"
 _DEFAULT_USER_ID = "anonymous"
@@ -163,8 +165,9 @@ async def load_memory_state(
     if middleware is None:
         return None
 
+    # 先解析作用域，避免 except 分支引用未绑定变量
+    tenant_id, user_id, session_id = configurable_scope(config)
     try:
-        tenant_id, user_id, session_id = configurable_scope(config)
         memory_state = await middleware.before_agent(
             tenant_id=tenant_id,
             user_id=user_id,
@@ -172,6 +175,7 @@ async def load_memory_state(
             user_input=user_input,
         )
     except Exception:
+        # 记忆加载失败时降级为无记忆，保证主对话链路可继续
         logger.warning(
             "[memory] 记忆加载失败，将以无记忆状态运行 | tenant=%s user=%s session=%s",
             tenant_id,

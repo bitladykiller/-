@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any
 
 logger = logging.getLogger(__name__)
 class Reranker:
@@ -45,10 +45,10 @@ class Reranker:
     def rerank(
         self,
         query: str,
-        candidates: List[Dict[str, Any]],
+        candidates: list[dict[str, Any]],
         top_k: int = 5,
         text_field: str = "raw_text",
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """对候选结果重排序。
 
         Args:

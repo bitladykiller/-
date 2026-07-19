@@ -11,10 +11,9 @@ import logging
 import time
 from typing import Any
 
-from langchain_neo4j import Neo4jGraph
-
 from app.shared.core.config import settings
 from app.shared.core.logger import get_logger
+from langchain_neo4j import Neo4jGraph
 
 logging.getLogger("neo4j").setLevel(logging.ERROR)
 logging.getLogger("langchain_neo4j").setLevel(logging.ERROR)

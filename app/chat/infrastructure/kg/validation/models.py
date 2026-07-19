@@ -3,7 +3,7 @@ This code is based on content found in the LangGraph documentation: https://pyth
 """
 
 from builtins import property as builtin_property
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -29,10 +29,10 @@ class ValidateCypherOutput(BaseModel):
     including any errors and applied filters.
     """
 
-    errors: Optional[List[str]] = Field(
+    errors: list[str] | None = Field(
         description="A list of syntax or semantical errors in the Cypher statement. Always explain the discrepancy between schema and Cypher statement"
     )
-    filters: Optional[List[Property]] = Field(
+    filters: list[Property] | None = Field(
         description="A list of property-based filters applied in the Cypher statement."
     )
 
@@ -48,10 +48,10 @@ class BaseNeo4jStructuredSchemaProperty(BaseModel):
 
 
 class _Neo4jStructuredSchemaPropertyString(BaseNeo4jStructuredSchemaProperty):
-    values: List[str] = Field(
+    values: list[str] = Field(
         description="A list of example values directly from the database."
     )
-    distinct_count: Optional[int] = Field(
+    distinct_count: int | None = Field(
         description="The number of distinct values in the database.", default=None
     )
 
@@ -64,11 +64,11 @@ class _Neo4jStructuredSchemaPropertyString(BaseNeo4jStructuredSchemaProperty):
             return False
 
     @field_validator("type")
-    def validate_prop_type(cls, v: str) -> str:
+    def validate_prop_type(cls, v: str) -> str:  # noqa: N805
         assert v == "STRING", "Property type must be 'STRING'."
         return v
 
-    def get_property_values_enum(self) -> Set[str]:
+    def get_property_values_enum(self) -> set[str]:
         """
         A set with the values of the property.
         If `distinct_count` != the number of items in `values` then an empty set will be returned.
@@ -90,12 +90,12 @@ class Neo4jStructuredSchemaPropertyNumber(BaseNeo4jStructuredSchemaProperty):
         description="The min value of the number.", default=float("-inf")
     )
     max: float = Field(description="The max value of the number.", default=float("inf"))
-    distinct_count: Optional[int] = Field(
+    distinct_count: int | None = Field(
         description="The number of distinct values in the database.", default=None
     )
 
     @field_validator("type")
-    def validate_prop_type(cls, v: str) -> str:
+    def validate_prop_type(cls, v: str) -> str:  # noqa: N805
         assert v in {"INTEGER", "FLOAT"}, "Property type must be 'INTEGER' or 'FLOAT'."
         return v
 
@@ -105,7 +105,7 @@ class Neo4jStructuredSchemaPropertyList(BaseNeo4jStructuredSchemaProperty):
     max_size: int = Field(description="The maximum size of the list.")
 
     @field_validator("type")
-    def validate_prop_type(cls, v: str) -> str:
+    def validate_prop_type(cls, v: str) -> str:  # noqa: N805
         assert v == "LIST", "Property type must be 'LIST'."
         return v
 
@@ -115,7 +115,7 @@ class Neo4jStructuredSchemaPropertyDateTime(BaseNeo4jStructuredSchemaProperty):
     max: str = Field(description="The most recent date.")
 
     @field_validator("type")
-    def validate_prop_type(cls, v: str) -> str:
+    def validate_prop_type(cls, v: str) -> str:  # noqa: N805
         assert v == "DATE_TIME", "Property type must be 'DATE_TIME'."
         return v
 
@@ -132,9 +132,9 @@ class Neo4jStructuredSchema(BaseModel):
     The output from `Neo4jGraph(enhanced_schema=True).structured_schema` found in the `langchain_neo4j` Python library should map to this object.
     """
 
-    node_props: Dict[
+    node_props: dict[
         str,
-        List[
+        list[
             _Neo4jStructuredSchemaPropertyString
             | Neo4jStructuredSchemaPropertyNumber
             | Neo4jStructuredSchemaPropertyList
@@ -143,9 +143,9 @@ class Neo4jStructuredSchema(BaseModel):
     ] = Field(
         description="A Python Dictionary with node labels as keys and a list of properties as values."
     )
-    rel_props: Dict[
+    rel_props: dict[
         str,
-        List[
+        list[
             _Neo4jStructuredSchemaPropertyString
             | Neo4jStructuredSchemaPropertyNumber
             | Neo4jStructuredSchemaPropertyList
@@ -154,14 +154,14 @@ class Neo4jStructuredSchema(BaseModel):
     ] = Field(
         description="A Python Dictionary with relationship types as keys and a list of properties as values."
     )
-    relationships: List[_Neo4jStructuredSchemaRelationship] = Field(
+    relationships: list[_Neo4jStructuredSchemaRelationship] = Field(
         description="A list of relationships."
     )
-    metadata: Dict[str, Any] = Field(
-        description="Metadata about the database.", default=dict()
+    metadata: dict[str, Any] = Field(
+        description="Metadata about the database.", default_factory=dict
     )
 
-    def get_node_properties_enum(self) -> Dict[str, Set[str]]:
+    def get_node_properties_enum(self) -> dict[str, set[str]]:
         """
         A Python dictionary with node labels as keys and enums of property names as values.
 
@@ -175,7 +175,7 @@ class Neo4jStructuredSchema(BaseModel):
             for label, prop_list in self.node_props.items()
         }
 
-    def get_relationship_properties_enum(self) -> Dict[str, Set[str]]:
+    def get_relationship_properties_enum(self) -> dict[str, set[str]]:
         """
         A Python dictionary with relationship types as keys and enums of property names as values.
 
@@ -189,7 +189,7 @@ class Neo4jStructuredSchema(BaseModel):
             for rel_type, prop_list in self.rel_props.items()
         }
 
-    def get_node_property_values_enum(self) -> Dict[str, Dict[str, Set[str]]]:
+    def get_node_property_values_enum(self) -> dict[str, dict[str, set[str]]]:
         """
         A Python dictionary with node labels as parent keys, property names as child keys and a set of possible property values as the values.
 
@@ -214,7 +214,7 @@ class Neo4jStructuredSchema(BaseModel):
             for owner, prop_list in self.node_props.items()
         }
 
-    def get_relationship_property_values_enum(self) -> Dict[str, Dict[str, Set[str]]]:
+    def get_relationship_property_values_enum(self) -> dict[str, dict[str, set[str]]]:
         """
         A Python dictionary with relationship types as parent keys, property names as child keys and a set of possible property values as the values.
 
@@ -242,7 +242,7 @@ class Neo4jStructuredSchema(BaseModel):
 
     def get_node_property_values_range(
         self,
-    ) -> Dict[str, Dict[str, Neo4jStructuredSchemaPropertyNumber]]:
+    ) -> dict[str, dict[str, Neo4jStructuredSchemaPropertyNumber]]:
         """
         A Python dictionary with node labels as parent keys, property names as child keys and `Neo4jStructuredSchemaPropertyNumber` objects as the values.
 
@@ -269,7 +269,7 @@ class Neo4jStructuredSchema(BaseModel):
 
     def get_relationship_property_values_range(
         self,
-    ) -> Dict[str, Dict[str, Neo4jStructuredSchemaPropertyNumber]]:
+    ) -> dict[str, dict[str, Neo4jStructuredSchemaPropertyNumber]]:
         """
         A Python dictionary with relationship types as parent keys, property names as child keys and `Neo4jStructuredSchemaPropertyNumber` objects as the values.
 
@@ -296,7 +296,7 @@ class Neo4jStructuredSchema(BaseModel):
 
 
 class CypherValidationTask(BaseModel):
-    labels_or_types: Optional[str] = Field(
+    labels_or_types: str | None = Field(
         description="The extracted node labels or relationship types pattern. May be None if only a variable is provided.",
         examples=["NodeA", "NodeA&!NodeB", "REL_A|REL_B"],
         default=None,
@@ -308,17 +308,17 @@ class CypherValidationTask(BaseModel):
     property_value: Any = Field(
         description="The property value declared in the extracted node or relationship instance."
     )
-    property_type: Optional[str] = Field(
+    property_type: str | None = Field(
         description="The property type found in the schema. This may be assigned in a later step and is allowed to be None.",
         default=None,
     )
 
     @property
-    def parsed_labels_or_types(self) -> List[str]:
+    def parsed_labels_or_types(self) -> list[str]:
         """Parse labels or types in cases with & / | and !."""
 
         if self.labels_or_types is None:
-            return list()
+            return []
 
         if "&" in self.labels_or_types:
             parsed = [lbl.strip() for lbl in self.labels_or_types.split("&")]

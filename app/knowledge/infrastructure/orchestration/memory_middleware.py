@@ -14,28 +14,27 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 import redis.asyncio as aioredis
-
-from app.shared.core.logger import get_logger
 from app.knowledge.domain.prompt_builder import build_compression_prompt
 from app.knowledge.domain.schemas import (
     AgentMemoryState,
     MemorySearchResult,
     MessageRecord,
 )
-from app.user.domain.schemas import UserProfileData
-from app.shared.core.config import settings
 from app.knowledge.infrastructure.orchestration.profile_adapter import (
     load_user_profile,
     save_user_profile,
 )
+from app.shared.core.config import settings
+from app.shared.core.logger import get_logger
+from app.user.domain.schemas import UserProfileData
 
 if TYPE_CHECKING:
+    from app.knowledge.infrastructure.ltm.simple_long_term_memory import (
+        SimpleLongTermMemory,
+    )
     from app.knowledge.infrastructure.orchestration.memory_extractor import MemoryExtractor
     from app.knowledge.infrastructure.stm.redis_short_term_memory import (
         RedisShortTermMemory,
-    )
-    from app.knowledge.infrastructure.ltm.simple_long_term_memory import (
-        SimpleLongTermMemory,
     )
 
 logger = get_logger(__name__)

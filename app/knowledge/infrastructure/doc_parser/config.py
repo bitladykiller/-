@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 
-def _env_or(key: str, default: Optional[str] = None) -> Optional[str]:
+def _env_or(key: str, default: str | None = None) -> str | None:
     """从环境变量读取配置，未设置返回 default。"""
     return os.environ.get(key, default)
 
@@ -52,9 +51,9 @@ class ParserConfig:
     # ------------------------------------------------------------------ #
     # VLM API 配置（用于图片描述）
     # ------------------------------------------------------------------ #
-    vlm_api_base_url: Optional[str] = None
+    vlm_api_base_url: str | None = None
     vlm_api_key_env: str = "VLM_API_KEY"
-    vlm_model: Optional[str] = None
+    vlm_model: str | None = None
     vlm_timeout: int = 90
     vlm_max_tokens: int = 500
     vlm_temperature: float = 0.0

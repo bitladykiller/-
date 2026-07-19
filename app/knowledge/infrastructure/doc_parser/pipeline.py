@@ -8,14 +8,16 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import List, Optional
 
 from app.knowledge.infrastructure.doc_parser.config import ParserConfig
-from app.knowledge.infrastructure.doc_parser.exceptions import DocumentParseError, UnsupportedFileTypeError
-from app.knowledge.infrastructure.doc_parser.models import DocumentChunk
+from app.knowledge.infrastructure.doc_parser.exceptions import (
+    DocumentParseError,
+    UnsupportedFileTypeError,
+)
 from app.knowledge.infrastructure.doc_parser.markdown.block_parser import BlockParser
 from app.knowledge.infrastructure.doc_parser.markdown.cleaner import MarkdownCleaner
 from app.knowledge.infrastructure.doc_parser.markdown.heading_parser import HeadingParser
+from app.knowledge.infrastructure.doc_parser.models import DocumentChunk
 from app.knowledge.infrastructure.doc_parser.parsers.docling_docx_parser import DoclingDOCXParser
 from app.knowledge.infrastructure.doc_parser.parsers.docling_pdf_parser import DoclingPDFParser
 from app.knowledge.infrastructure.doc_parser.parsers.docx_fallback_parser import DocxFallbackParser
@@ -28,9 +30,9 @@ logger = logging.getLogger(__name__)
 
 def parse_document(
     file_path: str,
-    doc_id: Optional[str] = None,
-    config: Optional[ParserConfig] = None,
-) -> List[DocumentChunk]:
+    doc_id: str | None = None,
+    config: ParserConfig | None = None,
+) -> list[DocumentChunk]:
     """解析单个文档，返回 DocumentChunk 列表。
 
     Args:
@@ -86,7 +88,7 @@ def parse_document(
     # 4. Block 识别 + 切分
     block_parser = BlockParser()
     text_splitter = TextSplitter(config.text_chunk_size, config.text_chunk_overlap)
-    chunks: List[DocumentChunk] = []
+    chunks: list[DocumentChunk] = []
 
     for section in sections:
         blocks = block_parser.parse(section)

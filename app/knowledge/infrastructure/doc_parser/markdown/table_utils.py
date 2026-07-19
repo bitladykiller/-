@@ -7,8 +7,6 @@ RAG 文档解析器 — Markdown 表格工具。
 from __future__ import annotations
 
 import re
-from typing import List, Tuple
-
 
 # 表格行正则：以 | 开头和结尾，中间有 | 分隔
 _TABLE_ROW_RE = re.compile(r"^\|(.+)\|$")
@@ -40,7 +38,7 @@ def is_markdown_table(line: str) -> bool:
 
 def parse_markdown_table(
     table_text: str,
-) -> Tuple[List[str], List[List[str]]]:
+) -> tuple[list[str], list[list[str]]]:
     """解析 Markdown 表格为表头和数据行。
 
     输入格式：
@@ -64,13 +62,13 @@ def parse_markdown_table(
         >>> rows
         [['1', '2']]
     """
-    lines = [l.strip() for l in table_text.strip().split("\n") if l.strip()]
+    lines = [line.strip() for line in table_text.strip().split("\n") if line.strip()]
 
     if len(lines) < 2:
         return [], []
 
-    headers: List[str] = []
-    rows: List[List[str]] = []
+    headers: list[str] = []
+    rows: list[list[str]] = []
     separator_found = False
 
     for line in lines:
@@ -100,8 +98,8 @@ def parse_markdown_table(
 
 
 def build_markdown_table(
-    headers: List[str],
-    rows: List[List[str]],
+    headers: list[str],
+    rows: list[list[str]],
 ) -> str:
     """构建 Markdown 表格文本。
 
@@ -122,7 +120,7 @@ def build_markdown_table(
     # 确定列数
     col_count = len(headers)
 
-    lines: List[str] = []
+    lines: list[str] = []
 
     # 表头行
     lines.append("| " + " | ".join(headers) + " |")

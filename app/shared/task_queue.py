@@ -16,18 +16,15 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections.abc import Callable
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from datetime import datetime
 from enum import Enum
 from typing import Any, Protocol, TypeAlias
 
-from typing_extensions import TypedDict
-
 import redis.asyncio as aioredis
-
-from app.shared.core.logger import get_logger
 from app.shared.core.config import settings
+from app.shared.core.logger import get_logger
+from typing_extensions import TypedDict
 
 logger = get_logger(__name__)
 

@@ -7,8 +7,6 @@ RAG 文档解析器 — 文本切分器。
 
 from __future__ import annotations
 
-from typing import List
-
 
 class TextSplitter:
     """递归文本切分器。
@@ -57,7 +55,7 @@ class TextSplitter:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
 
-    def split(self, text: str) -> List[str]:
+    def split(self, text: str) -> list[str]:
         """递归切分文本。
 
         Args:
@@ -84,7 +82,7 @@ class TextSplitter:
 
         return chunks
 
-    def _recursive_split(self, text: str, separators: List[str]) -> List[str]:
+    def _recursive_split(self, text: str, separators: list[str]) -> list[str]:
         """递归切分文本。
 
         Args:
@@ -114,7 +112,7 @@ class TextSplitter:
             merged_chunks = self._merge_small_chunks(parts, sep)
 
             # 检查是否有超大块需要进一步切分
-            result: List[str] = []
+            result: list[str] = []
             for chunk in merged_chunks:
                 if len(chunk) > self.chunk_size:
                     # 用下一级分隔符继续切分
@@ -132,7 +130,7 @@ class TextSplitter:
         # 所有分隔符都不适用，硬切
         return self._hard_split(text)
 
-    def _merge_small_chunks(self, parts: List[str], separator: str) -> List[str]:
+    def _merge_small_chunks(self, parts: list[str], separator: str) -> list[str]:
         """合并小块，确保每块不超过 chunk_size。
 
         Args:
@@ -142,7 +140,7 @@ class TextSplitter:
         Returns:
             合并后的文本块列表。
         """
-        merged: List[str] = []
+        merged: list[str] = []
         current = ""
 
         for part in parts:
@@ -170,7 +168,7 @@ class TextSplitter:
 
         return merged
 
-    def _hard_split(self, text: str) -> List[str]:
+    def _hard_split(self, text: str) -> list[str]:
         """硬切：按 chunk_size 截断。
 
         当所有分隔符都不适用时，直接按字符数截断。
@@ -181,7 +179,7 @@ class TextSplitter:
         Returns:
             切分后的文本块列表。
         """
-        chunks: List[str] = []
+        chunks: list[str] = []
         start = 0
 
         while start < len(text):
@@ -191,7 +189,7 @@ class TextSplitter:
 
         return chunks
 
-    def _apply_overlap(self, chunks: List[str]) -> List[str]:
+    def _apply_overlap(self, chunks: list[str]) -> list[str]:
         """在相邻 chunk 之间添加重叠。
 
         每个 chunk（除了第一个）的开头包含上一个 chunk 末尾的 overlap 个字符。
@@ -205,7 +203,7 @@ class TextSplitter:
         if len(chunks) <= 1 or self.chunk_overlap <= 0:
             return chunks
 
-        result: List[str] = [chunks[0]]
+        result: list[str] = [chunks[0]]
 
         for i in range(1, len(chunks)):
             prev = chunks[i - 1]

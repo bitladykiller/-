@@ -13,7 +13,6 @@
 
 import msgpack
 import zstandard as zstd
-
 from app.knowledge.domain.schemas import MessageRecord
 
 # 多级压缩器：按消息大小选择压缩级别，平衡 CPU 和存储。

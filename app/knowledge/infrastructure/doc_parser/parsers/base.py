@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional
 
 from app.knowledge.infrastructure.doc_parser.config import ParserConfig
 from app.knowledge.infrastructure.doc_parser.models import ParsedMarkdownDocument
@@ -25,7 +24,7 @@ class BaseDocumentParser(ABC):
         parser_name: 解析器名称，用于日志和 metadata。
     """
 
-    def __init__(self, config: Optional[ParserConfig] = None) -> None:
+    def __init__(self, config: ParserConfig | None = None) -> None:
         """初始化解析器。
 
         Args:

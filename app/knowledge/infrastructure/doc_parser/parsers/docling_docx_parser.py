@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import warnings
-from typing import Optional
 
 from app.knowledge.infrastructure.doc_parser.config import ParserConfig
 from app.knowledge.infrastructure.doc_parser.exceptions import DoclingParseError
@@ -25,7 +24,7 @@ class DoclingDOCXParser(BaseDocumentParser):
     如果 Docling 不可用或解析失败，调用方应降级到 DocxFallbackParser。
     """
 
-    def __init__(self, config: Optional[ParserConfig] = None) -> None:
+    def __init__(self, config: ParserConfig | None = None) -> None:
         """初始化 Docling DOCX 解析器。"""
         super().__init__(config)
         self.parser_name = "DoclingDOCXParser"

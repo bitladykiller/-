@@ -8,14 +8,12 @@
 
 from __future__ import annotations
 
-from typing_extensions import TypedDict
-
+from app.api.common import MessageResponse, build_message_response, run_api_action
+from app.chat.application.conversation_service import ConversationSummary, conversation_service
+from app.shared.core.logger import get_logger
 from fastapi import APIRouter
 from pydantic import BaseModel
-
-from app.api.common import MessageResponse, build_message_response, run_api_action
-from app.shared.core.logger import get_logger
-from app.chat.application.conversation_service import conversation_service, ConversationSummary
+from typing_extensions import TypedDict
 
 logger = get_logger(__name__)
 

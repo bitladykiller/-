@@ -16,12 +16,11 @@ import json
 import uuid
 from collections.abc import Mapping
 
-from fastapi import APIRouter, Form, HTTPException
-from fastapi.responses import StreamingResponse
-
 from app.api.common import INTERNAL_SERVER_ERROR_DETAIL
 from app.chat.application.agent_query_service import stream_agent_query
 from app.shared.core.logger import get_logger
+from fastapi import APIRouter, Form, HTTPException
+from fastapi.responses import StreamingResponse
 
 logger = get_logger(__name__)
 
@@ -72,6 +71,6 @@ async def langgraph_query(
         response = StreamingResponse(response_stream(), media_type=_SSE_MEDIA_TYPE)
         response.headers[_CONVERSATION_ID_HEADER] = thread_id
         return response
-    except Exception:
+    except Exception as exc:
         logger.exception("[api] SSE 流处理异常")
-        raise HTTPException(status_code=500, detail=INTERNAL_SERVER_ERROR_DETAIL)
+        raise HTTPException(status_code=500, detail=INTERNAL_SERVER_ERROR_DETAIL) from exc

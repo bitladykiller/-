@@ -7,7 +7,6 @@ RAG 文档解析器 — 表格切分器。
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
 
 from app.knowledge.infrastructure.doc_parser.markdown.table_utils import (
     build_markdown_table,
@@ -42,7 +41,7 @@ class TableSplitter:
         doc_id: str,
         source_file: str,
         chunk_id_prefix: str = "",
-    ) -> List[DocumentChunk]:
+    ) -> list[DocumentChunk]:
         """切分表格块为 DocumentChunk 列表。
 
         如果表格行数不超过阈值，返回单个 chunk。
@@ -82,7 +81,7 @@ class TableSplitter:
             )]
 
         # 按行数切分
-        chunks: List[DocumentChunk] = []
+        chunks: list[DocumentChunk] = []
         table_id = new_uuid()
 
         for start_idx in range(0, len(rows), self.max_rows_per_chunk):
@@ -117,9 +116,9 @@ class TableSplitter:
         doc_id: str,
         source_file: str,
         raw_text: str,
-        row_start: Optional[int] = None,
-        row_end: Optional[int] = None,
-        table_id: Optional[str] = None,
+        row_start: int | None = None,
+        row_end: int | None = None,
+        table_id: str | None = None,
         chunk_id_prefix: str = "",
     ) -> DocumentChunk:
         """构建表格 DocumentChunk。

@@ -14,21 +14,20 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any, AsyncContextManager, Protocol, TypeAlias, TypeVar
+from contextlib import AbstractAsyncContextManager
+from typing import Any, Protocol, TypeAlias, TypeVar
 
-from typing_extensions import TypedDict
-
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.shared.core.database import AsyncSessionLocal
-from app.shared.core.logger import format_log_context, get_logger
 from app.chat.infrastructure.repository.conversation_repository import (
     ConversationRepository,
 )
+from app.shared.core.database import AsyncSessionLocal
+from app.shared.core.logger import format_log_context, get_logger
+from sqlalchemy.ext.asyncio import AsyncSession
+from typing_extensions import TypedDict
 
 logger = get_logger(__name__)
 OperationResult = TypeVar("OperationResult")
-_SessionFactory: TypeAlias = Callable[[], AsyncContextManager[AsyncSession]]
+_SessionFactory: TypeAlias = Callable[[], AbstractAsyncContextManager[AsyncSession]]
 
 
 class ConversationSummary(TypedDict):

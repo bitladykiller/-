@@ -8,8 +8,8 @@
 """
 from __future__ import annotations
 
-from pathlib import Path
 import uuid
+from pathlib import Path
 
 from app.knowledge.application.indexing_contracts import (
     DocIDFactory,

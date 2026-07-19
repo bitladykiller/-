@@ -11,36 +11,33 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import Awaitable, Callable
-from typing import Any
 
-from langchain_core.messages import AIMessage
-from langchain_core.runnables import RunnableConfig
-from langgraph.graph.state import CompiledStateGraph
-from langgraph.prebuilt import create_react_agent
-from langchain_core.tools import tool
-
+from app.chat.infrastructure.graph.memory_context import enrich_question
 from app.chat.infrastructure.graph.state import AgentState
+from app.chat.infrastructure.kg.neo4j_conn import get_neo4j_graph
+from app.chat.infrastructure.modeling.models import (
+    ReactAnswerCheckOutput,
+    react_judge_model,
+    react_model,
+)
+from app.chat.infrastructure.modeling.prompts import (
+    REACT_ANSWER_CHECK_PROMPT,
+    REACT_SYSTEM_PROMPT,
+)
 from app.chat.infrastructure.retrievers.retriever_contracts import (
     KG_RETRIEVER_NAME,
     RAG_RETRIEVER_NAME,
 )
 from app.chat.infrastructure.retrievers.retriever_runtime import get_retriever
-from app.chat.infrastructure.modeling.prompts import (
-    REACT_SYSTEM_PROMPT,
-    REACT_ANSWER_CHECK_PROMPT,
-)
-from app.chat.infrastructure.modeling.models import (
-    react_model,
-    react_judge_model,
-    ReactAnswerCheckOutput,
-)
-from app.chat.infrastructure.graph.memory_context import enrich_question
-from app.chat.infrastructure.kg.neo4j_conn import get_neo4j_graph
-from app.chat.infrastructure.shared.utils import question_from_state, no_neo4j_response
+from app.chat.infrastructure.shared.utils import no_neo4j_response, question_from_state
 from app.shared.core.config import settings
+from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import tool
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.prebuilt import create_react_agent
 
 
 async def get_react_subgraph(

@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any
 
 import regex as re
 
@@ -34,8 +34,8 @@ def get_variable_operator_property_pattern(variable: str) -> re.Pattern:
 
 def extract_entities_for_validation(
     cypher_statement: str,
-) -> Dict[str, List[CypherValidationTask]]:
-    extracted: Dict[str, List[CypherValidationTask]] = {}
+) -> dict[str, list[CypherValidationTask]]:
+    extracted: dict[str, list[CypherValidationTask]] = {}
 
     for key, entity_pattern, variable_pattern, label_or_type_pattern in (
         ("nodes", _NODE_PATTERN, _NODE_VARIABLE_PATTERN, _NODE_LABEL_PATTERN),
@@ -46,7 +46,7 @@ def extract_entities_for_validation(
             _RELATIONSHIP_TYPE_PATTERN,
         ),
     ):
-        tasks: List[Dict[str, Any]] = []
+        tasks: list[dict[str, Any]] = []
         entities = re.findall(entity_pattern, cypher_statement)
         used_variables: set[str | None] = set()
 
@@ -63,7 +63,7 @@ def extract_entities_for_validation(
             match_props = match_props[0] if match_props and match_props[0] else None
 
             if match_props is not None:
-                match_props_parsed: List[Dict[str, Any]] = []
+                match_props_parsed: list[dict[str, Any]] = []
                 for part in match_props.split(","):
                     k_and_v = part.split(":")
                     if len(k_and_v) != 2:

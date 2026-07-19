@@ -14,12 +14,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.shared.core.app_config import AppConfig
+from app.shared.core.app_config import app_config as _app_config
 from app.shared.core.config_models import (
     BusinessSettings,
     InfrastructureSettings,
     ProjectBaseSettings,
 )
-from app.shared.core.app_config import AppConfig, app_config as _app_config
 
 
 class _Settings:
@@ -32,8 +33,9 @@ class _Settings:
         business: BusinessSettings | None = None,
         app_config: AppConfig | None = None,
     ) -> None:
-        self._infra = infra or InfrastructureSettings()
-        self._business = business or BusinessSettings()
+        # pydantic-settings 从 .env 注入必填字段；mypy 无法感知该运行时行为
+        self._infra = infra or InfrastructureSettings()  # type: ignore[call-arg]
+        self._business = business or BusinessSettings()  # type: ignore[call-arg]
         self._app_config = app_config or _app_config
         self._sources: tuple[ProjectBaseSettings, ...] = (
             self._infra,
@@ -135,19 +137,19 @@ class _Settings:
     # ── 连接 URL 计算属性 ──
 
     @property
-    def DATABASE_URL(self) -> str:
+    def DATABASE_URL(self) -> str:  # noqa: N802
         return (
             f"mysql+aiomysql://{self.DB_USER}:{self.DB_PASSWORD}"
             f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
         )
 
     @property
-    def REDIS_URL(self) -> str:
+    def REDIS_URL(self) -> str:  # noqa: N802
         auth = f":{self.REDIS_PASSWORD}@" if self.REDIS_PASSWORD else ""
         return f"redis://{auth}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
 
     @property
-    def MILVUS_URL(self) -> str:
+    def MILVUS_URL(self) -> str:  # noqa: N802
         return f"{self.MILVUS_HOST}:{self.MILVUS_PORT}"
 
 

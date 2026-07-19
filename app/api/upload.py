@@ -10,18 +10,17 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-
 from app.api.common import run_api_action
-from app.shared.core.logger import get_logger
+from app.knowledge.application.indexing_contracts import UploadFileInfo
 from app.knowledge.application.indexing_service import (
     IndexingService,
     get_document_extension,
     supports_document_indexing,
 )
-from app.knowledge.application.indexing_contracts import UploadFileInfo
-from app.shared.task_queue import TaskStatusPayload, get_task_manager
 from app.shared.core.config import settings
+from app.shared.core.logger import get_logger
+from app.shared.task_queue import TaskStatusPayload, get_task_manager
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 logger = get_logger(__name__)
 

@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Literal, Set
+from typing import Literal
 
 from .models import CypherValidationTask, Neo4jStructuredSchemaPropertyNumber
 
@@ -29,7 +29,7 @@ class ValidationTaskGroups:
     range_value_checks: list[CypherValidationTask]
 
 
-def build_validation_task_groups(tasks: List[CypherValidationTask]) -> ValidationTaskGroups:
+def build_validation_task_groups(tasks: list[CypherValidationTask]) -> ValidationTaskGroups:
     """把任务拆成“属性名 / 字符串值 / 数值范围”三组。"""
     return ValidationTaskGroups(
         name_checks=list(tasks),
@@ -43,10 +43,10 @@ def build_validation_task_groups(tasks: List[CypherValidationTask]) -> Validatio
 
 
 def validate_property_names_with_enum(
-    enum_dict: Dict[str, Set[str]],
-    tasks: List[CypherValidationTask],
+    enum_dict: dict[str, set[str]],
+    tasks: list[CypherValidationTask],
     node_or_rel: ValidationScope,
-) -> List[str]:
+) -> list[str]:
     """验证属性名是否存在于 schema 枚举中。"""
     _assert_validation_scope(node_or_rel)
 
@@ -75,10 +75,10 @@ def validate_property_names_with_enum(
 
 
 def validate_property_values_with_enum(
-    enum_dict: Dict[str, Dict[str, Set[str]]],
-    tasks: List[CypherValidationTask],
+    enum_dict: dict[str, dict[str, set[str]]],
+    tasks: list[CypherValidationTask],
     node_or_rel: ValidationScope,
-) -> List[str]:
+) -> list[str]:
     """验证字符串属性值是否落在 schema 枚举范围内。"""
     _assert_validation_scope(node_or_rel)
 
@@ -112,10 +112,10 @@ def validate_property_values_with_enum(
 
 
 def validate_property_values_with_range(
-    enum_dict: Dict[str, Dict[str, Neo4jStructuredSchemaPropertyNumber]],
-    tasks: List[CypherValidationTask],
+    enum_dict: dict[str, dict[str, Neo4jStructuredSchemaPropertyNumber]],
+    tasks: list[CypherValidationTask],
     node_or_rel: ValidationScope,
-) -> List[str]:
+) -> list[str]:
     """验证数值属性是否落在 schema 范围内。"""
     _assert_validation_scope(node_or_rel)
 

@@ -8,7 +8,6 @@ RAG 文档解析器 — python-docx 兜底解析器。
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
 
 from app.knowledge.infrastructure.doc_parser.config import ParserConfig
 from app.knowledge.infrastructure.doc_parser.exceptions import DocumentParseError
@@ -27,7 +26,7 @@ class DocxFallbackParser(BaseDocumentParser):
     - 保留段落和表格的原始顺序
     """
 
-    def __init__(self, config: Optional[ParserConfig] = None) -> None:
+    def __init__(self, config: ParserConfig | None = None) -> None:
         """初始化 python-docx 兜底解析器。"""
         super().__init__(config)
         self.parser_name = "DocxFallbackParser"
@@ -54,7 +53,7 @@ class DocxFallbackParser(BaseDocumentParser):
             doc = Document(file_path)
 
             # 按顺序遍历段落和表格，生成 Markdown
-            markdown_lines: List[str] = []
+            markdown_lines: list[str] = []
             table_count = 0
 
             for block in self._iter_block_items(doc):
@@ -177,7 +176,7 @@ class DocxFallbackParser(BaseDocumentParser):
         Returns:
             Markdown 表格文本。
         """
-        rows_data: List[List[str]] = []
+        rows_data: list[list[str]] = []
 
         for row in table.rows:
             cells = [cell.text.strip().replace("|", "\\|") for cell in row.cells]
@@ -193,7 +192,7 @@ class DocxFallbackParser(BaseDocumentParser):
             while len(row) < max_cols:
                 row.append("")
 
-        lines: List[str] = []
+        lines: list[str] = []
 
         # 第一行作为表头
         header = rows_data[0]

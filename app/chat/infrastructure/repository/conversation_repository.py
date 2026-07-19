@@ -12,10 +12,9 @@
 
 from __future__ import annotations
 
+from app.chat.infrastructure.models.conversation import Conversation, DialogueType
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.chat.infrastructure.models.conversation import Conversation, DialogueType
 
 _DEFAULT_CONVERSATION_TITLE = "新会话"
 

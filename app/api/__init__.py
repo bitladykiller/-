@@ -4,11 +4,10 @@
 每个子路由文件已经声明了自己的 `tags`，这里不再重复配置。
 """
 
-from fastapi import APIRouter
-
-from app.api.langgraph import router as langgraph_router
 from app.api.conversations import router as conversations_router
+from app.api.langgraph import router as langgraph_router
 from app.api.upload import router as upload_router
+from fastapi import APIRouter
 
 api_router = APIRouter()
 

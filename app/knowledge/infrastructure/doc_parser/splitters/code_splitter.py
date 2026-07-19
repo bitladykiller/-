@@ -7,8 +7,6 @@ RAG 文档解析器 — 代码块切分器（按函数/类边界优先）。
 
 from __future__ import annotations
 
-from typing import List
-
 # 各语言的函数/类边界关键词
 _BOUNDARY_KEYWORDS = {
     "python":    ("def ", "class ", "async def "),
@@ -30,7 +28,7 @@ class CodeSplitter:
     def __init__(self, max_lines_per_chunk: int = 120) -> None:
         self.max_lines_per_chunk = max_lines_per_chunk
 
-    def split(self, code_block: str, language: str = "") -> List[str]:
+    def split(self, code_block: str, language: str = "") -> list[str]:
         """切分代码块。
 
         Args:
@@ -65,7 +63,7 @@ class CodeSplitter:
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def _split_by_functions(lines: List[str], lang: str) -> List[List[str]]:
+    def _split_by_functions(lines: list[str], lang: str) -> list[list[str]]:
         """识别所有函数/类边界，按边界切分。
 
         算法:
@@ -110,7 +108,7 @@ class CodeSplitter:
         # 处理第一个函数之前的导入等
         if boundaries[0] > 0:
             header = lines[: boundaries[0]]
-            header_clean = [l for l in header if l.strip()]
+            header_clean = [line for line in header if line.strip()]
             if header_clean:
                 chunks.insert(0, header_clean)
 
@@ -121,20 +119,20 @@ class CodeSplitter:
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def _detect_lang(lines: List[str]) -> str:
+    def _detect_lang(lines: list[str]) -> str:
         """从 ```python 提取语言标记。"""
         if lines and lines[0].strip().startswith("```"):
             return lines[0].strip()[3:].strip().lower()
         return ""
 
     @staticmethod
-    def _strip_fences(lines: List[str]) -> List[str]:
+    def _strip_fences(lines: list[str]) -> list[str]:
         """去除首尾 ``` 标记。"""
         start = 1 if lines and lines[0].strip().startswith("```") else 0
         end = -1 if lines and lines[-1].strip() == "```" else len(lines)
         return lines[start:end]
 
     @staticmethod
-    def _wrap(code_lines: List[str], language: str) -> str:
+    def _wrap(code_lines: list[str], language: str) -> str:
         h = f"```{language}" if language else "```"
         return h + "\n" + "\n".join(code_lines) + "\n```"

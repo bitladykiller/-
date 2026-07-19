@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import os
 import warnings
-from typing import List, Optional
 
 from app.knowledge.infrastructure.doc_parser.config import ParserConfig
 from app.knowledge.infrastructure.doc_parser.exceptions import DoclingParseError
@@ -36,7 +35,7 @@ class DoclingPDFParser(BaseDocumentParser):
         _remote_services_enabled: 是否启用远程服务。
     """
 
-    def __init__(self, config: Optional[ParserConfig] = None) -> None:
+    def __init__(self, config: ParserConfig | None = None) -> None:
         """初始化 Docling PDF 解析器。
 
         检查 VLM API 密钥是否可用，决定是否启用远程服务。
@@ -45,7 +44,7 @@ class DoclingPDFParser(BaseDocumentParser):
         self.parser_name = "DoclingPDFParser"
 
         # 从环境变量读取 VLM API 密钥
-        self._vlm_api_key: Optional[str] = os.environ.get(
+        self._vlm_api_key: str | None = os.environ.get(
             self.config.vlm_api_key_env
         )
 
@@ -152,8 +151,8 @@ class DoclingPDFParser(BaseDocumentParser):
         Returns:
             DocumentConverter 实例。
         """
-        from docling.document_converter import DocumentConverter, PdfFormatOption
         from docling.datamodel.pipeline_options import PdfPipelineOptions
+        from docling.document_converter import DocumentConverter, PdfFormatOption
 
         # 构建管道选项
         pipeline_options = PdfPipelineOptions()
@@ -194,8 +193,8 @@ class DoclingPDFParser(BaseDocumentParser):
         # 尝试新 API
         try:
             from docling.datamodel.pipeline_options import (
-                PictureDescriptionVlmEngineOptions,
                 ApiVlmEngineOptions,
+                PictureDescriptionVlmEngineOptions,
             )
 
             # 构建 VLM 引擎选项
@@ -248,7 +247,7 @@ class DoclingPDFParser(BaseDocumentParser):
             logger.error("旧 VLM API 也不可用 (%s)，禁用图片描述。", e)
             pipeline_options.do_picture_description = False
 
-    def _extract_picture_annotations(self, doc) -> List[str]:
+    def _extract_picture_annotations(self, doc) -> list[str]:
         """从 Docling 文档对象中提取图片标注（标题 + 描述）。
 
         遍历文档中的图片，提取 caption 和 description。
@@ -259,7 +258,7 @@ class DoclingPDFParser(BaseDocumentParser):
         Returns:
             图片标注文本列表，每项为一段 Markdown 格式的图片说明。
         """
-        annotations: List[str] = []
+        annotations: list[str] = []
 
         try:
             # 尝试使用 iterate_items 遍历所有元素
@@ -283,7 +282,7 @@ class DoclingPDFParser(BaseDocumentParser):
 
         return annotations
 
-    def _extract_from_pictures_list(self, doc) -> List[str]:
+    def _extract_from_pictures_list(self, doc) -> list[str]:
         """从 doc.pictures 列表提取图片标注。
 
         Args:
@@ -292,7 +291,7 @@ class DoclingPDFParser(BaseDocumentParser):
         Returns:
             图片标注文本列表。
         """
-        annotations: List[str] = []
+        annotations: list[str] = []
         pictures = getattr(doc, "pictures", None)
         if not pictures:
             return annotations
@@ -304,7 +303,7 @@ class DoclingPDFParser(BaseDocumentParser):
 
         return annotations
 
-    def _format_picture_annotation(self, item, index: int = 0) -> Optional[str]:
+    def _format_picture_annotation(self, item, index: int = 0) -> str | None:
         """格式化单个图片的标注信息。
 
         Args:
@@ -314,9 +313,9 @@ class DoclingPDFParser(BaseDocumentParser):
         Returns:
             Markdown 格式的图片说明，无内容则返回 None。
         """
-        title: Optional[str] = None
-        description: Optional[str] = None
-        classification: Optional[str] = None
+        title: str | None = None
+        description: str | None = None
+        classification: str | None = None
 
         # 提取 caption
         caption = getattr(item, "caption", None) or getattr(item, "text", None)
@@ -338,7 +337,7 @@ class DoclingPDFParser(BaseDocumentParser):
         if not title and not description and not classification:
             return None
 
-        parts: List[str] = [":::image_caption"]
+        parts: list[str] = [":::image_caption"]
         if title:
             parts.append(f"title: {title}")
         if classification:
@@ -373,9 +372,9 @@ class DoclingPDFParser(BaseDocumentParser):
             pass
         return count
 
-    def _collect_warnings(self) -> List[str]:
+    def _collect_warnings(self) -> list[str]:
         """收集当前解析状态的警告信息。"""
-        warnings_list: List[str] = []
+        warnings_list: list[str] = []
         if not self._remote_services_enabled:
             warnings_list.append(
                 f"VLM API 密钥未配置（{self.config.vlm_api_key_env}），图片描述已禁用。"

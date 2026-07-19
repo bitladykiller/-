@@ -11,15 +11,15 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.shared.core.logger import get_logger
-from app.shared.core.json_utils import parse_first_json_object
-from app.shared.core.config import settings
-from app.user.domain.profile_payload_support import (
-    normalize_profile_data,
-)
 from app.knowledge.domain.schemas import (
     MemoryExtractorResult,
     SessionSummary,
+)
+from app.shared.core.config import settings
+from app.shared.core.json_utils import parse_first_json_object
+from app.shared.core.logger import get_logger
+from app.user.domain.profile_payload_support import (
+    normalize_profile_data,
 )
 from app.user.domain.schemas import UserProfileData
 

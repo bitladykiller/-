@@ -8,7 +8,6 @@ RAG 文档解析器 — Markdown 标题解析器。
 from __future__ import annotations
 
 import re
-from typing import List, Optional
 
 from app.knowledge.infrastructure.doc_parser.models import MarkdownSection, new_uuid
 
@@ -36,7 +35,7 @@ class HeadingParser:
         """
         self.default_title = default_title
 
-    def parse(self, markdown: str) -> List[MarkdownSection]:
+    def parse(self, markdown: str) -> list[MarkdownSection]:
         """将 Markdown 按标题拆分为章节列表。
 
         算法：
@@ -58,16 +57,16 @@ class HeadingParser:
         lines = markdown.split("\n")
 
         # 当前标题状态
-        current_h1: Optional[str] = None
-        current_h2: Optional[str] = None
-        current_h3: Optional[str] = None
-        current_h4: Optional[str] = None
+        current_h1: str | None = None
+        current_h2: str | None = None
+        current_h3: str | None = None
+        current_h4: str | None = None
         current_level: int = 0
         current_title: str = ""
 
         # 内容积累
-        content_lines: List[str] = []
-        sections: List[MarkdownSection] = []
+        content_lines: list[str] = []
+        sections: list[MarkdownSection] = []
 
         # 是否已遇到第一个标题
         has_seen_heading = False
@@ -146,13 +145,13 @@ class HeadingParser:
 
     def _build_section(
         self,
-        h1: Optional[str],
-        h2: Optional[str],
-        h3: Optional[str],
-        h4: Optional[str],
+        h1: str | None,
+        h2: str | None,
+        h3: str | None,
+        h4: str | None,
         level: int,
         title: str,
-        content_lines: List[str],
+        content_lines: list[str],
     ) -> MarkdownSection:
         """构建一个 MarkdownSection。
 
@@ -190,10 +189,10 @@ class HeadingParser:
 
     @staticmethod
     def _build_section_path(
-        h1: Optional[str],
-        h2: Optional[str],
-        h3: Optional[str],
-        h4: Optional[str],
+        h1: str | None,
+        h2: str | None,
+        h3: str | None,
+        h4: str | None,
         level: int,
     ) -> str:
         """构建 section_path，用 " > " 连接各级标题。
@@ -208,7 +207,7 @@ class HeadingParser:
         Returns:
             完整的 section_path 字符串。
         """
-        parts: List[str] = []
+        parts: list[str] = []
 
         # 根据当前级别，决定 section_path 包含哪些层级
         if h1 and level >= 1:

@@ -15,14 +15,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Protocol
 
+from app.api import api_router
+from app.platform.container import AppContainer, reset_container, set_container
+from app.shared.core.logger import get_logger, setup_logging
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRouter
 from fastapi.staticfiles import StaticFiles
-
-from app.api import api_router
-from app.shared.core.logger import get_logger, setup_logging
-from app.platform.container import AppContainer, set_container, reset_container
 
 STATIC_DIR = Path(__file__).parent / "static" / "dist"
 APP_TITLE = "AssistGen REST API"
@@ -38,7 +37,8 @@ logger = get_logger(__name__)
 class InfoLogger(Protocol):
     """入口装配 helper 所需的最小日志接口。"""
 
-    def info(self, msg: str, *args: object, **kwargs: object) -> object: ...
+    # 签名放宽，兼容标准库 logging.Logger（msg: object, 返回 None）
+    def info(self, msg: object, *args: object, **kwargs: object) -> None: ...
 
 
 async def warm_up_runtime_resources(runtime_logger: InfoLogger) -> None:
@@ -65,8 +65,11 @@ def build_lifespan(
     *,
     warm_up: Callable[[InfoLogger], Awaitable[None]] = warm_up_runtime_resources,
     close_runtime: Callable[[], Awaitable[None]] = close_runtime_resources,
-) -> Callable[[FastAPI], object]:
-    """构造 FastAPI lifespan 处理器。"""
+):
+    """构造 FastAPI lifespan 处理器。
+
+    返回值保持 untyped/asynccontextmanager，避免与 FastAPI lifespan 签名过度耦合。
+    """
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):

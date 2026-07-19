@@ -14,13 +14,11 @@ from __future__ import annotations
 
 from typing import Any, TypeAlias
 
-from typing_extensions import TypedDict
-
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate
-
 from app.chat.infrastructure.graph.message_utils import MessagePayload, build_progress_response
 from app.chat.infrastructure.retrievers.retriever_contracts import Retriever
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from typing_extensions import TypedDict
 
 RetrieverRecord: TypeAlias = dict[str, Any]
 

@@ -14,10 +14,9 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping
 from typing import Any, TypeAlias
 
-from langchain_core.messages import HumanMessage
-
 from app.chat.infrastructure.graph.builder import graph
 from app.chat.infrastructure.graph.state import InputState
+from langchain_core.messages import HumanMessage
 
 _ChunkMetadata: TypeAlias = Mapping[str, Any]
 _GraphStreamChunk: TypeAlias = tuple[Any, _ChunkMetadata]

@@ -16,11 +16,9 @@
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
 
-from typing_extensions import TypedDict
-
 from langchain_core.messages import AnyMessage
 from langgraph.graph import add_messages
-
+from typing_extensions import TypedDict
 
 RouterType = Literal["general", "rag_doc-query"]
 RetrievalPlanType = Literal[

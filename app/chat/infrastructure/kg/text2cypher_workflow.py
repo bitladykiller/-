@@ -13,20 +13,14 @@
 from __future__ import annotations
 
 from operator import add
-from typing import Annotated, Any, List, Protocol
+from typing import Annotated, Any, Protocol
 
-from langchain_core.language_models import BaseChatModel
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate
-
-from app.shared.core.logger import get_logger
-
-logger = get_logger(__name__)
-from langchain_neo4j import Neo4jGraph
-from langgraph.constants import END, START
-from langgraph.graph.state import CompiledStateGraph, StateGraph
-from typing_extensions import TypedDict
-
+from app.chat.infrastructure.kg.predefined_cypher.utils import create_vector_query_matcher
+from app.chat.infrastructure.kg.text2cypher_state import (
+    CypherInputState,
+    CypherOutputState,
+    CypherState,
+)
 from app.chat.infrastructure.kg.validation.models import ValidateCypherOutput
 from app.chat.infrastructure.kg.validation.validators import (
     correct_cypher_query_relationship_direction,
@@ -35,17 +29,25 @@ from app.chat.infrastructure.kg.validation.validators import (
     validate_cypher_query_with_schema,
     validate_no_writes_in_cypher_query,
 )
-from app.chat.infrastructure.kg.text2cypher_state import CypherInputState, CypherOutputState, CypherState
-from app.chat.infrastructure.kg.predefined_cypher.utils import create_vector_query_matcher
+from app.shared.core.logger import get_logger
+from langchain_core.language_models import BaseChatModel
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_neo4j import Neo4jGraph
+from langgraph.constants import END, START
+from langgraph.graph.state import CompiledStateGraph, StateGraph
+from typing_extensions import TypedDict
+
+logger = get_logger(__name__)
 
 
 class OverallState(TypedDict):
     question: str
     tasks: Annotated[list, add]
     next_action: str
-    cyphers: Annotated[List[CypherOutputState], add]
+    cyphers: Annotated[list[CypherOutputState], add]
     summary: str
-    steps: Annotated[List[str], add]
+    steps: Annotated[list[str], add]
 
 
 class CypherExampleRetriever(Protocol):
@@ -228,13 +230,13 @@ def create_text2cypher_agent(
     async def execute_cypher(state: CypherState) -> dict[str, list[CypherOutputState] | list[str]]:
         """执行 Cypher 查询并回填统一输出结构。"""
         records = graph.query(state.get("statement", ""))
-        steps = list(state.get("steps", list()))
+        steps = list(state.get("steps", []))
         steps.append("execute_cypher")
         output_state = CypherOutputState(
             task=state.get("task", []),
             statement=state.get("statement", ""),
             parameters=None,
-            errors=state.get("errors", list()),
+            errors=state.get("errors", []),
             records=records or [
                 {"error": "I couldn't find any relevant information in the database."}
             ],

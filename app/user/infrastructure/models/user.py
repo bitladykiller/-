@@ -7,10 +7,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from app.shared.core.database import Base
 from sqlalchemy import DateTime, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-
-from app.shared.core.database import Base
 
 
 class User(Base):
@@ -25,7 +24,7 @@ class User(Base):
         server_default=func.now(),
     )
 
-    conversations: Mapped[list["Conversation"]] = relationship(
+    conversations: Mapped[list[Conversation]] = relationship(
         "Conversation",
         back_populates="user",
         cascade="all, delete-orphan",

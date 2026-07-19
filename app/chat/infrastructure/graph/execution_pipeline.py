@@ -24,9 +24,9 @@ from app.chat.infrastructure.graph.execution_utils import (
     search_retriever,
     summarize_and_build_response,
 )
+from app.chat.infrastructure.graph.memory_context import enrich_question
 from app.chat.infrastructure.graph.message_utils import MessagePayload
 from app.chat.infrastructure.graph.state import AgentState
-from app.chat.infrastructure.graph.memory_context import enrich_question
 from app.chat.infrastructure.retrievers.retriever_contracts import Retriever
 from app.chat.infrastructure.shared.utils import question_from_state
 

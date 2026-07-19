@@ -16,15 +16,14 @@ import json
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.user.domain.schemas import UserProfileData, UserProfileFact, UserProfilePayload
 from app.user.domain.profile_payload_support import (
     PROFILE_FIELD_NAMES,
     normalize_optional_text,
     normalize_profile_tags,
 )
+from app.user.domain.schemas import UserProfileData, UserProfileFact, UserProfilePayload
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 _PROFILE_QUERY_SQL = text(
     "SELECT preferred_brand, budget_range, preferred_category, tags "

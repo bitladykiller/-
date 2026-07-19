@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from itertools import chain
+
 from typing_extensions import TypedDict
 
 

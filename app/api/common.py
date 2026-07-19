@@ -13,11 +13,9 @@ from __future__ import annotations
 from collections.abc import Awaitable
 from typing import Protocol, TypeVar
 
-from typing_extensions import TypedDict
-
-from fastapi import HTTPException
-
 from app.shared.core.logger import format_log_context
+from fastapi import HTTPException
+from typing_extensions import TypedDict
 
 INTERNAL_SERVER_ERROR_DETAIL = "Internal server error"
 ApiResult = TypeVar("ApiResult")
@@ -32,7 +30,8 @@ class MessageResponse(TypedDict):
 class ErrorLogger(Protocol):
     """满足 API 包装器所需最小能力的日志接口。"""
 
-    def error(self, msg: str, *args: object, **kwargs: object) -> object: ...
+    # 签名放宽，兼容标准库 logging.Logger（msg: object, 返回 None）
+    def error(self, msg: object, *args: object, **kwargs: object) -> None: ...
 
 
 def build_message_response(message: str) -> MessageResponse:
@@ -60,4 +59,4 @@ async def run_api_action(
             else f"{action_name} 异常 | {exc}",
             exc_info=True,
         )
-        raise HTTPException(status_code=500, detail=INTERNAL_SERVER_ERROR_DETAIL)
+        raise HTTPException(status_code=500, detail=INTERNAL_SERVER_ERROR_DETAIL) from exc

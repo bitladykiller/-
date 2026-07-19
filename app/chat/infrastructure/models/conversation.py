@@ -14,16 +14,17 @@ from __future__ import annotations
 import enum
 from datetime import datetime
 
+from app.shared.core.database import Base
 from sqlalchemy import (
     DateTime,
-    Enum as SQLEnum,
     ForeignKey,
     String,
     func,
 )
+from sqlalchemy import (
+    Enum as SQLEnum,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-
-from app.shared.core.database import Base
 
 
 class DialogueType(str, enum.Enum):
@@ -60,7 +61,7 @@ class Conversation(Base):
         nullable=False,
     )
 
-    user: Mapped["User"] = relationship("User", back_populates="conversations")
+    user: Mapped[User] = relationship("User", back_populates="conversations")
 
 
 from app.user.infrastructure.models.user import User  # noqa: E402,F401

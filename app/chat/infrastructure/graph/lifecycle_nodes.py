@@ -7,15 +7,14 @@
 
 from __future__ import annotations
 
-from langchain_core.runnables import RunnableConfig
-
+from app.chat.infrastructure.graph.memory_context import _get_memory_middleware, configurable_scope
 from app.chat.infrastructure.graph.message_utils import (
     find_last_assistant_message,
     find_last_user_message,
 )
 from app.chat.infrastructure.graph.state import AgentState
-from app.chat.infrastructure.graph.memory_context import _get_memory_middleware, configurable_scope
 from app.shared.core.logger import get_logger
+from langchain_core.runnables import RunnableConfig
 
 logger = get_logger(__name__)
 

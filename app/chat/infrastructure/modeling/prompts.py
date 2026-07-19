@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Protocol, TypeAlias
 
 import yaml
-
 from app.shared.core.logger import get_logger
 
 logger = get_logger(__name__)

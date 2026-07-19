@@ -14,13 +14,12 @@ from typing import Any
 
 import numpy as np
 import requests
+from app.shared.core.config import settings
+from app.shared.core.json_utils import parse_first_json_object
+from app.shared.core.logger import get_logger
 from sklearn.metrics.pairwise import cosine_similarity
 
-from app.shared.core.config import settings
-from app.shared.core.logger import get_logger
-
 logger = get_logger(__name__)
-from app.shared.core.json_utils import parse_first_json_object
 
 _DEFAULT_EMBEDDING_DIM = 1024
 _PARAM_PATTERNS: dict[str, re.Pattern[str]] = {
@@ -145,7 +144,7 @@ class _VectorQueryMatcher:
             vectors = self._embed_texts(query_texts)
             self.query_vectors = {
                 key: np.array(vector)
-                for key, vector in zip(query_keys, vectors)
+                for key, vector in zip(query_keys, vectors, strict=True)
             }
 
     def _embed_texts(self, texts: list[str]) -> list[list[float]]:

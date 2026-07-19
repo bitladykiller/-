@@ -9,12 +9,11 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
-
-from pymilvus import MilvusClient, DataType, Function, FunctionType
+from typing import Any
 
 from app.knowledge.infrastructure.doc_parser.retrieval.config import RetrievalConfig
 from app.shared.retrieval import MilvusHybridSearchCore
+from pymilvus import DataType, Function, FunctionType, MilvusClient
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +145,7 @@ class MilvusStore:
     # 数据操作
     # ------------------------------------------------------------------ #
 
-    async def _get_embedding(self, text: str) -> List[float]:
+    async def _get_embedding(self, text: str) -> list[float]:
         """获取文本的 embedding 向量。
 
         Args:
@@ -159,7 +158,7 @@ class MilvusStore:
             raise RuntimeError("embedding_model 未设置，无法生成向量")
         return self.embedding_model.embed_query(text)
 
-    async def insert_chunks(self, chunks: List[Any]) -> int:
+    async def insert_chunks(self, chunks: list[Any]) -> int:
         """批量插入 DocumentChunk 到 Milvus。
 
         Args:
@@ -202,9 +201,9 @@ class MilvusStore:
     async def search(
         self,
         query: str,
-        top_k: Optional[int] = None,
-        filter_expr: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        top_k: int | None = None,
+        filter_expr: str | None = None,
+    ) -> list[dict[str, Any]]:
         """向量相似度检索。
 
         Args:
@@ -245,9 +244,9 @@ class MilvusStore:
     async def hybrid_search(
         self,
         query: str,
-        top_k: Optional[int] = None,
-        filter_expr: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        top_k: int | None = None,
+        filter_expr: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Native Milvus hybrid search for document retrieval."""
         top_k = top_k or self.config.rrf_final_top_k
         search_limit = max(self.config.vector_top_k, self.config.bm25_top_k, top_k)

@@ -7,9 +7,6 @@
 
 from __future__ import annotations
 
-from langgraph.graph import END, START, StateGraph
-
-from app.chat.infrastructure.graph.state import AgentState, InputState
 from app.chat.infrastructure.graph.decision_nodes import (
     analyze_and_route_query,
     guardrails_edge,
@@ -26,7 +23,9 @@ from app.chat.infrastructure.graph.retrieval_nodes import (
     execute_rag_only,
     execute_then,
 )
+from app.chat.infrastructure.graph.state import AgentState, InputState
 from app.chat.infrastructure.react.react import execute_react
+from langgraph.graph import END, START, StateGraph
 
 # ====================================================================
 # 节点注册表

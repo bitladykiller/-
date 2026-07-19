@@ -9,10 +9,9 @@
 - 纯 schema 规则已下沉到 `schema_validation_rules.py`
 """
 
-from typing import Any, Dict, List
+from typing import Any
 
 import regex as re
-
 from langchain_core.runnables.base import Runnable
 from langchain_neo4j import Neo4jGraph
 from langchain_neo4j.chains.graph_qa.cypher_utils import CypherQueryCorrector, Schema
@@ -58,10 +57,10 @@ def retrieve_and_parse_schema_from_graph_for_prompts(graph: Neo4jGraph) -> str:
 
 
 def update_task_list_with_property_type(
-    tasks: List[CypherValidationTask],
+    tasks: list[CypherValidationTask],
     structure_graph_schema: Neo4jStructuredSchema,
     node_or_rel: str,
-) -> List[CypherValidationTask]:
+) -> list[CypherValidationTask]:
     """为任务列表中的每个条目分配 Neo4j 属性类型。"""
     schema = (
         structure_graph_schema.node_props
@@ -71,7 +70,7 @@ def update_task_list_with_property_type(
 
     for task in tasks:
         found_types = {
-            {d.property: d.type for d in schema.get(label_or_type, list())}.get(
+            {d.property: d.type for d in schema.get(label_or_type, [])}.get(
                 task.property_name
             )
             for label_or_type in task.parsed_labels_or_types
@@ -83,7 +82,7 @@ def update_task_list_with_property_type(
     return tasks
 
 
-def validate_cypher_query_syntax(graph: Neo4jGraph, cypher_statement: str) -> List[str]:
+def validate_cypher_query_syntax(graph: Neo4jGraph, cypher_statement: str) -> list[str]:
     """
     Validate the Cypher statement syntax by running an EXPLAIN query.
 
@@ -99,7 +98,7 @@ def validate_cypher_query_syntax(graph: Neo4jGraph, cypher_statement: str) -> Li
     List[str]
         If the statement contains invalid syntax, return an error message in a list
     """
-    errors = list()
+    errors = []
     try:
         graph.query(f"EXPLAIN {cypher_statement}")
     except CypherSyntaxError as e:
@@ -128,7 +127,7 @@ def correct_cypher_query_relationship_direction(
     # Cypher query corrector is experimental
     corrector_schema = [
         Schema(el["start"], el["type"], el["end"])
-        for el in graph.structured_schema.get("relationships", list())
+        for el in graph.structured_schema.get("relationships", [])
     ]
     cypher_query_corrector = CypherQueryCorrector(corrector_schema)
 
@@ -138,11 +137,11 @@ def correct_cypher_query_relationship_direction(
 
 
 async def validate_cypher_query_with_llm(
-    validate_cypher_chain: Runnable[Dict[str, Any], Any],
+    validate_cypher_chain: Runnable[dict[str, Any], Any],
     question: str,
     graph: Neo4jGraph,
     cypher_statement: str,
-) -> Dict[str, List[str]]:
+) -> dict[str, list[str]]:
     """
     Validate the Cypher statement with an LLM.
     Use declared LLM to find Node and Property pairs to validate.
@@ -165,8 +164,8 @@ async def validate_cypher_query_with_llm(
         A Python dictionary with keys `errors` and `mapping_errors`, each with a list of found errors.
     """
 
-    errors: List[str] = []
-    mapping_errors: List[str] = []
+    errors: list[str] = []
+    mapping_errors: list[str] = []
 
     llm_output: ValidateCypherOutput = await validate_cypher_chain.ainvoke(
         {
@@ -201,7 +200,7 @@ async def validate_cypher_query_with_llm(
 
 def validate_cypher_query_with_schema(
     graph: Neo4jGraph, cypher_statement: str
-) -> List[str]:
+) -> list[str]:
     """
     Validate the provided Cypher statement using the schema retrieved from the graph.
     This will ensure the existance of names nodes, relationships and properties.
@@ -227,15 +226,15 @@ def validate_cypher_query_with_schema(
     nodes_and_rels = extract_entities_for_validation(cypher_statement=cypher_statement)
 
     node_tasks = update_task_list_with_property_type(
-        nodes_and_rels.get("nodes", list()), schema, "node"
+        nodes_and_rels.get("nodes", []), schema, "node"
     )
     rel_tasks = update_task_list_with_property_type(
-        nodes_and_rels.get("relationships", list()), schema, "rel"
+        nodes_and_rels.get("relationships", []), schema, "rel"
     )
     node_groups = build_validation_task_groups(node_tasks)
     rel_groups = build_validation_task_groups(rel_tasks)
 
-    errors: List[str] = list()
+    errors: list[str] = []
 
     errors.extend(
         validate_property_names_with_enum(
@@ -284,7 +283,7 @@ def validate_cypher_query_with_schema(
     return errors
 
 
-def validate_no_writes_in_cypher_query(cypher_statement: str) -> List[str]:
+def validate_no_writes_in_cypher_query(cypher_statement: str) -> list[str]:
     """
     Validate whether the provided Cypher contains any write clauses.
 
@@ -298,7 +297,7 @@ def validate_no_writes_in_cypher_query(cypher_statement: str) -> List[str]:
     List[str]
         A list of any found errors.
     """
-    errors: List[str] = list()
+    errors: list[str] = []
 
     for wc in _WRITE_CLAUSES:
         if wc in cypher_statement.upper():
