@@ -1,9 +1,21 @@
+"""上传 API 单元测试。
+
+使用轻量 Fake 对象替代 FastAPI UploadFile / 任务管理器，
+并通过 cast 对齐生产函数签名，避免编辑器类型误报。
+"""
+
+from __future__ import annotations
+
 import asyncio
+from collections.abc import Callable, Coroutine
 from pathlib import Path
+from typing import Any, TypeVar, cast
 
 import app.api.upload as upload_api
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
+
+T = TypeVar("T")
 
 
 class FakeNow:
@@ -19,6 +31,8 @@ class FakeDateTime:
 
 
 class FakeUploadFile:
+    """满足上传链路读取需求的最小 UploadFile 替身。"""
+
     def __init__(
         self,
         filename: str | None = "guide.pdf",
@@ -30,37 +44,46 @@ class FakeUploadFile:
         self.content_type = content_type
         self._content = content
 
-    async def read(self) -> bytes:
+    async def read(self, size: int = -1) -> bytes:
+        _ = size
         return self._content
 
 
+def _as_upload(file: FakeUploadFile) -> UploadFile:
+    """将测试替身转换为 UploadFile 类型，供生产函数签名使用。"""
+    return cast(UploadFile, file)
+
+
 class FakeTaskManager:
-    def __init__(self, *, task_id: str = "task-1", status=None) -> None:
+    def __init__(self, *, task_id: str = "task-1", status: dict[str, Any] | None = None) -> None:
         self.task_id = task_id
         self.status = status
-        self.submit_calls: list[tuple[object, tuple[object, ...]]] = []
+        self.submit_calls: list[tuple[Callable[..., Any], tuple[Any, ...]]] = []
         self.status_calls: list[str] = []
 
-    async def submit(self, coro_func, *args):
+    async def submit(self, coro_func: Callable[..., Any], *args: Any) -> str:
         self.submit_calls.append((coro_func, args))
         return self.task_id
 
-    async def get_status(self, task_id: str):
+    async def get_status(self, task_id: str) -> dict[str, Any] | None:
         self.status_calls.append(task_id)
         return self.status
 
 
-def _run(awaitable):
-    return asyncio.run(awaitable)
+def _run(coro: Coroutine[Any, Any, T]) -> T:
+    """在同步测试中执行协程。"""
+    return asyncio.run(coro)
 
 
 def test_validate_upload_rejects_unsupported_extension_and_missing_content_type() -> None:
     with pytest.raises(HTTPException) as unsupported_exc:
         upload_api.validate_upload(
-            FakeUploadFile(
-                filename="demo.txt",
-                content_type="text/plain",
-                content=b"hello",
+            _as_upload(
+                FakeUploadFile(
+                    filename="demo.txt",
+                    content_type="text/plain",
+                    content=b"hello",
+                )
             )
         )
     assert unsupported_exc.value.status_code == 400
@@ -68,9 +91,11 @@ def test_validate_upload_rejects_unsupported_extension_and_missing_content_type(
 
     with pytest.raises(HTTPException) as missing_type_exc:
         upload_api.validate_upload(
-            FakeUploadFile(
-                filename="demo.pdf",
-                content_type=None,
+            _as_upload(
+                FakeUploadFile(
+                    filename="demo.pdf",
+                    content_type=None,
+                )
             )
         )
     assert missing_type_exc.value.status_code == 400
@@ -81,7 +106,7 @@ def test_read_upload_content_accepts_matching_signature_and_unknown_extension() 
     assert (
         _run(
             upload_api.read_upload_content(
-                FakeUploadFile(filename="demo.pdf", content=b"%PDF-1.7"),
+                _as_upload(FakeUploadFile(filename="demo.pdf", content=b"%PDF-1.7")),
                 max_upload_size_bytes=10,
                 file_size_exceeded_detail="文件大小超过限制 (50MB)",
                 content_extension_mismatch_detail="文件内容与扩展名不匹配: {extension}",
@@ -92,10 +117,12 @@ def test_read_upload_content_accepts_matching_signature_and_unknown_extension() 
     assert (
         _run(
             upload_api.read_upload_content(
-                FakeUploadFile(
-                    filename="demo.unknown",
-                    content_type="application/octet-stream",
-                    content=b"whatever",
+                _as_upload(
+                    FakeUploadFile(
+                        filename="demo.unknown",
+                        content_type="application/octet-stream",
+                        content=b"whatever",
+                    )
                 ),
                 max_upload_size_bytes=10,
                 file_size_exceeded_detail="文件大小超过限制 (50MB)",
@@ -110,7 +137,7 @@ def test_read_upload_content_rejects_oversize_and_signature_mismatch() -> None:
     with pytest.raises(HTTPException) as oversize_exc:
         _run(
             upload_api.read_upload_content(
-                FakeUploadFile(content=b"12345"),
+                _as_upload(FakeUploadFile(content=b"12345")),
                 max_upload_size_bytes=4,
                 file_size_exceeded_detail="文件大小超过限制 (50MB)",
                 content_extension_mismatch_detail="文件内容与扩展名不匹配: {extension}",
@@ -122,7 +149,7 @@ def test_read_upload_content_rejects_oversize_and_signature_mismatch() -> None:
     with pytest.raises(HTTPException) as mismatch_exc:
         _run(
             upload_api.read_upload_content(
-                FakeUploadFile(content=b"PK\x03\x04"),
+                _as_upload(FakeUploadFile(content=b"PK\x03\x04")),
                 max_upload_size_bytes=4,
                 file_size_exceeded_detail="文件大小超过限制 (50MB)",
                 content_extension_mismatch_detail="文件内容与扩展名不匹配: {extension}",
@@ -133,21 +160,22 @@ def test_read_upload_content_rejects_oversize_and_signature_mismatch() -> None:
 
 
 def test_store_upload_writes_file_and_returns_stable_metadata(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     class FakeUUIDModule:
         NAMESPACE_DNS = object()
 
         @staticmethod
-        def uuid5(namespace, value):
+        def uuid5(namespace: object, value: object) -> str:
+            _ = namespace, value
             return "user-uuid"
 
     monkeypatch.setattr(upload_api, "UPLOAD_DIR", tmp_path)
     monkeypatch.setattr(upload_api, "uuid", FakeUUIDModule)
     monkeypatch.setattr(upload_api, "datetime", FakeDateTime)
 
-    file_info = _run(upload_api._store_upload(FakeUploadFile(filename="manual.pdf"), 3))
+    file_info = _run(upload_api._store_upload(_as_upload(FakeUploadFile(filename="manual.pdf")), 3))
 
     assert file_info == {
         "filename": "manual_20260102_030405.pdf",
@@ -160,39 +188,44 @@ def test_store_upload_writes_file_and_returns_stable_metadata(
         "upload_time": "20260102_030405",
         "directory": (tmp_path / "user-uuid" / "20260102_030405").as_posix(),
     }
-    assert (tmp_path / "user-uuid" / "20260102_030405" / "manual_20260102_030405.pdf").read_bytes() == b"%PDF-1.7"
+    assert (
+        tmp_path / "user-uuid" / "20260102_030405" / "manual_20260102_030405.pdf"
+    ).read_bytes() == b"%PDF-1.7"
 
 
-def test_process_upload_runs_validation_storage_and_task_submission(monkeypatch) -> None:
+def test_process_upload_runs_validation_storage_and_task_submission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     file = FakeUploadFile("guide.pdf")
     manager = FakeTaskManager(task_id="task-9")
     file_info = {"path": "uploads/guide.pdf", "filename": "guide.pdf", "user_id": 7}
     captured: list[tuple[str, object]] = []
 
-    def fake_validate_upload(upload_file):
+    def fake_validate_upload(upload_file: UploadFile) -> None:
         captured.append(("validate", upload_file))
 
-    async def fake_store_upload(upload_file, user_id: int):
+    async def fake_store_upload(upload_file: UploadFile, user_id: int) -> dict[str, object]:
         captured.append(("store", (upload_file, user_id)))
         return file_info
 
-    async def fake_get_task_manager():
+    async def fake_get_task_manager() -> FakeTaskManager:
         return manager
 
     monkeypatch.setattr(upload_api, "validate_upload", fake_validate_upload)
     monkeypatch.setattr(upload_api, "_store_upload", fake_store_upload)
     monkeypatch.setattr(upload_api, "get_task_manager", fake_get_task_manager)
 
-    response = _run(upload_api.upload_file(file, 7))
+    response = _run(upload_api.upload_file(_as_upload(file), 7))
 
     assert captured == [
-        ("validate", file),
-        ("store", (file, 7)),
+        ("validate", _as_upload(file)),
+        ("store", (_as_upload(file), 7)),
     ]
     assert len(manager.submit_calls) == 1
     submitted_func, submitted_args = manager.submit_calls[0]
-    assert submitted_func.__self__.__class__ is upload_api.IndexingService
-    assert submitted_func.__name__ == "process_file"
+    # process_file 是绑定方法，校验所属类与方法名
+    assert getattr(submitted_func, "__self__", None).__class__ is upload_api.IndexingService
+    assert getattr(submitted_func, "__name__", "") == "process_file"
     assert submitted_args == (file_info,)
     assert response == {
         **file_info,
@@ -201,14 +234,16 @@ def test_process_upload_runs_validation_storage_and_task_submission(monkeypatch)
     }
 
 
-def test_get_upload_status_or_raise_returns_status_and_raises_404(monkeypatch) -> None:
-    async def fake_get_task_manager_ok():
+def test_get_upload_status_or_raise_returns_status_and_raises_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_get_task_manager_ok() -> FakeTaskManager:
         return FakeTaskManager(status={"status": "running"})
 
     monkeypatch.setattr(upload_api, "get_task_manager", fake_get_task_manager_ok)
     assert _run(upload_api.get_upload_status("task-ok")) == {"status": "running"}
 
-    async def fake_get_task_manager_missing():
+    async def fake_get_task_manager_missing() -> FakeTaskManager:
         return FakeTaskManager(status=None)
 
     monkeypatch.setattr(upload_api, "get_task_manager", fake_get_task_manager_missing)
