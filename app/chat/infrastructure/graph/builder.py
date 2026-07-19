@@ -7,6 +7,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Hashable
+from typing import cast
+
 from app.chat.infrastructure.graph.decision_nodes import (
     analyze_and_route_query,
     guardrails_edge,
@@ -88,10 +91,11 @@ for registration in _NODE_REGISTRATIONS:
 _graph_builder.add_edge(START, "analyze_and_route_query")
 
 # 条件边：分析路由 → 通用回复 或 Guardrails
+# cast 用于兼容 langgraph 对 path_map 的 Hashable 键类型约束
 _graph_builder.add_conditional_edges(
     "analyze_and_route_query",
     route_query,
-    _ROUTER_EDGE_MAP,
+    cast(dict[Hashable, str], _ROUTER_EDGE_MAP),
 )
 
 # 固定边：通用回复 → 响应后处理
@@ -101,14 +105,14 @@ _graph_builder.add_edge("respond_to_general_query", "after_response")
 _graph_builder.add_conditional_edges(
     "guardrails_node",
     guardrails_edge,
-    _GUARDRAILS_EDGE_MAP,
+    cast(dict[Hashable, str], _GUARDRAILS_EDGE_MAP),
 )
 
 # 条件边：检索计划 → 各种执行策略
 _graph_builder.add_conditional_edges(
     "retrieval_plan_route",
     retrieval_plan_edge,
-    _RETRIEVAL_PLAN_EDGE_MAP,
+    cast(dict[Hashable, str], _RETRIEVAL_PLAN_EDGE_MAP),
 )
 
 # 固定边：所有执行节点 → 响应后处理

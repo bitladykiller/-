@@ -105,12 +105,12 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
             )
 
         return create_react_agent(
-            model=react_model,
+            model=react_model,  # type: ignore[arg-type]
             tools=[neo4j_query, rag_search],
             prompt=REACT_SYSTEM_PROMPT,
             version="v2",
             name="customer_service_react_agent",
-        )
+        )  # type: ignore[return-value]
 
     sg = await get_react_subgraph(build_react_subgraph)
     subgraph_config = dict(config) if config else {}
@@ -127,7 +127,10 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
                 }
             )
 
-        result = await sg.ainvoke({"messages": react_messages}, config=subgraph_config)
+        result = await sg.ainvoke(
+            {"messages": react_messages},
+            config=subgraph_config,  # type: ignore[arg-type]
+        )
         result_messages = result.get("messages", [])
         if not result_messages:
             last_answer = "未能确定回答～"

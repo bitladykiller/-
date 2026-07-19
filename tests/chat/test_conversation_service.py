@@ -4,16 +4,10 @@
 """
 
 import asyncio
-from datetime import datetime
-
-import pytest
 
 from app.chat.application.conversation_service import (
     ConversationService,
-    ConversationSummary,
-    run_db_operation,
 )
-from app.chat.infrastructure.models.conversation import Conversation, DialogueType
 
 
 def _run(awaitable):

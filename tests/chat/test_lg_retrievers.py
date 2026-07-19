@@ -178,11 +178,11 @@ def test_knowledge_graph_retriever_normalizes_records_and_cyphers() -> None:
 
 
 def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
+    import app.chat.infrastructure.kg.neo4j_conn as kg_neo4j_conn
+    import app.chat.infrastructure.kg.northwind_retriever as northwind_retriever
     import app.chat.infrastructure.kg.predefined_cypher.cypher_dict as cypher_dict
     import app.chat.infrastructure.kg.predefined_cypher.descriptions as descriptions
-    import app.chat.infrastructure.kg.northwind_retriever as northwind_retriever
     import app.chat.infrastructure.kg.text2cypher_workflow as text2cypher
-    import app.chat.infrastructure.kg.neo4j_conn as kg_neo4j_conn
     import app.chat.infrastructure.modeling.models as lg_models
 
     created: dict[str, object] = {}

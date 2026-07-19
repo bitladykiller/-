@@ -1,6 +1,5 @@
-import numpy as np
-
 import app.chat.infrastructure.kg.predefined_cypher.utils as predefined_utils
+import numpy as np
 
 
 class FakeLLM:

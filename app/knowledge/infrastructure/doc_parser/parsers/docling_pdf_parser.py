@@ -168,7 +168,7 @@ class DoclingPDFParser(BaseDocumentParser):
         # 构建转换器
         converter = DocumentConverter(
             format_options={
-                "pdf": PdfFormatOption(pipeline_options=pipeline_options)
+                "pdf": PdfFormatOption(pipeline_options=pipeline_options)  # type: ignore[dict-item]
             }
         )
 
@@ -192,7 +192,7 @@ class DoclingPDFParser(BaseDocumentParser):
 
         # 尝试新 API
         try:
-            from docling.datamodel.pipeline_options import (
+            from docling.datamodel.pipeline_options import (  # type: ignore[attr-defined]
                 ApiVlmEngineOptions,
                 PictureDescriptionVlmEngineOptions,
             )
@@ -207,7 +207,7 @@ class DoclingPDFParser(BaseDocumentParser):
             )
 
             # 构建图片描述选项
-            picture_description_options = PictureDescriptionVlmEngineOptions(
+            picture_description_options = PictureDescriptionVlmEngineOptions(  # type: ignore[call-arg]
                 vlm_engine_options=vlm_engine_options,
                 prompt=self.config.picture_description_prompt,
             )
@@ -229,7 +229,7 @@ class DoclingPDFParser(BaseDocumentParser):
             from docling.datamodel.pipeline_options import PictureDescriptionApiOptions
 
             picture_description_options = PictureDescriptionApiOptions(
-                url=self.config.vlm_api_base_url or "",
+                url=self.config.vlm_api_base_url or "",  # type: ignore[arg-type]
                 headers={"Authorization": f"Bearer {self._vlm_api_key}"},
                 prompt=self.config.picture_description_prompt,
                 params={

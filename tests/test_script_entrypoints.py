@@ -1,7 +1,8 @@
+import asyncio
 import importlib
 import sys
 import types
-import asyncio
+
 
 def _import_fresh(module_name: str):
     sys.modules.pop(module_name, None)

@@ -3,7 +3,12 @@ from app.knowledge.domain.prompt_builder import (
     build_memory_injection_prompt,
     build_summary_injection_prompt,
 )
-from app.knowledge.domain.schemas import LongTermMemory, MemorySearchResult, MessageRecord, SessionSummary
+from app.knowledge.domain.schemas import (
+    LongTermMemory,
+    MemorySearchResult,
+    MessageRecord,
+    SessionSummary,
+)
 
 
 def _build_memory_search_result(

@@ -288,7 +288,7 @@ def create_text2cypher_agent(
             )
             llm_errors = await validate_cypher_query_with_llm(
                 validate_cypher_chain=validate_cypher_chain,
-                question=state.get("task", ""),
+                question=str(state.get("task", "") or ""),
                 graph=graph,
                 cypher_statement=state.get("statement", ""),
             )

@@ -4,17 +4,17 @@
 """
 
 from app.user.domain.profile_payload_support import (
+    PROFILE_FIELD_NAMES,
     coerce_user_profile_payload,
     normalize_optional_text,
     normalize_profile_data,
     normalize_profile_facts,
     normalize_profile_tags,
-    PROFILE_FIELD_NAMES,
 )
 from app.user.infrastructure.repository.user_profile_repository import (
-    _decode_profile_tags_json,
-    _build_user_profile_facts,
     _build_profile_field_values,
+    _build_user_profile_facts,
+    _decode_profile_tags_json,
 )
 
 

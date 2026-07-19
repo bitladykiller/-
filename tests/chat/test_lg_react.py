@@ -1,10 +1,9 @@
 import asyncio
 
-from langchain_core.messages import AIMessage, HumanMessage
-
 import app.chat.infrastructure.react.react as lg_react
 from app.chat.infrastructure.graph.state import AgentState
 from app.shared.core.config import settings
+from langchain_core.messages import AIMessage, HumanMessage
 
 
 class FakeAnswerCheck:
@@ -148,6 +147,7 @@ def test_execute_react_returns_checked_answer_with_progress_message(monkeypatch)
 
 def test_execute_react_retries_on_step_exhaustion_and_returns_fallback(monkeypatch) -> None:
     from dataclasses import replace
+
     from app.shared.core.app_config import ReactConfig
     from app.shared.core.config import settings as real_settings
 

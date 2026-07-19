@@ -16,7 +16,21 @@ from langchain_core.messages import AIMessage
 
 def question_from_state(state: AgentState) -> str:
     """从 AgentState 中提取最新一条用户问题。"""
-    return state.messages[-1].content if state.messages else ""
+    if not state.messages:
+        return ""
+    content = state.messages[-1].content
+    # LangChain content 可能是 str 或结构化块列表
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and "text" in item:
+                parts.append(str(item["text"]))
+        return "".join(parts)
+    return str(content)
 
 
 def no_neo4j_response() -> dict:

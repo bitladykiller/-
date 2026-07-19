@@ -74,6 +74,7 @@ class KnowledgeGraphRetriever(Retriever):
         """查询 Neo4j 知识图谱。"""
 
         raw_result = await self._t2c_agent.ainvoke({"task": task})
+        records: list[dict[str, Any]] = []
         if "records" in raw_result:
             raw_records = raw_result.get("records")
             if raw_records is None:
@@ -85,7 +86,6 @@ class KnowledgeGraphRetriever(Retriever):
             else:
                 records = [{"value": raw_records}]
         else:
-            records: list[dict[str, Any]] = []
             for cypher in raw_result.get("cyphers", []):
                 cypher_records = cypher.get("records")
                 if cypher_records is None:

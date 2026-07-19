@@ -180,8 +180,10 @@ async def retrieval_plan_route(
 
 def retrieval_plan_edge(state: AgentState) -> RetrievalEdgeName:
     """根据检索计划路由到对应的执行节点。"""
-    plan_name = (state.retrieval_plan or {}).get("plan")
-    return _RETRIEVAL_EDGE_MAP.get(plan_name or "AGENT_REACT", "execute_react")
+    plan: dict[str, object] = dict(state.retrieval_plan or {})
+    plan_name = plan.get("plan")
+    key = plan_name if isinstance(plan_name, str) and plan_name else "AGENT_REACT"
+    return _RETRIEVAL_EDGE_MAP.get(key, "execute_react")
 
 
 __all__ = [

@@ -1,15 +1,15 @@
 import asyncio
 
 import app.knowledge.infrastructure.stm.redis_short_term_memory as stm_memory
-from app.shared.core.config import settings as _settings
 from app.knowledge.domain.schemas import MessageRecord, SessionMeta, SessionSummary
 from app.knowledge.infrastructure.stm.redis_short_term_memory import (
-    run_compression_pipeline,
     CompressionContext,
     build_compression_context,
     build_runtime_settings,
+    run_compression_pipeline,
     should_compress_session,
 )
+from app.shared.core.config import settings as _settings
 
 
 class FakeRedis:

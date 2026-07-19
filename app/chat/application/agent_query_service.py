@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
-from typing import Any, TypeAlias
+from typing import Any, Literal, TypeAlias, cast
 
 from app.chat.infrastructure.graph.builder import graph
 from app.chat.infrastructure.graph.state import InputState
@@ -31,15 +31,19 @@ def stream_agent_query(
     thread_id: str,
 ) -> GraphStream:
     """启动 Agent 图流式执行。"""
-    return graph.astream(
-        input=InputState(messages=[HumanMessage(content=query)]),
-        stream_mode=STREAM_MODE_MESSAGES,
-        config={
-            "configurable": {
-                "thread_id": thread_id,
-                "user_id": str(user_id),
-            }
-        },
+    # cast: langgraph 对 stream_mode 字面量类型较严，运行时字符串 "messages" 合法
+    return cast(
+        GraphStream,
+        graph.astream(
+            input=InputState(messages=[HumanMessage(content=query)]),
+            stream_mode=cast(Literal["messages"], STREAM_MODE_MESSAGES),
+            config={
+                "configurable": {
+                    "thread_id": thread_id,
+                    "user_id": str(user_id),
+                }
+            },
+        ),
     )
 
 

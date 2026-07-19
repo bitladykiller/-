@@ -1,10 +1,9 @@
 import asyncio
 from pathlib import Path
 
+import app.api.upload as upload_api
 import pytest
 from fastapi import HTTPException
-
-import app.api.upload as upload_api
 
 
 class FakeNow:

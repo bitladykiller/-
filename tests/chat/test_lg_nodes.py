@@ -1,11 +1,10 @@
 import asyncio
 from types import SimpleNamespace
 
-from langchain_core.messages import AIMessage, HumanMessage
-
 import app.chat.infrastructure.graph.decision_nodes as lg_decision_nodes
 import app.chat.infrastructure.graph.lifecycle_nodes as lg_nodes
 from app.chat.infrastructure.graph.state import AgentState
+from langchain_core.messages import AIMessage, HumanMessage
 
 
 class FakeMemoryMiddleware:

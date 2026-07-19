@@ -3,14 +3,14 @@ from app.chat.infrastructure.kg.validation.models import (
     Neo4jStructuredSchema,
     Neo4jStructuredSchemaPropertyNumber,
 )
-from app.chat.infrastructure.kg.validation.utils.cypher_extractors import (
-    extract_entities_for_validation,
-)
 from app.chat.infrastructure.kg.validation.schema_validation_rules import (
     build_validation_task_groups,
     validate_property_names_with_enum,
     validate_property_values_with_enum,
     validate_property_values_with_range,
+)
+from app.chat.infrastructure.kg.validation.utils.cypher_extractors import (
+    extract_entities_for_validation,
 )
 
 

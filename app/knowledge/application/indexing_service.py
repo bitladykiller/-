@@ -26,9 +26,12 @@ _DOCUMENT_MAGIC_SIGNATURES: dict[str, tuple[bytes, ...]] = {
 }
 
 
-def get_document_extension(path: str | Path) -> str:
-    """返回文件的小写扩展名。"""
-    return Path(path).suffix.lower()
+def get_document_extension(path: str | Path | None) -> str:
+    """返回文件的小写扩展名。
+
+    上传场景下 `UploadFile.filename` 可能为 None，统一按空文件名处理。
+    """
+    return Path(path or "").suffix.lower()
 
 
 def supports_document_indexing(extension: str) -> bool:

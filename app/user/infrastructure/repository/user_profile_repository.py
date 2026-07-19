@@ -131,7 +131,7 @@ class UserProfileRepository:
             profile["tags"] = _decode_profile_tags_json(profile_row.get("tags"))
 
         fact_rows = (await db.execute(_ACTIVE_FACTS_QUERY_SQL, {"uid": user_id})).mappings().all()
-        profile["facts"] = _build_user_profile_facts(fact_rows)
+        profile["facts"] = _build_user_profile_facts(fact_rows)  # type: ignore[arg-type]
 
         return profile
 

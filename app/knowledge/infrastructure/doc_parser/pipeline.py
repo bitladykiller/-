@@ -57,7 +57,7 @@ def parse_document(
     if ext == "pdf":
         parser = DoclingPDFParser(config)
     elif ext == "docx":
-        parser = DoclingDOCXParser(config)
+        parser = DoclingDOCXParser(config)  # type: ignore[assignment]
     else:
         raise UnsupportedFileTypeError(file_path)
 

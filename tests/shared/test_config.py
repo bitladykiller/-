@@ -1,6 +1,5 @@
-import pytest
-
 import app.shared.core.config as config_module
+import pytest
 from app.shared.core.config_models import (
     BusinessSettings,
     InfrastructureSettings,

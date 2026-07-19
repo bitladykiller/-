@@ -5,14 +5,12 @@
 
 import asyncio
 from datetime import datetime
-from unittest.mock import MagicMock
 
 import pytest
-
+from app.chat.infrastructure.models.conversation import DialogueType
 from app.chat.infrastructure.repository.conversation_repository import (
     ConversationRepository,
 )
-from app.chat.infrastructure.models.conversation import Conversation, DialogueType
 
 
 class FakeConversation:

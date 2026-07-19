@@ -1,10 +1,10 @@
+from app.knowledge.domain.schemas import LongTermMemory
 from app.knowledge.infrastructure.ltm.simple_long_term_memory import (
     build_hit_update_plan,
     build_new_memory_insert_record,
     preview_text,
     resolve_active_search_request,
 )
-from app.knowledge.domain.schemas import LongTermMemory
 
 
 def test_preview_text_and_search_param_resolution_are_stable() -> None:

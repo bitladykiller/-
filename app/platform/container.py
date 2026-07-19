@@ -200,7 +200,7 @@ def _create_memory_middleware() -> Any:
     else:
         from langchain_community.embeddings import HuggingFaceEmbeddings
 
-        embedding_model = HuggingFaceEmbeddings(model_name=settings.EMBEDDING_MODEL)
+        embedding_model = HuggingFaceEmbeddings(model_name=settings.EMBEDDING_MODEL)  # type: ignore[assignment]
 
     memory_extractor_llm = create_llm_for_role("memory_extractor")
 

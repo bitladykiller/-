@@ -1,5 +1,3 @@
-from langchain_core.messages import AIMessage, HumanMessage
-
 from app.chat.infrastructure.graph.message_utils import (
     build_progress_response,
     build_safe_messages,
@@ -7,6 +5,7 @@ from app.chat.infrastructure.graph.message_utils import (
     find_last_assistant_message,
     find_last_user_message,
 )
+from langchain_core.messages import AIMessage, HumanMessage
 
 
 def test_build_safe_messages_wraps_user_messages_only() -> None:

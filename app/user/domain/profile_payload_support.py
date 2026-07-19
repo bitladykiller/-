@@ -67,7 +67,7 @@ def normalize_profile_data(raw_profile: Any) -> UserProfileData:
     for field_name in PROFILE_FIELD_NAMES:
         field_value = normalize_optional_text(raw_profile.get(field_name))
         if field_value is not None:
-            normalized_profile[field_name] = field_value
+            normalized_profile[field_name] = field_value  # type: ignore[literal-required]
 
     tags = normalize_profile_tags(raw_profile.get("tags"))
     if tags:

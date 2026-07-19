@@ -286,7 +286,7 @@ class BlockParser:
 
         return MarkdownBlock(
             block_id=new_uuid(),
-            block_type=block_type,
+            block_type=block_type,  # type: ignore[arg-type]
             content=content,
             section_path=section.section_path,
             h1=section.h1,

@@ -64,7 +64,7 @@ class Reranker:
             return candidates[:top_k]
 
         pairs = [[query, c.get(text_field, "")] for c in candidates]
-        scores = self._model.compute_score(pairs, normalize=True)
+        scores = self._model.compute_score(pairs, normalize=True)  # type: ignore[attr-defined]
 
         # 将 rerank 分数写入结果
         if not isinstance(scores, list):

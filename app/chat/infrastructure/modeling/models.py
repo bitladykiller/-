@@ -119,7 +119,7 @@ def _create_model(name: ModelRole, temperature: float) -> Any:
 
         return ChatDeepSeek(
             api_key=settings.DEEPSEEK_API_KEY,
-            model_name=settings.DEEPSEEK_MODEL,
+            model_name=settings.DEEPSEEK_MODEL,  # type: ignore[call-arg]
             temperature=temperature,
         )
     else:

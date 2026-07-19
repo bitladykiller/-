@@ -44,10 +44,10 @@ class FakeSessionFactory:
         session = self.session
 
         class _SessionContext:
-            async def __aenter__(self_inner):
+            async def __aenter__(self_inner):  # noqa: N805
                 return session
 
-            async def __aexit__(self_inner, exc_type, exc, tb) -> bool:
+            async def __aexit__(self_inner, exc_type, exc, tb) -> bool:  # noqa: N805
                 return False
 
         return _SessionContext()

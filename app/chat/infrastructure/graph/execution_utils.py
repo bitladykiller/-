@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from typing import Any, TypeAlias
+from typing import Any, TypeAlias, cast
 
 from app.chat.infrastructure.graph.message_utils import MessagePayload, build_progress_response
 from app.chat.infrastructure.retrievers.retriever_contracts import Retriever
@@ -99,13 +99,14 @@ async def search_retriever(
 ) -> RetrieverResult:
     """执行检索；检索器缺失时返回空结果占位。"""
     if retriever is None:
-        return {
+        empty: RetrieverResult = {
             "task": query,
             "records": [],
             "errors": [],
             "steps": [],
         }
-    return await retriever.search(query)
+        return empty
+    return cast(RetrieverResult, await retriever.search(query))
 
 
 async def ainvoke_structured_question_output(
@@ -140,7 +141,8 @@ async def summarize_records(
     if container.summarize_chain is None:
         from app.chat.infrastructure.modeling.models import cypher_model
 
-        container.summarize_chain = _SUMMARIZE_PROMPT | cypher_model | StrOutputParser()
+        # LazyModelProxy 运行时兼容 Runnable 管道；静态类型无法表达
+        container.summarize_chain = _SUMMARIZE_PROMPT | cypher_model | StrOutputParser()  # type: ignore[operator]
 
     summary = await container.summarize_chain.ainvoke({
         "question": query,

@@ -10,7 +10,7 @@ class FakeLogger:
     def __init__(self) -> None:
         self.level: int | None = None
 
-    def setLevel(self, level: int) -> None:
+    def setLevel(self, level: int) -> None:  # noqa: N802
         self.level = level
 
 

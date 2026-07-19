@@ -9,8 +9,9 @@
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
-from typing import Protocol, TypeAlias
+from typing import TypeAlias
 
 import yaml
 from app.shared.core.logger import get_logger
@@ -19,16 +20,8 @@ logger = get_logger(__name__)
 PromptMapping: TypeAlias = dict[str, str]
 
 
-class PromptLogger(Protocol):
-    """Prompt 加载 helper 需要的最小日志接口。"""
-
-    def info(self, msg: str, *args: object, **kwargs: object) -> object: ...
-
-    def warning(self, msg: str, *args: object, **kwargs: object) -> object: ...
-
-
 def load_prompts_from_yaml(
-    logger: PromptLogger,
+    logger: logging.Logger,
     yaml_path: Path,
 ) -> PromptMapping:
     """从指定 YAML 文件加载 Prompt 覆盖值。"""

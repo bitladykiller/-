@@ -1,8 +1,10 @@
-import pytest
-
 import app.knowledge.infrastructure.doc_parser.pipeline as pipeline
+import pytest
 from app.knowledge.infrastructure.doc_parser.config import ParserConfig
-from app.knowledge.infrastructure.doc_parser.exceptions import DocumentParseError, UnsupportedFileTypeError
+from app.knowledge.infrastructure.doc_parser.exceptions import (
+    DocumentParseError,
+    UnsupportedFileTypeError,
+)
 from app.knowledge.infrastructure.doc_parser.models import (
     DocumentChunk,
     MarkdownBlock,

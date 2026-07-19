@@ -10,8 +10,9 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable
-from typing import Protocol, TypeVar
+from typing import TypeVar
 
 from app.shared.core.logger import format_log_context
 from fastapi import HTTPException
@@ -27,13 +28,6 @@ class MessageResponse(TypedDict):
     message: str
 
 
-class ErrorLogger(Protocol):
-    """满足 API 包装器所需最小能力的日志接口。"""
-
-    # 签名放宽，兼容标准库 logging.Logger（msg: object, 返回 None）
-    def error(self, msg: object, *args: object, **kwargs: object) -> None: ...
-
-
 def build_message_response(message: str) -> MessageResponse:
     """统一构造简单消息响应。"""
     return {"message": message}
@@ -43,7 +37,7 @@ async def run_api_action(
     action_name: str,
     operation: Awaitable[ApiResult],
     *,
-    logger: ErrorLogger,
+    logger: logging.Logger,
     **context: object,
 ) -> ApiResult:
     """统一执行 API 层异步动作，并把未知异常转换成 HTTP 500。"""

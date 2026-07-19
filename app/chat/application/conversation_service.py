@@ -136,7 +136,18 @@ async def _get_user_conversations(
 ) -> list[ConversationSummary]:
     """查询用户会话列表。"""
     repo = ConversationRepository(db)
-    return await repo.list_by_user(user_id)
+    # Repository 返回通用 dict，这里收敛为会话摘要契约
+    rows = await repo.list_by_user(user_id)
+    return [
+        ConversationSummary(
+            id=int(row["id"]),
+            title=str(row["title"]),
+            created_at=str(row["created_at"]),
+            status=str(row["status"]),
+            dialogue_type=str(row["dialogue_type"]),
+        )
+        for row in rows
+    ]
 
 
 async def _delete_conversation(db: AsyncSession, conversation_id: int) -> None:

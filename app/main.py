@@ -9,11 +9,11 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Protocol
 
 from app.api import api_router
 from app.platform.container import AppContainer, reset_container, set_container
@@ -34,14 +34,7 @@ setup_logging()
 logger = get_logger(__name__)
 
 
-class InfoLogger(Protocol):
-    """入口装配 helper 所需的最小日志接口。"""
-
-    # 签名放宽，兼容标准库 logging.Logger（msg: object, 返回 None）
-    def info(self, msg: object, *args: object, **kwargs: object) -> None: ...
-
-
-async def warm_up_runtime_resources(runtime_logger: InfoLogger) -> None:
+async def warm_up_runtime_resources(runtime_logger: logging.Logger) -> None:
     """预热懒加载资源，避免首请求承担初始化延迟。
 
     通过 AppContainer 统一管理预热逻辑。"""
@@ -61,9 +54,9 @@ async def close_runtime_resources() -> None:
 
 
 def build_lifespan(
-    runtime_logger: InfoLogger,
+    runtime_logger: logging.Logger,
     *,
-    warm_up: Callable[[InfoLogger], Awaitable[None]] = warm_up_runtime_resources,
+    warm_up: Callable[[logging.Logger], Awaitable[None]] = warm_up_runtime_resources,
     close_runtime: Callable[[], Awaitable[None]] = close_runtime_resources,
 ):
     """构造 FastAPI lifespan 处理器。
@@ -110,7 +103,7 @@ def configure_cors(
 
 def register_middleware(
     app: FastAPI,
-    runtime_logger: InfoLogger,
+    runtime_logger: logging.Logger,
     *,
     clock: Callable[[], float] = time.time,
 ) -> None:
@@ -150,7 +143,7 @@ def register_static_files(
     app: FastAPI,
     *,
     static_dir: Path,
-    runtime_logger: InfoLogger,
+    runtime_logger: logging.Logger,
 ) -> None:
     """在静态目录存在时挂载前端资源。"""
     if not static_dir.is_dir():
@@ -162,7 +155,7 @@ def register_static_files(
 
 def create_app(
     *,
-    runtime_logger: InfoLogger = logger,
+    runtime_logger: logging.Logger = logger,
     app_api_router: APIRouter = api_router,
     static_dir: Path = STATIC_DIR,
     health_status: str = HEALTH_STATUS,
@@ -198,7 +191,6 @@ app = create_app()
 __all__ = [
     "APP_TITLE",
     "HEALTH_STATUS",
-    "InfoLogger",
     "OPEN_CORS_HEADERS",
     "OPEN_CORS_METHODS",
     "OPEN_CORS_ORIGINS",
