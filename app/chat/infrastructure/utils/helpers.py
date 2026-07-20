@@ -16,11 +16,10 @@ from langchain_core.messages import AIMessage
 
 
 def question_from_state(state: AgentState) -> str:
-    """从 AgentState 中提取最新一条用户问题。"""
+    """取 messages 最后一条的可展示文本（兼容 str / 多模态 content 列表）。"""
     if not state.messages:
         return ""
     content = state.messages[-1].content
-    # LangChain content 可能是 str 或结构化块列表
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -35,7 +34,7 @@ def question_from_state(state: AgentState) -> str:
 
 
 def no_neo4j_response() -> dict[str, object]:
-    """Neo4j 不可用时的统一降级响应。"""
+    """KG 不可用时的统一用户可见降级（与 RAG 不可用文案区分）。"""
     return {
         "messages": [
             AIMessage(content="抱歉，知识库服务暂时不可用，请稍后重试。")

@@ -70,7 +70,7 @@ class UploadAcceptedResponse(StoredUploadFileInfo, total=False):
 
 
 def validate_upload(file: UploadFile) -> None:
-    """验证上传文件的扩展名和 MIME 基本信息。"""
+    """校验扩展名（md/pdf/docx）与 content_type 是否存在。"""
     ext = get_document_extension(file.filename)
     if not supports_document_indexing(ext):
         raise HTTPException(
@@ -88,13 +88,17 @@ async def read_upload_content(
     file_size_exceeded_detail: str,
     content_extension_mismatch_detail: str,
 ) -> bytes:
-    """读取上传内容并执行大小/魔数校验。"""
+    """读全文件并做大小/魔数校验。
+
+    Markdown 无稳定魔数，signatures 为空时跳过内容签名检查。
+    """
     content = await file.read()
     if len(content) > max_upload_size_bytes:
         raise HTTPException(status_code=400, detail=file_size_exceeded_detail)
 
     extension = get_document_extension(file.filename)
     signatures = _document_magic_signatures(extension)
+    # 仅 pdf/docx 有签名；伪造扩展名在此拦截
     if signatures and not any(content.startswith(signature) for signature in signatures):
         raise HTTPException(
             status_code=400,
@@ -104,7 +108,8 @@ async def read_upload_content(
 
 
 async def _store_upload(file: UploadFile, user_id: int) -> StoredUploadFileInfo:
-    """完成上传文件的校验、落盘与元信息组装。"""
+    """落盘并组装 file_info（供 IndexingService.process_file 使用）。"""
+    # uuid5：同一 user_id 稳定目录前缀，避免可枚举的递增路径
     user_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     upload_dir = UPLOAD_DIR / user_uuid / timestamp
@@ -137,11 +142,12 @@ async def upload_file(
     file: UploadFile = File(...),
     user_id: int = Form(...),
 ) -> UploadAcceptedResponse:
-    """上传文档并异步解析索引。"""
+    """上传并异步索引：先落盘立刻返回 task_id，解析在后台跑。"""
     async def operation() -> UploadAcceptedResponse:
         validate_upload(file)
         file_info = await _store_upload(file, user_id)
         task_manager = await get_task_manager()
+        # 勿在请求内同步 parse_document：大 PDF 会堵 worker
         task_id = await task_manager.submit(IndexingService().process_file, file_info)
         return {
             **file_info,

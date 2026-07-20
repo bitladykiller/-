@@ -22,7 +22,11 @@ logger = get_logger(__name__)
 async def after_response(
     state: AgentState, *, config: RunnableConfig
 ) -> dict[str, object]:
-    """将本轮对话写入 Redis STM，并触发 LTM 抽取。"""
+    """响应后处理：写 STM，并可能触发压缩/LTM/画像。
+
+    WHY 失败只打 warning：
+    用户答案已通过 SSE 发出，记忆失败不得反向变成 500。
+    """
     middleware = await _get_memory_middleware()
     if middleware is None:
         return {}
@@ -31,6 +35,7 @@ async def after_response(
         tenant_id, user_id, session_id = configurable_scope(config)
         user_message = find_last_user_message(state.messages)
         assistant_message = find_last_assistant_message(state.messages)
+        # 拒答/异常路径可能缺一侧消息，跳过写入避免脏会话
         if user_message and assistant_message:
             await middleware.after_agent(
                 tenant_id=tenant_id,

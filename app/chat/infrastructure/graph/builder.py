@@ -60,6 +60,8 @@ _NODE_REGISTRATIONS = (
 # 1. 分析路由节点 → 通用回复或 Guardrails
 # 2. Guardrails 节点 → 检索计划或结束
 # 3. 检索计划节点 → 各种执行策略
+# path 键来自 route_query 返回值；右侧是图上真实节点名
+# WHY "retrieval_plan_router" → guardrails_node：业务上要先守卫再进检索计划
 _ROUTER_EDGE_MAP = {
     "respond_to_general_query": "respond_to_general_query",
     "retrieval_plan_router": "guardrails_node",

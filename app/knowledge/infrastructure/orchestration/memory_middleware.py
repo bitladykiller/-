@@ -141,8 +141,15 @@ class MemoryMiddleware:
         assistant_message: str,
         long_term_memories: list[MemorySearchResult] | None = None,
     ) -> None:
-        """Agent 回复后：写入短期记忆，必要时压缩并抽取长期记忆。"""
+        """Agent 回复后写记忆。
+
+        阶段：
+        1) 写 STM 本轮 user/assistant + meta + 刷新 TTL
+        2) 达阈值则压缩；压缩成功且 ltm_enabled 再 extract → LTM/画像
+        3) 可选刷新本轮命中的 LTM hit 统计
+        """
         now_ts = int(time.time())
+        # ---- 1) 短期记忆落盘 ----
         try:
             meta = await self.redis_stm.get_meta(tenant_id, user_id, session_id)
             meta.total_turns += 1
@@ -178,6 +185,8 @@ class MemoryMiddleware:
         except Exception:
             self._warn_once("redis_stm_write", "[memory] Redis STM 写入失败（未知错误）")
 
+        # ---- 2) 压缩 + 抽取（仅 should_compress 为真时）----
+        # WHY 不在每轮 extract：控 LLM 成本，压缩点语义更完整
         try:
             meta = await self.redis_stm.get_meta(tenant_id, user_id, session_id)
             msg_count = await self.redis_stm.get_message_count(
@@ -251,6 +260,7 @@ class MemoryMiddleware:
         except Exception:
             self._warn_once("compress", "[memory] 记忆压缩失败（未知错误）")
 
+        # ---- 3) 命中统计（可选，失败不影响主路径）----
         if long_term_memories:
             try:
                 for result in long_term_memories:

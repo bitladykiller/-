@@ -63,9 +63,9 @@ class AppContainer:
     async def build(cls, config: Any) -> AppContainer:
         """按依赖顺序依次初始化所有组件。
 
-        初始化顺序：
-        1. MemoryMiddleware（含 STM/LTM/Extractor）
-        2. TaskManager
+        初始化顺序（与实现一致）：
+        1. TaskManager（Redis 任务队列，上传依赖）
+        2. MemoryMiddleware（STM/LTM/Extractor，问答依赖）
 
         Args:
             config: 应用配置（settings 对象）
@@ -79,6 +79,7 @@ class AppContainer:
             await container._init_memory_middleware()
             return container
         except Exception:
+            # 任一步失败：释放已创建连接，避免半初始化单例
             await container.close()
             raise
 

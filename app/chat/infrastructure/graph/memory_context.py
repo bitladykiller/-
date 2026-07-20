@@ -95,6 +95,7 @@ def build_memory_context(
     long_term_memories: list[MemorySearchResult],
     user_profile: UserProfileData | None = None,
 ) -> str:
+    """按 P0→P1→P2→P3 拼装注入文本；空段丢弃。冲突说明见 _MEMORY_INSTRUCTIONS。"""
     parts = [
         build_memory_section(
             _MEMORY_SECTION_TITLES["recent_messages"],

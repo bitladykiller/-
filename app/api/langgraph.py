@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Mapping
+from typing import Any
 
 from app.api.common import INTERNAL_SERVER_ERROR_DETAIL
 from app.chat.application.agent_query_service import stream_agent_query
@@ -32,14 +33,49 @@ _RESEARCH_PLAN_TAG = "research_plan"
 _SSE_DATA_PREFIX = "data: "
 
 
+def _chunk_tags(metadata: Mapping[str, Any]) -> list[str]:
+    """从 astream metadata 中提取字符串 tags。"""
+    raw_tags = metadata.get("tags", [])
+    if not isinstance(raw_tags, list):
+        return []
+    return [tag for tag in raw_tags if isinstance(tag, str)]
+
+
+def _should_emit_sse_chunk(chunk: object, metadata: Mapping[str, Any]) -> bool:
+    """判断 chunk 是否应推给前端。
+
+    WHY 过滤：
+    - 空 content：无展示价值
+    - tool_calls：工具调用中间态，用户只关心最终自然语言
+    - research_plan：内部规划标签，避免泄露到 SSE
+    """
+    content = getattr(chunk, "content", None)
+    if not content:
+        return False
+
+    additional_kwargs = getattr(chunk, "additional_kwargs", None) or {}
+    if not isinstance(additional_kwargs, Mapping):
+        additional_kwargs = {}
+    if additional_kwargs.get("tool_calls"):
+        return False
+    if _RESEARCH_PLAN_TAG in _chunk_tags(metadata):
+        return False
+    return True
+
+
 @router.post("/langgraph/query")
 async def langgraph_query(
     query: str = Form(...),
     user_id: int = Form(...),
     conversation_id: str | None = Form(None),
 ) -> StreamingResponse:
-    """LangGraph Agent 查询接口。"""
+    """LangGraph Agent 查询接口（SSE）。
+
+    - conversation_id 缺省时生成新 thread_id（与 STM session 对齐）
+    - 响应头 X-Conversation-ID 在 StreamingResponse 创建时即写入，便于客户端续聊
+    """
     try:
+        # 续聊必须回传此 id；新建会话则用 uuid，与 MySQL conversation 主键可不同
         thread_id = conversation_id or str(uuid.uuid4())
         graph_stream = stream_agent_query(
             query=query,
@@ -49,23 +85,10 @@ async def langgraph_query(
 
         async def response_stream():
             async for chunk, metadata in graph_stream:
-                content = getattr(chunk, "content", None)
-                additional_kwargs = getattr(chunk, "additional_kwargs", {}) or {}
-                if not isinstance(additional_kwargs, Mapping):
-                    additional_kwargs = {}
-
-                raw_tags = metadata.get("tags", [])
-                tags = (
-                    [tag for tag in raw_tags if isinstance(tag, str)]
-                    if isinstance(raw_tags, list)
-                    else []
-                )
-                if (
-                    not content
-                    or additional_kwargs.get("tool_calls")
-                    or _RESEARCH_PLAN_TAG in tags
-                ):
+                meta = metadata if isinstance(metadata, Mapping) else {}
+                if not _should_emit_sse_chunk(chunk, meta):
                     continue
+                content = getattr(chunk, "content", None)
                 yield f"{_SSE_DATA_PREFIX}{json.dumps(content, ensure_ascii=False)}\n\n"
 
         response = StreamingResponse(response_stream(), media_type=_SSE_MEDIA_TYPE)

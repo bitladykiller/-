@@ -37,7 +37,7 @@ _pipeline = ExecutionPipeline()
 async def execute_graph_only(
     state: AgentState, *, config: RunnableConfig
 ) -> MessagePayload | dict[str, object]:
-    """仅查 Neo4j 图数据库（通过 Retriever 接口）。"""
+    """GRAPH_ONLY：结构化查询（库存/订单/价格等）只走 Neo4j。"""
     kg = await get_retriever(KG_RETRIEVER_NAME)
     if kg is None:
         return no_neo4j_response()
@@ -54,7 +54,7 @@ async def execute_graph_only(
 async def execute_rag_only(
     state: AgentState, *, config: RunnableConfig
 ) -> MessagePayload | dict[str, object]:
-    """仅查 RAG 文档知识库（通过 Retriever 接口）。"""
+    """RAG_ONLY：保修政策/说明书等文档语义检索。"""
     rag = await get_retriever(RAG_RETRIEVER_NAME)
     if rag is None:
         return build_simple_message_response("文档检索服务暂不可用。")
@@ -71,7 +71,7 @@ async def execute_rag_only(
 async def execute_parallel(
     state: AgentState, *, config: RunnableConfig
 ) -> MessagePayload | dict[str, object]:
-    """并行查 Neo4j + RAG（通过 Retriever 接口），合并结果后生成摘要。"""
+    """PARALLEL：两端同时查，合并 records 再摘要（召回优先）。"""
     kg = await get_retriever(KG_RETRIEVER_NAME)
     if kg is None:
         return no_neo4j_response()
@@ -90,7 +90,7 @@ async def execute_parallel(
 async def execute_then(
     state: AgentState, *, config: RunnableConfig
 ) -> MessagePayload | dict[str, object]:
-    """先查 Neo4j 确定实体，再用结果查 RAG（通过 Retriever 接口）。"""
+    """GRAPH_THEN_RAG：先图谱锚定实体，再带着结果查文档。"""
     kg = await get_retriever(KG_RETRIEVER_NAME)
     if kg is None:
         return no_neo4j_response()

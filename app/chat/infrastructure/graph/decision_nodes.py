@@ -107,7 +107,12 @@ async def analyze_and_route_query(
 
 
 def route_query(state: AgentState) -> GeneralRouteName:
-    """根据路由结果选择下一个节点。"""
+    """根据路由结果选择下一个节点。
+
+    返回值是 path map 的键，不是最终节点展示名：
+    - general → respond_to_general_query
+    - 其它 → retrieval_plan_router（builder 映射到 guardrails_node）
+    """
     if state.router["type"] == "general":
         return "respond_to_general_query"
     return "retrieval_plan_router"
@@ -181,7 +186,10 @@ async def retrieval_plan_route(
 
 
 def retrieval_plan_edge(state: AgentState) -> RetrievalEdgeName:
-    """根据检索计划路由到对应的执行节点。"""
+    """根据检索计划路由到对应的执行节点。
+
+    未知/缺失 plan 默认 AGENT_REACT：宁可走兜底多步检索，也不静默失败。
+    """
     plan: dict[str, object] = dict(state.retrieval_plan or {})
     plan_name = plan.get("plan")
     key = plan_name if isinstance(plan_name, str) and plan_name else "AGENT_REACT"

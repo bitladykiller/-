@@ -30,8 +30,13 @@ def stream_agent_query(
     user_id: int | str,
     thread_id: str,
 ) -> GraphStream:
-    """启动 Agent 图流式执行。"""
-    # cast: langgraph 对 stream_mode 字面量类型较严，运行时字符串 "messages" 合法
+    """启动 Agent 图流式执行（messages 模式）。
+
+    configurable 约定（记忆与检索都依赖）：
+    - thread_id → STM/LTM 的 session_id
+    - user_id → 画像与记忆作用域（字符串化）
+    """
+    # cast: langgraph 对 stream_mode 字面量类型较严，运行时 "messages" 合法
     return cast(
         GraphStream,
         graph.astream(
