@@ -41,7 +41,7 @@ from app.chat.infrastructure.modeling.prompts import (
     RETRIEVAL_PLAN_ROUTER_PROMPT,
     ROUTER_SYSTEM_PROMPT,
 )
-from app.chat.infrastructure.shared.utils import question_from_state
+from app.chat.infrastructure.utils.helpers import question_from_state
 from app.shared.security import wrap_user_message
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig

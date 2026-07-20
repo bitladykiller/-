@@ -5,6 +5,18 @@
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v3.23.0] - 2026-07-20
+### 改进
+- 业务域骨架对齐（方案 A）：`chat` / `knowledge` / `user` 统一 `domain` + `application` + `infrastructure`
+- 消灭假 shared：`app.chat.infrastructure.shared` → `app.chat.infrastructure.utils`
+- 新增 `chat.domain`；各域与 `app.shared` README 明确边界
+- 设计说明：`specs/2026-07-20-domain-skeleton-align-design.md`
+
+### 涉及文件
+- `app/chat/infrastructure/utils/`
+- `app/chat/domain/`
+- `app/chat/README.md`、`app/knowledge/README.md`、`app/user/README.md`、`app/shared/README.md`、`app/README.md`
+
 ## [v3.22.0] - 2026-07-20
 ### 改进
 - 文档上传与索引支持三种类型：**Markdown（.md / .markdown）、PDF、Word（.docx）**

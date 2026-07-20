@@ -27,7 +27,7 @@ from app.chat.infrastructure.retrievers.retriever_contracts import (
     RAG_RETRIEVER_NAME,
 )
 from app.chat.infrastructure.retrievers.retriever_runtime import get_retriever
-from app.chat.infrastructure.shared.utils import no_neo4j_response
+from app.chat.infrastructure.utils.helpers import no_neo4j_response
 from langchain_core.runnables import RunnableConfig
 
 # 共享的管道实例，注入不同的 progress_message 和 fallback 即可

@@ -31,7 +31,7 @@ from app.chat.infrastructure.retrievers.retriever_contracts import (
     RAG_RETRIEVER_NAME,
 )
 from app.chat.infrastructure.retrievers.retriever_runtime import get_retriever
-from app.chat.infrastructure.shared.utils import no_neo4j_response, question_from_state
+from app.chat.infrastructure.utils.helpers import no_neo4j_response, question_from_state
 from app.shared.core.config import settings
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig

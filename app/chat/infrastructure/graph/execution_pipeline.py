@@ -28,7 +28,7 @@ from app.chat.infrastructure.graph.memory_context import enrich_question
 from app.chat.infrastructure.graph.message_utils import MessagePayload
 from app.chat.infrastructure.graph.state import AgentState
 from app.chat.infrastructure.retrievers.retriever_contracts import Retriever
-from app.chat.infrastructure.shared.utils import question_from_state
+from app.chat.infrastructure.utils.helpers import question_from_state
 
 
 class ExecutionPipeline:

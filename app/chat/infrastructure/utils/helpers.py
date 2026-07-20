@@ -1,13 +1,14 @@
-"""Agent 通用工具函数。
+"""对话域 Agent 通用工具函数。
 
 职责：
 - 提供跨节点共享的小型纯函数
 - 避免把问题提取、统一降级响应散落到多个节点文件
 
 注意：
-- 此模块位于 infrastructure/shared/ 而非 domain/，
+- 位于 infrastructure/utils/ 而非 domain/，
   因为 question_from_state 依赖 AgentState（infrastructure/graph/state.py），
   domain 层不应反向依赖 infrastructure 层。
+- 本包不是全局 app.shared；业务域禁止再命名 shared。
 """
 
 from app.chat.infrastructure.graph.state import AgentState
