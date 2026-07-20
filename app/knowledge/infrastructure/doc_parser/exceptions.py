@@ -8,14 +8,14 @@ RAG 文档解析与切分模块 — 异常类。
 class UnsupportedFileTypeError(Exception):
     """不支持的文件类型。
 
-    例如用户传入 .png / .mp4 等非 PDF/DOCX 文件。
+    例如用户传入 .png / .mp4 等非 Markdown/PDF/DOCX 文件。
     """
 
     def __init__(self, file_path: str):
         ext = file_path.rsplit(".", 1)[-1] if "." in file_path else "unknown"
         super().__init__(
             f"不支持的文件类型: .{ext}（文件: {file_path}）。"
-            f"目前只支持 .pdf 和 .docx。"
+            f"目前只支持 .md / .markdown / .pdf / .docx。"
         )
 
 

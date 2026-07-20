@@ -29,7 +29,8 @@
 - 快速路径 + 兜底链路：PredefinedTemplateStrategy 命中模板，否则回退到 LLM 生成与校验链路
 
 ### 5. RAG 文档检索
-- 支持 PDF / DOCX 上传 + 内置文档解析管道
+- 支持 **Markdown（.md / .markdown）/ PDF / Word（.docx）** 上传 + 内置文档解析管道
+- PDF 与 DOCX 先转为 Markdown，原生 Markdown 直接清洗分块后入库
 - 混合检索（向量 + BM25 + RRF 融合）
 
 ### 6. 会话管理

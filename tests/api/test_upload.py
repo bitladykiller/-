@@ -102,7 +102,44 @@ def test_validate_upload_rejects_unsupported_extension_and_missing_content_type(
     assert missing_type_exc.value.detail == "无法识别文件类型"
 
 
-def test_read_upload_content_accepts_matching_signature_and_unknown_extension() -> None:
+def test_validate_upload_accepts_markdown_pdf_and_docx() -> None:
+    """三种业务允许类型：Markdown / PDF / Word。"""
+    upload_api.validate_upload(
+        _as_upload(
+            FakeUploadFile(
+                filename="notes.md",
+                content_type="text/markdown",
+                content=b"# hello",
+            )
+        )
+    )
+    upload_api.validate_upload(
+        _as_upload(
+            FakeUploadFile(
+                filename="guide.markdown",
+                content_type="text/plain",
+                content=b"# guide",
+            )
+        )
+    )
+    upload_api.validate_upload(
+        _as_upload(FakeUploadFile(filename="manual.pdf", content=b"%PDF-1.7"))
+    )
+    upload_api.validate_upload(
+        _as_upload(
+            FakeUploadFile(
+                filename="spec.docx",
+                content_type=(
+                    "application/vnd.openxmlformats-officedocument."
+                    "wordprocessingml.document"
+                ),
+                content=b"PK\x03\x04",
+            )
+        )
+    )
+
+
+def test_read_upload_content_accepts_matching_signature_and_markdown_without_magic() -> None:
     assert (
         _run(
             upload_api.read_upload_content(
@@ -114,22 +151,23 @@ def test_read_upload_content_accepts_matching_signature_and_unknown_extension() 
         )
         == b"%PDF-1.7"
     )
+    # Markdown 无魔数：任意文本内容可通过内容签名校验
     assert (
         _run(
             upload_api.read_upload_content(
                 _as_upload(
                     FakeUploadFile(
-                        filename="demo.unknown",
-                        content_type="application/octet-stream",
-                        content=b"whatever",
+                        filename="notes.md",
+                        content_type="text/markdown",
+                        content=b"# title\nbody",
                     )
                 ),
-                max_upload_size_bytes=10,
+                max_upload_size_bytes=64,
                 file_size_exceeded_detail="文件大小超过限制 (50MB)",
                 content_extension_mismatch_detail="文件内容与扩展名不匹配: {extension}",
             )
         )
-        == b"whatever"
+        == b"# title\nbody"
     )
 
 

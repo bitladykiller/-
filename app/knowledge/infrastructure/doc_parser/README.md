@@ -1,9 +1,12 @@
 # 文档解析与切分模块
 
-将 PDF / DOCX 等原始文件解析为适合向量数据库入库的 `DocumentChunk` 列表。
+将 **Markdown / PDF / Word(DOCX)** 解析为适合向量数据库入库的 `DocumentChunk` 列表。
+
+统一中间格式为 Markdown：PDF 与 DOCX 先转换，原生 `.md` / `.markdown` 直接读取后进入同一套清洗与分块。
 
 ## 功能
 
+- Markdown（`.md` / `.markdown`）直读 UTF-8（兼容常见中文编码）
 - PDF 使用 Docling 解析（版面分析、阅读顺序、标题/表格/代码/图片识别）
 - DOCX 优先使用 Docling，失败后用 python-docx fallback
 - 图片/图表可通过外部 VLM API 生成中文描述
@@ -30,18 +33,22 @@
 from app.knowledge.infrastructure.doc_parser.pipeline import parse_document
 
 chunks = parse_document("/path/to/file.pdf")
+# 或
+chunks = parse_document("/path/to/notes.md")
 ```
 
 业务上传链路请走：
 
 ```python
-from app.knowledge.application.indexing_service import index_uploaded_document
+from app.knowledge.application.indexing_service import IndexingService
 ```
+
+允许扩展名：`.md` / `.markdown` / `.pdf` / `.docx`。
 
 ## 主要入口
 
 - `pipeline.py` — 解析与切分总入口
-- `parsers/` — PDF / DOCX 解析器
+- `parsers/` — Markdown / PDF / DOCX 解析器
 - `splitters/` — 文本 / 表格 / 代码切分
 - `markdown/` — Markdown 结构解析
 - `retrieval/` — 混合检索与向量写入

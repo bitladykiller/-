@@ -37,7 +37,8 @@ _UNSUPPORTED_FILE_TYPE_DETAIL = "不支持的文件类型: {extension}"
 _TASK_NOT_FOUND_DETAIL = "任务不存在: {task_id}"
 _UPLOAD_ACCEPTED_MESSAGE = "文件已上传，后台正在解析索引。请通过 task_id 查询进度。"
 
-# 从 knowledge 域引入魔数签名，作为唯一格式真相来源
+# 与 knowledge.indexing_service 保持一致：可上传 = 可索引。
+# Markdown 为纯文本无魔数；仅对 PDF / DOCX 做内容签名校验。
 _DOCUMENT_MAGIC_SIGNATURES: dict[str, tuple[bytes, ...]] = {
     ".pdf": (b"%PDF",),
     ".docx": (b"PK\x03\x04",),

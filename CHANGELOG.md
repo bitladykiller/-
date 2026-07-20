@@ -5,6 +5,19 @@
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v3.22.0] - 2026-07-20
+### 改进
+- 文档上传与索引支持三种类型：**Markdown（.md / .markdown）、PDF、Word（.docx）**
+- 新增 `MarkdownFileParser`：原生 Markdown 直读后进入与 PDF/DOCX 相同的清洗与分块管线
+- `IndexingService` / `POST /upload` 允许扩展名与解析管线对齐
+
+### 涉及文件
+- `app/knowledge/application/indexing_service.py`
+- `app/api/upload.py`
+- `app/knowledge/infrastructure/doc_parser/pipeline.py`
+- `app/knowledge/infrastructure/doc_parser/parsers/markdown_parser.py`
+- `app/knowledge/infrastructure/doc_parser/exceptions.py`
+
 ## [v3.21.0] - 2026-07-19
 ### 改进
 - `DELETE /api/conversations/{conversation_id}` 删除会话时联动清理记忆：

@@ -225,3 +225,47 @@ def test_parse_document_falls_back_to_python_docx_parser(monkeypatch) -> None:
 def test_parse_document_rejects_unsupported_extension() -> None:
     with pytest.raises(UnsupportedFileTypeError):
         pipeline.parse_document("demo.txt", doc_id="doc-3", config=ParserConfig())
+
+
+def test_parse_document_routes_markdown_to_markdown_parser(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """原生 .md 走 MarkdownFileParser，再进入统一切分。"""
+    md_path = tmp_path / "notes.md"
+    md_path.write_text("# Title\n\nhello world", encoding="utf-8")
+
+    class FakeBlockParser:
+        def parse(self, section: MarkdownSection):
+            return [
+                MarkdownBlock(
+                    block_id="txt",
+                    block_type="text",
+                    content="hello world",
+                    section_path=section.section_path,
+                    h1=section.h1,
+                )
+            ]
+
+    class FakeTextSplitter:
+        def __init__(self, chunk_size: int, chunk_overlap: int) -> None:
+            self.chunk_size = chunk_size
+            self.chunk_overlap = chunk_overlap
+
+        def split(self, text: str):
+            return [text]
+
+    monkeypatch.setattr(pipeline, "MarkdownCleaner", _FakeCleaner)
+    monkeypatch.setattr(pipeline, "HeadingParser", _FakeHeadingParser)
+    monkeypatch.setattr(pipeline, "BlockParser", FakeBlockParser)
+    monkeypatch.setattr(pipeline, "TextSplitter", FakeTextSplitter)
+
+    chunks = pipeline.parse_document(
+        str(md_path),
+        doc_id="doc-md",
+        config=ParserConfig(),
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0].raw_text == "hello world"
+    assert chunks[0].metadata.get("parser_name") == "MarkdownFileParser"

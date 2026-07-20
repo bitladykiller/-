@@ -1,13 +1,15 @@
 """
 RAG 文档解析与切分 — 主控管线。
 
-将原始文件（PDF/DOCX）经解析→清洗→切分→分块，输出 DocumentChunk 列表。
+将原始文件（Markdown / PDF / DOCX）经解析→清洗→切分→分块，输出 DocumentChunk 列表。
+PDF 与 Word 先转为 Markdown；原生 Markdown 直接进入清洗与分块。
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
+from pathlib import Path
 
 from app.knowledge.infrastructure.doc_parser.config import ParserConfig
 from app.knowledge.infrastructure.doc_parser.exceptions import (
@@ -21,11 +23,17 @@ from app.knowledge.infrastructure.doc_parser.models import DocumentChunk
 from app.knowledge.infrastructure.doc_parser.parsers.docling_docx_parser import DoclingDOCXParser
 from app.knowledge.infrastructure.doc_parser.parsers.docling_pdf_parser import DoclingPDFParser
 from app.knowledge.infrastructure.doc_parser.parsers.docx_fallback_parser import DocxFallbackParser
+from app.knowledge.infrastructure.doc_parser.parsers.markdown_parser import MarkdownFileParser
 from app.knowledge.infrastructure.doc_parser.splitters.code_splitter import CodeSplitter
 from app.knowledge.infrastructure.doc_parser.splitters.table_splitter import TableSplitter
 from app.knowledge.infrastructure.doc_parser.splitters.text_splitter import TextSplitter
 
 logger = logging.getLogger(__name__)
+
+# 与 indexing_service / upload 允许类型对齐
+_MARKDOWN_EXTS = frozenset({"md", "markdown"})
+_PDF_EXTS = frozenset({"pdf"})
+_DOCX_EXTS = frozenset({"docx"})
 
 
 def parse_document(
@@ -36,7 +44,7 @@ def parse_document(
     """解析单个文档，返回 DocumentChunk 列表。
 
     Args:
-        file_path: PDF/DOCX 文件路径。
+        file_path: Markdown / PDF / DOCX 文件路径。
         doc_id: 文档 ID，默认自动生成。
         config: 解析配置，默认 from_env()。
 
@@ -52,11 +60,13 @@ def parse_document(
     if doc_id is None:
         doc_id = f"doc_{uuid.uuid4().hex[:12]}"
 
-    # 1. 解析文件 → Markdown
-    ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
-    if ext == "pdf":
+    # 1. 解析文件 → Markdown（PDF/DOCX 转换；.md 直读）
+    ext = Path(file_path).suffix.lower().lstrip(".")
+    if ext in _MARKDOWN_EXTS:
+        parser = MarkdownFileParser(config)
+    elif ext in _PDF_EXTS:
         parser = DoclingPDFParser(config)
-    elif ext == "docx":
+    elif ext in _DOCX_EXTS:
         parser = DoclingDOCXParser(config)  # type: ignore[assignment]
     else:
         raise UnsupportedFileTypeError(file_path)
@@ -65,7 +75,7 @@ def parse_document(
         doc = parser.parse(file_path, doc_id)
     except DocumentParseError:
         # DOCX fallback: Docling 失败后用 python-docx
-        if file_path.lower().endswith(".docx"):
+        if ext in _DOCX_EXTS:
             logger.warning("Docling DOCX 解析失败，尝试 python-docx fallback")
             fallback = DocxFallbackParser(config)
             doc = fallback.parse(file_path, doc_id)

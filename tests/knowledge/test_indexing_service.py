@@ -38,6 +38,28 @@ def test_process_file_returns_error_for_unsupported_extension(tmp_path: Path) ->
     assert result == {"status": "error", "message": "不支持的文件类型: .txt"}
 
 
+def test_process_file_accepts_markdown_extension(tmp_path: Path) -> None:
+    file_path = tmp_path / "notes.md"
+    file_path.write_text("# hi\n\nbody", encoding="utf-8")
+
+    chunks = [{"content": "chunk-md"}]
+    indexer = FakeChunkIndexer(result_count=1)
+
+    def load_pipeline():
+        return lambda path, *, doc_id: chunks, indexer
+
+    service = IndexingService(
+        pipeline_loader=load_pipeline,
+        doc_id_factory=lambda user_id: f"doc-{user_id}",
+    )
+    result = _run(service.process_file({"path": str(file_path), "user_id": 2}))
+
+    assert result["status"] == "success"
+    assert result["chunks"] == 1
+    assert result["doc_id"] == "doc-2"
+
+
+
 def test_process_file_returns_warning_when_dependency_missing(tmp_path: Path) -> None:
     file_path = tmp_path / "demo.pdf"
     file_path.write_bytes(b"%PDF-1.7")
