@@ -21,12 +21,8 @@ from app.knowledge.application.indexing_contracts import (
 
 # 知识域自行维护可索引的文档格式，不依赖 chat 域。
 # PDF/DOCX 会转成 Markdown 再切分；.md 本身已是 Markdown，直接进入同一管道。
+# 魔数校验在 api/upload.py，本层只认扩展名。
 _DOCUMENT_EXTENSIONS = frozenset({".pdf", ".docx", ".md", ".markdown"})
-_DOCUMENT_MAGIC_SIGNATURES: dict[str, tuple[bytes, ...]] = {
-    ".pdf": (b"%PDF",),
-    ".docx": (b"PK\x03\x04",),
-    # Markdown 为纯文本，无稳定魔数；上传层不做签名校验。
-}
 
 
 def get_document_extension(path: str | Path | None) -> str:

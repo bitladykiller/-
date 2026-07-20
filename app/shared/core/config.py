@@ -2,12 +2,12 @@
 
 职责：
 - 承载 InfrastructureSettings + BusinessSettings 的组合字段代理
-- 对 AppConfig（运行时行为配置）提供显式属性访问
+- 暴露 AppConfig 与连接 URL
 - 作为全局 settings 单例的提供者
 
 边界：
 - 真实字段模型仍位于 config_models.py
-- 运行时行为常量收敛到 app_config.py
+- 运行时行为常量收敛到 app_config.py（请用 settings.app_config.xxx，勿再加一层无用的转发属性）
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from app.shared.core.config_models import (
 
 
 class _Settings:
-    """组合配置实现，统一代理基础设施配置、业务配置和运行时行为配置。"""
+    """组合配置：infra/business 经 __getattr__ 代理，行为配置走 app_config。"""
 
     def __init__(
         self,
@@ -50,91 +50,11 @@ class _Settings:
                 return getattr(source, name)
         raise AttributeError(f"'settings' object has no attribute '{name}'")
 
-    # ── 运行时行为配置（显式属性，不再用 run_ 前缀魔法） ──
-
     @property
     def app_config(self) -> AppConfig:
         return self._app_config
 
-    @property
-    def react_max_attempts(self) -> int:
-        return self._app_config.react.max_attempts
-
-    @property
-    def react_recursion_limit(self) -> int:
-        return self._app_config.react.recursion_limit
-
-    @property
-    def react_transcript_window(self) -> int:
-        return self._app_config.react.transcript_window
-
-    @property
-    def react_progress_message(self) -> str:
-        return self._app_config.react.progress_message
-
-    @property
-    def react_fallback_answer(self) -> str:
-        return self._app_config.react.fallback_answer
-
-    @property
-    def react_retry_prompt(self) -> str:
-        return self._app_config.react.retry_prompt
-
-    @property
-    def react_step_exhausted_marker(self) -> str:
-        return self._app_config.react.step_exhausted_marker
-
-    @property
-    def react_step_exhausted_reason(self) -> str:
-        return self._app_config.react.step_exhausted_reason
-
-    @property
-    def react_default_insufficiency_reason(self) -> str:
-        return self._app_config.react.default_insufficiency_reason
-
-    @property
-    def react_initial_reason(self) -> str:
-        return self._app_config.react.initial_reason
-
-    @property
-    def upload_max_upload_size_mb(self) -> int:
-        return self._app_config.upload.max_upload_size_mb
-
-    @property
-    def upload_max_upload_size_bytes(self) -> int:
-        return self._app_config.upload.max_upload_size_bytes
-
-    @property
-    def task_key_prefix(self) -> str:
-        return self._app_config.task_queue.task_key_prefix
-
-    @property
-    def task_ttl_seconds(self) -> int:
-        return self._app_config.task_queue.task_ttl_seconds
-
-    @property
-    def memory_extractor_temperature(self) -> float:
-        return self._app_config.memory.memory_extractor_temperature
-
-    @property
-    def user_profile_cache_ttl(self) -> int:
-        return self._app_config.memory.user_profile_cache_ttl
-
-    # ── STM/LTM 快捷属性 ──
-
-    @property
-    def stm_enabled(self) -> bool:
-        return self._app_config.memory.stm.enabled
-
-    @property
-    def ltm_enabled(self) -> bool:
-        return self._app_config.memory.ltm.enabled
-
-    @property
-    def ltm_collection_name(self) -> str:
-        return self._app_config.memory.ltm.collection_name
-
-    # ── 连接 URL 计算属性 ──
+    # ── 连接 URL（由 env 字段拼出，业务侧常用） ──
 
     @property
     def DATABASE_URL(self) -> str:  # noqa: N802

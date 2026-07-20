@@ -141,11 +141,6 @@ class DocumentChunk:
     language: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
-        """转为可 JSON 序列化的字典。"""
-        from dataclasses import asdict
-        return asdict(self)
-
 
 def new_uuid() -> str:
     return uuid.uuid4().hex[:12]
