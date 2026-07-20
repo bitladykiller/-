@@ -51,6 +51,21 @@ def test_parameter_and_json_helpers_handle_realistic_inputs() -> None:
     assert predefined_utils.parse_json_response("没有 JSON") == {}
 
 
+def test_cosine_similarity_score_handles_aligned_and_zero_vectors() -> None:
+    assert predefined_utils.cosine_similarity_score(
+        np.array([1.0, 0.0]),
+        np.array([1.0, 0.0]),
+    ) == 1.0
+    assert predefined_utils.cosine_similarity_score(
+        np.array([1.0, 0.0]),
+        np.array([0.0, 1.0]),
+    ) == 0.0
+    assert predefined_utils.cosine_similarity_score(
+        np.array([0.0, 0.0]),
+        np.array([1.0, 2.0]),
+    ) == 0.0
+
+
 def test_vector_query_matcher_match_query_filters_by_similarity(monkeypatch) -> None:
     monkeypatch.setattr(predefined_utils._VectorQueryMatcher, "_embed_texts", lambda self, texts: [[1.0, 0.0], [0.0, 1.0]])
     matcher = predefined_utils._VectorQueryMatcher(

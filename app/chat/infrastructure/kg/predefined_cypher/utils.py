@@ -17,7 +17,7 @@ import requests
 from app.shared.core.config import settings
 from app.shared.core.json_utils import parse_first_json_object
 from app.shared.core.logger import get_logger
-from sklearn.metrics.pairwise import cosine_similarity
+from numpy.typing import NDArray
 
 logger = get_logger(__name__)
 
@@ -107,6 +107,23 @@ def parse_json_response(content: str) -> dict[str, Any]:
         return {}
 
 
+def cosine_similarity_score(
+    left: NDArray[np.floating[Any]],
+    right: NDArray[np.floating[Any]],
+) -> float:
+    """计算两个向量的余弦相似度。
+
+    WHY 不用 sklearn.metrics.pairwise.cosine_similarity：
+    - 传入 list[ndarray] 时静态类型不清晰，Pylance 常报类型错误
+    - 零向量（embedding 失败降级）时 sklearn 会给出 nan，这里稳定返回 0.0
+    """
+    left_norm = float(np.linalg.norm(left))
+    right_norm = float(np.linalg.norm(right))
+    if left_norm == 0.0 or right_norm == 0.0:
+        return 0.0
+    return float(np.dot(left, right) / (left_norm * right_norm))
+
+
 class _VectorQueryMatcher:
     """基于词向量的预定义 Cypher 查询匹配器。"""
 
@@ -134,16 +151,15 @@ class _VectorQueryMatcher:
         self.ollama_api_url = f"{self.ollama_base_url}/api/embed"
 
         # 预计算查询向量
-        if not self.predefined_cypher_dict:
-            self.query_vectors = {}
-        else:
+        self.query_vectors: dict[str, NDArray[np.floating[Any]]] = {}
+        if self.predefined_cypher_dict:
             query_keys, query_texts = build_query_texts(
                 self.predefined_cypher_dict,
                 self.query_descriptions,
             )
             vectors = self._embed_texts(query_texts)
             self.query_vectors = {
-                key: np.array(vector)
+                key: np.asarray(vector, dtype=float)
                 for key, vector in zip(query_keys, vectors, strict=True)
             }
 
@@ -171,12 +187,12 @@ class _VectorQueryMatcher:
             return []
 
         # 对用户问题进行向量化
-        question_vector = np.array(self._embed_texts([user_question])[0])
+        question_vector = np.asarray(self._embed_texts([user_question])[0], dtype=float)
 
         # 计算用户问题与所有预定义查询的相似度
-        similarities = []
+        similarities: list[tuple[str, float]] = []
         for query_name, query_vector in self.query_vectors.items():
-            similarity = cosine_similarity([question_vector], [query_vector])[0][0]
+            similarity = cosine_similarity_score(question_vector, query_vector)
             similarities.append((query_name, similarity))
 
         # 按相似度降序排序
