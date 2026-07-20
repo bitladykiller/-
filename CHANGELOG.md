@@ -5,6 +5,19 @@
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v3.24.0] - 2026-07-20
+### 改进
+- 预定义 Cypher 匹配：用 `cosine_similarity_score`（NumPy）替代 `sklearn.metrics.pairwise.cosine_similarity`
+  - 类型对 Pylance/basedpyright 友好
+  - 零向量（embedding 失败降级）稳定返回 `0.0`，避免 nan
+- 静态检查：新增/调整 `pyrightconfig.json`，**仅检查 `app/`**，排除 `tests/`（与 mypy `tests.* ignore_errors` 对齐）
+- 清理 app 侧 Pylance 泛型/类型诊断；mypy / ruff / pytest 保持通过
+
+### 涉及文件
+- `app/chat/infrastructure/kg/predefined_cypher/utils.py`
+- `tests/chat/test_predefined_cypher_utils.py`
+- `pyrightconfig.json`
+
 ## [v3.23.0] - 2026-07-20
 ### 改进
 - 业务域骨架对齐（方案 A）：`chat` / `knowledge` / `user` 统一 `domain` + `application` + `infrastructure`

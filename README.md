@@ -106,13 +106,15 @@ docker volume ls | grep '^local.*kefu_'
 
 ### 4. 开发检查（可选）
 
-根目录的 [pyproject.toml](/Volumes/移动卷宗/学习/Aiprogram/智能客服Agent/code/deepseek_agent/pyproject.toml) 已统一收敛了 `pytest` 和 `ruff` 的基础配置。
-
-如果本机已安装这些工具，可直接执行：
+根目录 [pyproject.toml](pyproject.toml) 收敛了 `pytest` / `ruff` / `mypy`；  
+[pyrightconfig.json](pyrightconfig.json) 指定 **Pylance/basedpyright 只检查 `app/`**（排除 `tests/`）。
 
 ```bash
 pytest
 ruff check app scripts tests
+mypy app
+# 可选
+basedpyright app --level error
 ```
 
 ## 项目结构

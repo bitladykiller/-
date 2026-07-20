@@ -32,3 +32,4 @@ app/<domain>/
 - `user` 不依赖 `knowledge` / `chat`
 - 业务域禁止再命名 `shared`（域内工具用 `infrastructure/utils`）
 - 启动统一由 `docker compose` 完成
+- 类型检查：mypy / basedpyright 以 **`app/`** 为准；`tests/` 用 pytest 验收（见 `pyrightconfig.json`）
