@@ -20,6 +20,7 @@ from app.knowledge.infrastructure.doc_parser.markdown.block_parser import BlockP
 from app.knowledge.infrastructure.doc_parser.markdown.cleaner import MarkdownCleaner
 from app.knowledge.infrastructure.doc_parser.markdown.heading_parser import HeadingParser
 from app.knowledge.infrastructure.doc_parser.models import DocumentChunk
+from app.knowledge.infrastructure.doc_parser.parsers.base import BaseDocumentParser
 from app.knowledge.infrastructure.doc_parser.parsers.docling_docx_parser import DoclingDOCXParser
 from app.knowledge.infrastructure.doc_parser.parsers.docling_pdf_parser import DoclingPDFParser
 from app.knowledge.infrastructure.doc_parser.parsers.docx_fallback_parser import DocxFallbackParser
@@ -34,6 +35,17 @@ logger = logging.getLogger(__name__)
 _MARKDOWN_EXTS = frozenset({"md", "markdown"})
 _PDF_EXTS = frozenset({"pdf"})
 _DOCX_EXTS = frozenset({"docx"})
+
+
+def _build_document_parser(ext: str, config: ParserConfig) -> BaseDocumentParser | None:
+    """按扩展名构造解析器；统一返回基类类型，避免分支赋值类型收窄冲突。"""
+    if ext in _MARKDOWN_EXTS:
+        return MarkdownFileParser(config)
+    if ext in _PDF_EXTS:
+        return DoclingPDFParser(config)
+    if ext in _DOCX_EXTS:
+        return DoclingDOCXParser(config)
+    return None
 
 
 def parse_document(
@@ -62,13 +74,8 @@ def parse_document(
 
     # 1. 解析文件 → Markdown（PDF/DOCX 转换；.md 直读）
     ext = Path(file_path).suffix.lower().lstrip(".")
-    if ext in _MARKDOWN_EXTS:
-        parser = MarkdownFileParser(config)
-    elif ext in _PDF_EXTS:
-        parser = DoclingPDFParser(config)
-    elif ext in _DOCX_EXTS:
-        parser = DoclingDOCXParser(config)  # type: ignore[assignment]
-    else:
+    parser = _build_document_parser(ext, config)
+    if parser is None:
         raise UnsupportedFileTypeError(file_path)
 
     try:
@@ -77,7 +84,7 @@ def parse_document(
         # DOCX fallback: Docling 失败后用 python-docx
         if ext in _DOCX_EXTS:
             logger.warning("Docling DOCX 解析失败，尝试 python-docx fallback")
-            fallback = DocxFallbackParser(config)
+            fallback: BaseDocumentParser = DocxFallbackParser(config)
             doc = fallback.parse(file_path, doc_id)
         else:
             raise

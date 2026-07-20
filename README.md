@@ -117,20 +117,27 @@ ruff check app scripts tests
 
 ## 项目结构
 
-当前项目以 `app/` 作为唯一主代码树，旧兼容目录已经清理，后续开发都直接围绕领域目录展开。
+当前项目以 `app/` 作为唯一主代码树。业务域（`chat` / `knowledge` / `user`）统一为：
+
+```text
+domain/ → application/ → infrastructure/
+```
+
+全局共享**只有** `app/shared`；对话域内工具在 `app/chat/infrastructure/utils`（禁止再命名 shared）。
 
 ```
 deepseek_agent/
 ├── app/                         # 主应用目录
 │   ├── api/                     # FastAPI 路由
-│   ├── chat/                    # 对话 / Agent / KG
-│   ├── knowledge/               # 记忆 / 文档解析 / 索引
-│   ├── user/                    # 用户与画像
-│   ├── shared/                  # 共享基础设施
+│   ├── chat/                    # 对话 / Agent / KG（domain+application+infrastructure）
+│   ├── knowledge/               # 记忆 / 文档解析 / 索引（同上骨架）
+│   ├── user/                    # 用户与画像（同上骨架）
+│   ├── shared/                  # 唯一全局共享内核
 │   ├── platform/                # 应用容器
 │   └── scripts/                 # Compose 内部脚本
 ├── configs/                     # Docker 初始化配置
-├── docs/                        # 架构与迁移文档
+├── specs/                       # 可跟踪设计文档
+├── docs/                        # 本机详细文档（gitignore，见 modules 00–10）
 ├── scripts/                     # 仓库级辅助脚本
 ├── tests/                       # 与领域对齐的测试
 ├── docker-compose.yml
@@ -140,19 +147,19 @@ deepseek_agent/
 
 ### 架构特点
 
-- **领域驱动设计**：按业务场景（chat/knowledge/user）划分领域
-- **分层架构**：每个领域内部采用 domain → application → infrastructure → interface 四层结构
-- **依赖倒置**：领域层不依赖外部框架，基础设施层通过依赖注入提供服务
-- **单一主树**：旧兼容目录已移除，代码入口统一收敛到 `app/`
+- **领域驱动设计**：按业务场景（chat/knowledge/user）划分领域，骨架一致
+- **分层架构**：`domain` → `application` → `infrastructure`；`api` 只调 application
+- **依赖倒置**：领域契约不依赖框架细节；基础设施可替换
+- **单一主树**：旧兼容目录已移除；假 shared（chat 内）已改为 `utils`
 
 ## 相关文档
 
 - [docs/全流程文档索引.md](docs/全流程文档索引.md) — **全流程详细文档索引（推荐，模块 00–10）**
-- [docs/modules/00-全流程图集.md](docs/modules/00-全流程图集.md) — **30 张 Mermaid 全流程图集（强烈推荐）**
-
-
+- [docs/modules/00-全流程图集.md](docs/modules/00-全流程图集.md) — **Mermaid 全流程图集（强烈推荐）**
+- [specs/2026-07-20-domain-skeleton-align-design.md](specs/2026-07-20-domain-skeleton-align-design.md) — 域骨架对齐设计
 - [CHANGELOG.md](CHANGELOG.md) — 版本更新日志
 - [app/README.md](app/README.md) — 当前主代码树说明
+- [app/chat/README.md](app/chat/README.md) / [app/knowledge/README.md](app/knowledge/README.md) / [app/user/README.md](app/user/README.md) / [app/shared/README.md](app/shared/README.md)
 - [docs/架构概览.md](docs/架构概览.md) — 当前架构和目录边界
 - [docs/迁移指南.md](docs/迁移指南.md) — 新旧导入路径和迁移策略
 - [docs/部署说明.md](docs/部署说明.md) — Docker Compose 部署方式
