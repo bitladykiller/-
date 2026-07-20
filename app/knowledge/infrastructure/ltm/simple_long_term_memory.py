@@ -600,10 +600,10 @@ class SimpleLongTermMemory:
         """
         return await update_memory_hit_record(
             memory=memory,
-            update_on_hit_config=self.update_on_hit_config,  # type: ignore[arg-type]
+            update_on_hit_config=self.update_on_hit_config,  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
             now_ts=self._now_ts,
             logger=logger,
-            build_hit_update_plan=build_hit_update_plan,  # type: ignore[arg-type]
+            build_hit_update_plan=build_hit_update_plan,  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
             upsert_records=upsert_records,
             milvus_client=self.milvus_client,
             collection_name=self.collection_name,
@@ -631,7 +631,7 @@ class SimpleLongTermMemory:
             get_embedding=self._get_embedding,
             logger=logger,
             build_active_memory_filter=build_active_memory_filter,
-            deduplication_config=self.deduplication_config,  # type: ignore[arg-type]
+            deduplication_config=self.deduplication_config,  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
             dedup_output_fields=DEDUP_OUTPUT_FIELDS,
             milvus_client=self.milvus_client,
             collection_name=self.collection_name,
@@ -669,7 +669,7 @@ class SimpleLongTermMemory:
             query=query,
             top_k=top_k,
             score_threshold=score_threshold,
-            search_config=self.search_config,  # type: ignore[arg-type]
+            search_config=self.search_config,  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
             retrieval_core=self.retrieval_core,
             output_fields=MEMORY_OUTPUT_FIELDS,
             resolve_active_search=resolve_active_search_request,

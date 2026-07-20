@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TypeAlias
+from typing import Any, TypeAlias
 
 from typing_extensions import TypedDict
 
@@ -26,7 +26,8 @@ class IndexingResult(TypedDict, total=False):
     file_info: UploadFileInfo
 
 
-PipelineLoader: TypeAlias = Callable[[], tuple]
+# (parse_document, HybridSearcher) — 延迟加载，具体类型由实现侧保证
+PipelineLoader: TypeAlias = Callable[[], tuple[Any, Any]]
 DocIDFactory: TypeAlias = Callable[[int], str]
 
 __all__ = [

@@ -8,6 +8,7 @@ RAG 文档解析器 — Markdown 内容块解析器。
 from __future__ import annotations
 
 import re
+from typing import Literal
 
 from app.knowledge.infrastructure.doc_parser.markdown.table_utils import is_markdown_table
 from app.knowledge.infrastructure.doc_parser.models import MarkdownBlock, MarkdownSection, new_uuid
@@ -264,10 +265,10 @@ class BlockParser:
 
     @staticmethod
     def _make_block(
-        block_type: str,
+        block_type: Literal["text", "table", "code", "image_caption"],
         content: str,
         section: MarkdownSection,
-        extra_metadata: dict | None = None,
+        extra_metadata: dict[str, object] | None = None,
     ) -> MarkdownBlock:
         """创建 MarkdownBlock，继承 section 的标题信息。
 
@@ -280,13 +281,13 @@ class BlockParser:
         Returns:
             MarkdownBlock 实例。
         """
-        metadata: dict = {}
+        metadata: dict[str, object] = {}
         if extra_metadata:
             metadata.update(extra_metadata)
 
         return MarkdownBlock(
             block_id=new_uuid(),
-            block_type=block_type,  # type: ignore[arg-type]
+            block_type=block_type,
             content=content,
             section_path=section.section_path,
             h1=section.h1,

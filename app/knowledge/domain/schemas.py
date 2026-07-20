@@ -12,7 +12,7 @@
 """
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, cast
 
 from app.user.domain.schemas import UserProfileData
 from pydantic import BaseModel, Field
@@ -143,7 +143,7 @@ class AgentMemoryState(BaseModel):
     session_summary: SessionSummary | None = None
     recent_messages: list[MessageRecord] = Field(default_factory=list)
     long_term_memories: list[MemorySearchResult] = Field(default_factory=list)
-    user_profile: UserProfileData = Field(  # type: ignore[assignment]
-        default_factory=dict,
+    user_profile: UserProfileData = Field(
+        default_factory=lambda: cast(UserProfileData, {}),
         description="结构化用户画像快照，由画像存储链路提供",
     )

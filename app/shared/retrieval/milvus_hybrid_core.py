@@ -67,7 +67,9 @@ class MilvusHybridSearchCore:
     def encode_query_sparse(self, query: str) -> dict[int, float]:
         """Encode a query into the sparse BM25 vector format expected by Milvus."""
         try:
-            from pymilvus.model.sparse.bm25.tokenizers import build_default_analyzer
+            from pymilvus.model.sparse.bm25.tokenizers import (  # pyright: ignore[reportMissingImports]
+                build_default_analyzer,
+            )
 
             analyzer = build_default_analyzer(language="zh")
             tokens = analyzer(query)
@@ -106,7 +108,7 @@ class MilvusHybridSearchCore:
         raw = self.milvus_client.search(
             collection_name=self.collection_name,
             data=[query_vector],
-            filter=filter_expr,
+            filter=filter_expr or "",
             limit=limit,
             output_fields=output_fields or [],
         )

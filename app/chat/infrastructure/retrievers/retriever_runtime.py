@@ -61,7 +61,7 @@ async def get_retriever(name: str) -> Any:
                         from app.chat.infrastructure.modeling.models import cypher_model
 
                         container._t2c_agent = create_text2cypher_agent(
-                            llm=cypher_model,  # type: ignore[arg-type]
+                            llm=cypher_model,  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
                             graph=neo4j_graph,
                             cypher_example_retriever=container._cypher_example_retriever,
                             predefined_cypher_dict=predefined_cypher_dict,

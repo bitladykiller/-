@@ -9,11 +9,11 @@ from typing_extensions import TypedDict
 
 
 class CypherInputState(TypedDict):
-    task: Annotated[list, add]
+    task: Annotated[list[object], add]
 
 
 class CypherState(TypedDict):
-    task: Annotated[list, add]
+    task: Annotated[list[object], add]
     statement: str
     parameters: dict[str, Any] | None
     errors: list[str]
@@ -24,7 +24,7 @@ class CypherState(TypedDict):
 
 
 class CypherOutputState(TypedDict):
-    task: Annotated[list, add]
+    task: Annotated[list[object], add]
     statement: str
     parameters: dict[str, Any] | None
     errors: list[str]

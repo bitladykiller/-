@@ -72,7 +72,7 @@ class BaseDocumentParser(ABC):
                 f"文件扩展名 {ext} 不在允许范围 {expected_extensions} 内"
             )
 
-    def _build_metadata(self, **kwargs) -> dict:
+    def _build_metadata(self, **kwargs: object) -> dict[str, object]:
         """构建通用 metadata 字典。
 
         自动注入 parser_name。
@@ -83,6 +83,6 @@ class BaseDocumentParser(ABC):
         Returns:
             metadata 字典。
         """
-        meta = {"parser_name": self.parser_name}
+        meta: dict[str, object] = {"parser_name": self.parser_name}
         meta.update(kwargs)
         return meta

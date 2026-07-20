@@ -94,7 +94,9 @@ async def build_general_query_system_prompt(
     return system_prompt + memory_context
 
 
-async def analyze_and_route_query(state: AgentState, *, config: RunnableConfig) -> dict:
+async def analyze_and_route_query(
+    state: AgentState, *, config: RunnableConfig
+) -> dict[str, object]:
     """分析用户输入，路由到通用回复或知识库检索。"""
     _ = config
     messages = build_safe_messages(ROUTER_SYSTEM_PROMPT, state.messages)
@@ -162,7 +164,7 @@ async def retrieval_plan_route(
     state: AgentState,
     *,
     config: RunnableConfig,
-) -> dict:
+) -> dict[str, object]:
     """根据问题特征选择最优检索策略。"""
     _ = config
     wrapped_question, _ = wrap_user_message(question_from_state(state))

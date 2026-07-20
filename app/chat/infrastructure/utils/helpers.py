@@ -34,7 +34,7 @@ def question_from_state(state: AgentState) -> str:
     return str(content)
 
 
-def no_neo4j_response() -> dict:
+def no_neo4j_response() -> dict[str, object]:
     """Neo4j 不可用时的统一降级响应。"""
     return {
         "messages": [

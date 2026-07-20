@@ -30,7 +30,10 @@ def compress_message(message: MessageRecord) -> bytes:
     4-16KB → MsgPack + Zstd level=3（\x02 前缀，平衡）
     >16KB  → MsgPack + Zstd level=9（\x03 前缀，高压缩比）
     """
-    packed = msgpack.packb(message.model_dump(), use_bin_type=True)
+    packed_raw = msgpack.packb(message.model_dump(), use_bin_type=True)
+    if not isinstance(packed_raw, (bytes, bytearray)):
+        raise TypeError("msgpack.packb 应返回 bytes")
+    packed = bytes(packed_raw)
 
     if len(packed) <= 2048:
         return b"\x00" + packed

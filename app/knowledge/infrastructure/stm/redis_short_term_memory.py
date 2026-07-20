@@ -100,7 +100,11 @@ def decode_messages(raw_messages: list[bytes | str]) -> list[MessageRecord]:
     messages: list[MessageRecord] = []
     for raw_message in raw_messages:
         try:
-            messages.append(decompress_message(raw_message))  # type: ignore[arg-type]
+            if isinstance(raw_message, str):
+                data = raw_message.encode("latin-1")
+            else:
+                data = raw_message
+            messages.append(decompress_message(data))
         except Exception as exc:
             logger.debug("[stm] 解压消息失败: %s", exc)
             continue

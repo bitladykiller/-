@@ -12,7 +12,7 @@ _NODE_PATTERN = re.compile(r"(\([\w\:\{\s\"\'\}\,\|\&]+\))")
 _NODE_LABEL_PATTERN = re.compile(r"\([^:\{]*:\`?([a-zA-Z\_\d\s\|\&]*)\`?[\s\_\{\)]")
 _RELATIONSHIP_TYPE_PATTERN = re.compile(r":([\w\|\&\:]+?)[\]\s\{]+")
 
-def get_variable_operator_property_pattern(variable: str) -> re.Pattern:
+def get_variable_operator_property_pattern(variable: str) -> re.Pattern[str]:
     """
     Should be run on an entire Cypher Statement. The variable parameter must be gathered in a prior step.
 
@@ -26,7 +26,7 @@ def get_variable_operator_property_pattern(variable: str) -> re.Pattern:
     re.Pattern
         The regex pattern.
     """
-    return (
+    return re.compile(
         re.escape(variable)
         + r"\.(?P<property_name>[^\s]*)\s(?P<operator>contains|CONTAINS|[><=]{0,2}|starts with|STARTS WITH|ends with|ENDS WITH)\s\"?\'?(?P<property_value>[\w\s]+\"|[\d]+)\"?\'?"
     )

@@ -33,9 +33,9 @@ class _Settings:
         business: BusinessSettings | None = None,
         app_config: AppConfig | None = None,
     ) -> None:
-        # pydantic-settings 从 .env 注入必填字段；mypy 无法感知该运行时行为
-        self._infra = infra or InfrastructureSettings()  # type: ignore[call-arg]
-        self._business = business or BusinessSettings()  # type: ignore[call-arg]
+        # pydantic-settings 从 .env 注入必填字段；静态检查器无法感知该运行时行为
+        self._infra = infra or InfrastructureSettings()  # type: ignore[call-arg]  # pyright: ignore[reportCallIssue]
+        self._business = business or BusinessSettings()  # type: ignore[call-arg]  # pyright: ignore[reportCallIssue]
         self._app_config = app_config or _app_config
         self._sources: tuple[ProjectBaseSettings, ...] = (
             self._infra,

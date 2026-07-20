@@ -43,7 +43,7 @@ logger = get_logger(__name__)
 
 class OverallState(TypedDict):
     question: str
-    tasks: Annotated[list, add]
+    tasks: Annotated[list[object], add]
     next_action: str
     cyphers: Annotated[list[CypherOutputState], add]
     summary: str
@@ -188,7 +188,7 @@ def create_text2cypher_agent(
             query_descriptions or {},
         )
 
-        async def predefined_match(state: CypherState) -> dict:
+        async def predefined_match(state: CypherState) -> dict[str, object]:
             task = state.get("task", "")
             normalized_task = str(task[0] if isinstance(task, list) else task)
             matches = matcher.match_query(normalized_task, top_k=1)
@@ -251,7 +251,8 @@ def create_text2cypher_agent(
     async def generate_cypher(state: CypherInputState) -> dict[str, Any]:
         text2cypher_chain = _GENERATION_PROMPT | llm | StrOutputParser()
         task = state.get("task", "")
-        normalized_task = task[0] if isinstance(task, list) else task
+        raw_task = task[0] if isinstance(task, list) and task else task
+        normalized_task = str(raw_task or "")
         examples = cypher_example_retriever.get_examples(
             query=normalized_task,
             k=3,

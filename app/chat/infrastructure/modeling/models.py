@@ -65,13 +65,14 @@ class LazyModelProxy:
         self._resolver = resolver
 
     def __getattr__(self, item: str) -> Any:
-        return getattr(self._resolver(self._name, self._temperature), item)
+        # slots 属性读取不走 __getattr__；此处 item 仅用于转发模型方法
+        return getattr(self._resolver(self._name, self._temperature), item)  # pyright: ignore[reportArgumentType]
 
     def __bool__(self) -> bool:
         return True
 
     def __await__(self):
-        return self._resolver(self._name, self._temperature).__await__()
+        return self._resolver(self._name, self._temperature).__await__()  # pyright: ignore[reportArgumentType]
 
     def __str__(self) -> str:
         return f"_LazyModel(name={self._name}, t={self._temperature})"
@@ -119,7 +120,7 @@ def _create_model(name: ModelRole, temperature: float) -> Any:
 
         return ChatDeepSeek(
             api_key=settings.DEEPSEEK_API_KEY,
-            model_name=settings.DEEPSEEK_MODEL,  # type: ignore[call-arg]
+            model_name=settings.DEEPSEEK_MODEL,  # type: ignore[call-arg]  # pyright: ignore[reportCallIssue]
             temperature=temperature,
         )
     else:

@@ -30,7 +30,8 @@ class Reranker:
     def _init_model(self):
         """延迟加载模型。"""
         try:
-            from FlagEmbedding import FlagReranker
+            from FlagEmbedding import FlagReranker  # pyright: ignore[reportMissingImports]
+
             self._model = FlagReranker(self.model_name, use_fp16=True)
             self._available = True
             logger.info(f"Reranker 加载成功: {self.model_name}")
@@ -60,11 +61,11 @@ class Reranker:
         Returns:
             重排序后的结果列表。
         """
-        if not self._available or not candidates:
+        if not self._available or not candidates or self._model is None:
             return candidates[:top_k]
 
         pairs = [[query, c.get(text_field, "")] for c in candidates]
-        scores = self._model.compute_score(pairs, normalize=True)  # type: ignore[attr-defined]
+        scores = self._model.compute_score(pairs, normalize=True)
 
         # 将 rerank 分数写入结果
         if not isinstance(scores, list):

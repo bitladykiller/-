@@ -36,7 +36,7 @@ _pipeline = ExecutionPipeline()
 
 async def execute_graph_only(
     state: AgentState, *, config: RunnableConfig
-) -> MessagePayload | dict:
+) -> MessagePayload | dict[str, object]:
     """仅查 Neo4j 图数据库（通过 Retriever 接口）。"""
     kg = await get_retriever(KG_RETRIEVER_NAME)
     if kg is None:
@@ -53,7 +53,7 @@ async def execute_graph_only(
 
 async def execute_rag_only(
     state: AgentState, *, config: RunnableConfig
-) -> MessagePayload | dict:
+) -> MessagePayload | dict[str, object]:
     """仅查 RAG 文档知识库（通过 Retriever 接口）。"""
     rag = await get_retriever(RAG_RETRIEVER_NAME)
     if rag is None:
@@ -70,7 +70,7 @@ async def execute_rag_only(
 
 async def execute_parallel(
     state: AgentState, *, config: RunnableConfig
-) -> MessagePayload | dict:
+) -> MessagePayload | dict[str, object]:
     """并行查 Neo4j + RAG（通过 Retriever 接口），合并结果后生成摘要。"""
     kg = await get_retriever(KG_RETRIEVER_NAME)
     if kg is None:
@@ -89,7 +89,7 @@ async def execute_parallel(
 
 async def execute_then(
     state: AgentState, *, config: RunnableConfig
-) -> MessagePayload | dict:
+) -> MessagePayload | dict[str, object]:
     """先查 Neo4j 确定实体，再用结果查 RAG（通过 Retriever 接口）。"""
     kg = await get_retriever(KG_RETRIEVER_NAME)
     if kg is None:

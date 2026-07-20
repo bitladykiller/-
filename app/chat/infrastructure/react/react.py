@@ -58,7 +58,9 @@ async def get_react_subgraph(
 # execute_react — ReAct 兜底执行 + 答案充分性检查
 # ================================================================== #
 
-async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
+async def execute_react(
+    state: AgentState, *, config: RunnableConfig
+) -> dict[str, object]:
     """ReAct 兜底执行 + 答案充分性检查，最多 N 轮。
 
     流程：
@@ -104,8 +106,9 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
                 ensure_ascii=False,
             )
 
-        return create_react_agent(
-            model=react_model,  # type: ignore[arg-type]
+        # LazyModelProxy 运行时兼容 LanguageModelLike；静态类型需忽略
+        return create_react_agent(  # pyright: ignore[reportReturnType]
+            model=react_model,  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
             tools=[neo4j_query, rag_search],
             prompt=REACT_SYSTEM_PROMPT,
             version="v2",
@@ -129,7 +132,7 @@ async def execute_react(state: AgentState, *, config: RunnableConfig) -> dict:
 
         result = await sg.ainvoke(
             {"messages": react_messages},
-            config=subgraph_config,  # type: ignore[arg-type]
+            config=subgraph_config,  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
         )
         result_messages = result.get("messages", [])
         if not result_messages:

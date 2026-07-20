@@ -19,7 +19,9 @@ from langchain_core.runnables import RunnableConfig
 logger = get_logger(__name__)
 
 
-async def after_response(state: AgentState, *, config: RunnableConfig) -> dict:
+async def after_response(
+    state: AgentState, *, config: RunnableConfig
+) -> dict[str, object]:
     """将本轮对话写入 Redis STM，并触发 LTM 抽取。"""
     middleware = await _get_memory_middleware()
     if middleware is None:

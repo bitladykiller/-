@@ -113,13 +113,17 @@ def load_task_status_payload(raw: str | None) -> TaskStatusPayload | None:
     task_id = raw_payload.get("task_id")
     status = raw_payload.get("status")
     updated_at = raw_payload.get("updated_at")
-    if not all(isinstance(value, str) for value in (task_id, status, updated_at)):
+    if not (
+        isinstance(task_id, str)
+        and isinstance(status, str)
+        and isinstance(updated_at, str)
+    ):
         return None
 
     payload: TaskStatusPayload = {
-        "task_id": task_id,  # type: ignore[typeddict-item]
-        "status": status,  # type: ignore[typeddict-item]
-        "updated_at": updated_at,  # type: ignore[typeddict-item]
+        "task_id": task_id,
+        "status": status,
+        "updated_at": updated_at,
     }
     if "result" in raw_payload:
         payload["result"] = raw_payload["result"]
@@ -132,7 +136,8 @@ def load_task_status_payload(raw: str | None) -> TaskStatusPayload | None:
 
 def create_redis_client(redis_url: str) -> TaskStore:
     """根据 Redis URL 创建异步 Redis 客户端。"""
-    return aioredis.from_url(redis_url, decode_responses=True)  # type: ignore[return-value]
+    client = aioredis.from_url(redis_url, decode_responses=True)
+    return client  # type: ignore[return-value]  # pyright: ignore[reportReturnType]
 
 
 async def write_task_status(

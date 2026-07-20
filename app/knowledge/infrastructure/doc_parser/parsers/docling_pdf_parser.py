@@ -167,7 +167,7 @@ class DoclingPDFParser(BaseDocumentParser):
 
         # 构建转换器
         converter = DocumentConverter(
-            format_options={
+            format_options={  # pyright: ignore[reportArgumentType]
                 "pdf": PdfFormatOption(pipeline_options=pipeline_options)  # type: ignore[dict-item]
             }
         )
@@ -190,28 +190,28 @@ class DoclingPDFParser(BaseDocumentParser):
 
         pipeline_options.do_picture_description = True
 
-        # 尝试新 API
+        # 尝试新 API（Docling 版本差异大，符号可能不存在）
         try:
-            from docling.datamodel.pipeline_options import (  # type: ignore[attr-defined]
-                ApiVlmEngineOptions,
-                PictureDescriptionVlmEngineOptions,
-            )
+            from docling.datamodel import pipeline_options as docling_pipeline_options
 
-            # 构建 VLM 引擎选项
-            vlm_engine_options = ApiVlmEngineOptions(
+            api_vlm_cls = getattr(docling_pipeline_options, "ApiVlmEngineOptions", None)
+            picture_vlm_cls = getattr(
+                docling_pipeline_options, "PictureDescriptionVlmEngineOptions", None
+            )
+            if api_vlm_cls is None or picture_vlm_cls is None:
+                raise AttributeError("新 VLM API 符号不可用")
+
+            vlm_engine_options = api_vlm_cls(
                 url=self.config.vlm_api_base_url or "",
                 headers={"Authorization": f"Bearer {self._vlm_api_key}"},
                 model=self.config.vlm_model or "",
                 timeout=self.config.vlm_timeout,
                 temperature=self.config.vlm_temperature,
             )
-
-            # 构建图片描述选项
-            picture_description_options = PictureDescriptionVlmEngineOptions(  # type: ignore[call-arg]
+            picture_description_options = picture_vlm_cls(
                 vlm_engine_options=vlm_engine_options,
                 prompt=self.config.picture_description_prompt,
             )
-
             pipeline_options.picture_description_options = picture_description_options
             logger.info("已配置 VLM 图片描述（新 API）。")
 
@@ -229,7 +229,7 @@ class DoclingPDFParser(BaseDocumentParser):
             from docling.datamodel.pipeline_options import PictureDescriptionApiOptions
 
             picture_description_options = PictureDescriptionApiOptions(
-                url=self.config.vlm_api_base_url or "",  # type: ignore[arg-type]
+                url=self.config.vlm_api_base_url or "",  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
                 headers={"Authorization": f"Bearer {self._vlm_api_key}"},
                 prompt=self.config.picture_description_prompt,
                 params={

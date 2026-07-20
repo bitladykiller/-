@@ -106,7 +106,7 @@ async def search_retriever(
             "steps": [],
         }
         return empty
-    return cast(RetrieverResult, await retriever.search(query))
+    return cast(RetrieverResult, cast(object, await retriever.search(query)))
 
 
 async def ainvoke_structured_question_output(
@@ -142,7 +142,9 @@ async def summarize_records(
         from app.chat.infrastructure.modeling.models import cypher_model
 
         # LazyModelProxy 运行时兼容 Runnable 管道；静态类型无法表达
-        container.summarize_chain = _SUMMARIZE_PROMPT | cypher_model | StrOutputParser()  # type: ignore[operator]
+        container.summarize_chain = (
+            _SUMMARIZE_PROMPT | cypher_model | StrOutputParser()  # type: ignore[operator]  # pyright: ignore[reportOperatorIssue]
+        )
 
     summary = await container.summarize_chain.ainvoke({
         "question": query,

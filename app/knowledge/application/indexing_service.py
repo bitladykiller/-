@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from typing import Any
 
 from app.knowledge.application.indexing_contracts import (
     DocIDFactory,
@@ -48,7 +49,7 @@ _EMPTY_DOCUMENT_MESSAGE = "文档无有效内容"
 _MISSING_DEPENDENCY_MESSAGE = "app.knowledge.infrastructure.doc_parser 模块未安装，文档已保存但未索引"
 
 
-def load_pipeline_dependencies() -> tuple:
+def load_pipeline_dependencies() -> tuple[Any, Any]:
     """延迟导入解析函数和检索索引器，降低模块 import 成本。"""
     from app.knowledge.infrastructure.doc_parser.pipeline import parse_document
     from app.knowledge.infrastructure.doc_parser.retrieval.config import RetrievalConfig
