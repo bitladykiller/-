@@ -1,6 +1,8 @@
 # AssistGen - 基于大语言模型构建的智能客服系统
 
-基于 FastAPI + Vue 3 的前后端分离智能客服助手，支持 DeepSeek、Qwen2.5、Llama3 等多种大语言模型，覆盖 Agent、RAG、知识图谱在智能客服领域的主流应用场景。
+基于 **FastAPI** 的智能客服**后端**（本仓库），支持 DeepSeek、Qwen2.5、Llama3 等多种大语言模型，覆盖 Agent、RAG、知识图谱在智能客服领域的主流应用场景。
+
+> 产品侧可对接 Vue 3 等前端；**前端工程不在本 monorepo**，本仓库以 API（`/api/*`、`/health`、`/docs`）对外。
 
 ## 功能特性
 
@@ -48,7 +50,8 @@
 - **数据库**：MySQL 8.0 + Neo4j + Redis 7.0 + Milvus 2.6
 - **LLM**：DeepSeek / Ollama（可切换）
 - **Embedding**：bge-m3（1024 维）
-- **前端**：Vue 3 + Element Plus + TypeScript
+- **前端**：独立工程对接本 API（本仓库不含 UI 源码）
+- **OpenAPI**：`http://localhost:8000/docs`
 
 ## 快速启动
 

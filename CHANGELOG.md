@@ -5,6 +5,12 @@
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v3.24.1] - 2026-07-20
+### 文档
+- 澄清本仓库为**后端 only**（前端不在 monorepo）
+- 文档索引补「能力覆盖地图」与诚实边界（鉴权/SerpAPI/handoff）
+- 场景 D 上传类型与 `completed` 状态与代码对齐
+
 ## [v3.24.0] - 2026-07-20
 ### 改进
 - 预定义 Cypher 匹配：用 `cosine_similarity_score`（NumPy）替代 `sklearn.metrics.pairwise.cosine_similarity`
