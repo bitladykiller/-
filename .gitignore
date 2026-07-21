@@ -7,6 +7,9 @@ __pycache__/
 build/
 develop-eggs/
 dist/
+# 保留内置前端产物目录
+!app/static/dist/
+!app/static/dist/**
 downloads/
 eggs/
 .eggs/
