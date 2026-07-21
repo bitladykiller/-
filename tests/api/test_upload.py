@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any, TypeVar, cast
@@ -225,6 +226,8 @@ def test_store_upload_writes_file_and_returns_stable_metadata(
         "user_uuid": "user-uuid",
         "upload_time": "20260102_030405",
         "directory": (tmp_path / "user-uuid" / "20260102_030405").as_posix(),
+        "mode": "create",
+        "content_hash": hashlib.sha256(b"%PDF-1.7").hexdigest(),
     }
     assert (
         tmp_path / "user-uuid" / "20260102_030405" / "manual_20260102_030405.pdf"
@@ -242,8 +245,12 @@ def test_process_upload_runs_validation_storage_and_task_submission(
     def fake_validate_upload(upload_file: UploadFile) -> None:
         captured.append(("validate", upload_file))
 
-    async def fake_store_upload(upload_file: UploadFile, user_id: int) -> dict[str, object]:
-        captured.append(("store", (upload_file, user_id)))
+    async def fake_store_upload(
+        upload_file: UploadFile,
+        user_id: int,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        captured.append(("store", (upload_file, user_id, kwargs)))
         return file_info
 
     async def fake_get_task_manager() -> FakeTaskManager:
@@ -257,7 +264,7 @@ def test_process_upload_runs_validation_storage_and_task_submission(
 
     assert captured == [
         ("validate", _as_upload(file)),
-        ("store", (_as_upload(file), 7)),
+        ("store", (_as_upload(file), 7, {"doc_id": None, "mode": "create"})),
     ]
     assert len(manager.submit_calls) == 1
     submitted_func, submitted_args = manager.submit_calls[0]

@@ -5,6 +5,27 @@
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v3.30.0] - 2026-07-21
+### 新增
+- **RAG 文档动态更新（策略 2：软删除 + version）**
+  - Milvus schema：`is_deleted` / `version` / `updated_at` / `content_hash`
+  - `soft_delete_by_doc_id` → 检索默认 `is_deleted == false`
+  - `reindex_document`：软删旧版后写入下一 version（近零空窗、可审计）
+  - `hard_purge_soft_deleted`：物理清理过期软删 chunk
+  - 上传 API：`mode=create|replace` + 可选稳定 `doc_id`
+  - `IndexingService` 编排 replace / create
+
+### 注意
+- **新建** collection 自动带版本字段；若已有旧 `rag_documents` 无上述字段，需重建 collection 或全量 reindex 后再依赖软删过滤
+
+### 涉及文件
+- `app/knowledge/infrastructure/doc_parser/retrieval/doc_lifecycle.py`
+- `app/knowledge/infrastructure/doc_parser/retrieval/milvus_store.py`
+- `app/knowledge/infrastructure/doc_parser/retrieval/hybrid_search.py`
+- `app/knowledge/application/indexing_service.py` / `indexing_contracts.py`
+- `app/api/upload.py`
+- `tests/knowledge/test_doc_lifecycle.py` / `test_milvus_store_lifecycle.py` / `test_indexing_service.py`
+
 ## [v3.29.1] - 2026-07-21
 ### 移除
 - 删除旧版内嵌静态页 `app/static/dist`（前后端分离后仅保留 `frontend/` + Docker Nginx）

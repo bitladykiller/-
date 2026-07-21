@@ -3,8 +3,9 @@
 上传后的文件通过 `app.knowledge.infrastructure.doc_parser` 解析，再写入检索索引。
 本文件只保留"校验输入文件 + 调用解析索引管道"这一层，不承载上传或任务编排逻辑。
 
-重构后:
-- 文档格式定义从 chat/ 收拢到 knowledge/ 自身，消除 knowledge -> chat 依赖
+支持策略 2 文档动态更新：
+- mode=create：insert version=1
+- mode=replace：soft_delete 旧 chunk → insert 新 version
 """
 from __future__ import annotations
 
@@ -18,11 +19,18 @@ from app.knowledge.application.indexing_contracts import (
     PipelineLoader,
     UploadFileInfo,
 )
+from app.knowledge.infrastructure.doc_parser.retrieval.doc_lifecycle import (
+    validate_doc_id,
+)
 
 # 知识域自行维护可索引的文档格式，不依赖 chat 域。
 # PDF/DOCX 会转成 Markdown 再切分；.md 本身已是 Markdown，直接进入同一管道。
 # 魔数校验在 api/upload.py，本层只认扩展名。
 _DOCUMENT_EXTENSIONS = frozenset({".pdf", ".docx", ".md", ".markdown"})
+
+_MODE_CREATE = "create"
+_MODE_REPLACE = "replace"
+_ALLOWED_MODES = frozenset({_MODE_CREATE, _MODE_REPLACE})
 
 
 def get_document_extension(path: str | Path | None) -> str:
@@ -37,12 +45,15 @@ def supports_document_indexing(extension: str) -> bool:
     """判断扩展名是否属于可索引的文档格式。"""
     return extension in _DOCUMENT_EXTENSIONS
 
+
 STATUS_SUCCESS = "success"
 STATUS_ERROR = "error"
 _STATUS_WARNING = "warning"
 FILE_NOT_FOUND_MESSAGE = "文件不存在"
 _EMPTY_DOCUMENT_MESSAGE = "文档无有效内容"
 _MISSING_DEPENDENCY_MESSAGE = "app.knowledge.infrastructure.doc_parser 模块未安装，文档已保存但未索引"
+_INVALID_MODE_MESSAGE = "mode 仅支持 create 或 replace"
+_REPLACE_REQUIRES_DOC_ID = "replace 模式必须提供合法 doc_id"
 
 
 def load_pipeline_dependencies() -> tuple[Any, Any]:
@@ -57,6 +68,30 @@ def load_pipeline_dependencies() -> tuple[Any, Any]:
 def build_doc_id(user_id: int) -> str:
     """为上传文档生成稳定前缀的临时 doc_id。"""
     return f"upload_{user_id}_{uuid.uuid4().hex[:8]}"
+
+
+def _normalize_mode(raw: object) -> str:
+    if raw is None or raw == "":
+        return _MODE_CREATE
+    mode = str(raw).strip().lower()
+    if mode not in _ALLOWED_MODES:
+        raise ValueError(_INVALID_MODE_MESSAGE)
+    return mode
+
+
+def _resolve_doc_id(
+    file_info: UploadFileInfo,
+    *,
+    user_id: int,
+    mode: str,
+    doc_id_factory: DocIDFactory,
+) -> str:
+    raw = file_info.get("doc_id")
+    if raw is not None and str(raw).strip():
+        return validate_doc_id(str(raw))
+    if mode == _MODE_REPLACE:
+        raise ValueError(_REPLACE_REQUIRES_DOC_ID)
+    return validate_doc_id(doc_id_factory(user_id))
 
 
 class IndexingService:
@@ -97,22 +132,73 @@ class IndexingService:
             return {"status": STATUS_ERROR, "message": f"不支持的文件类型: {ext}"}
 
         try:
+            mode = _normalize_mode(file_info.get("mode"))
+            doc_id = _resolve_doc_id(
+                file_info,
+                user_id=user_id,
+                mode=mode,
+                doc_id_factory=self._doc_id_factory,
+            )
+        except ValueError as exc:
+            return {"status": STATUS_ERROR, "message": str(exc)}
+
+        content_hash = str(file_info.get("content_hash") or "")
+
+        try:
             parse_document, searcher = self._pipeline_loader()
-            doc_id = self._doc_id_factory(user_id)
             chunks = parse_document(str(path), doc_id=doc_id)
             if not chunks:
                 return {
                     "status": STATUS_SUCCESS,
                     "chunks": 0,
                     "message": _EMPTY_DOCUMENT_MESSAGE,
+                    "doc_id": doc_id,
+                    "mode": mode,
                 }
 
-            count = await searcher.index(chunks)
+            if mode == _MODE_REPLACE:
+                reindex = getattr(searcher, "reindex", None)
+                if callable(reindex):
+                    result = await reindex(
+                        doc_id,
+                        chunks,
+                        content_hash=content_hash,
+                    )
+                    return {
+                        "status": STATUS_SUCCESS,
+                        "chunks": int(result.get("chunks") or 0),
+                        "doc_id": doc_id,
+                        "source_file": str(path),
+                        "mode": mode,
+                        "version": int(result.get("version") or 0),
+                        "soft_deleted": int(result.get("soft_deleted") or 0),
+                    }
+                # Fake / 旧 indexer 无 reindex：退化为直接 index
+                count = await searcher.index(chunks)
+                return {
+                    "status": STATUS_SUCCESS,
+                    "chunks": count,
+                    "doc_id": doc_id,
+                    "source_file": str(path),
+                    "mode": mode,
+                    "version": 0,
+                    "soft_deleted": 0,
+                }
+
+            index_fn = searcher.index
+            try:
+                count = await index_fn(chunks, version=1, content_hash=content_hash)
+            except TypeError:
+                # 兼容仅接收 chunks 的 Fake indexer
+                count = await index_fn(chunks)
             return {
                 "status": STATUS_SUCCESS,
                 "chunks": count,
                 "doc_id": doc_id,
                 "source_file": str(path),
+                "mode": mode,
+                "version": 1,
+                "soft_deleted": 0,
             }
         except ImportError:
             return {

@@ -24,6 +24,16 @@
 - **Milvus 向量检索**：基于 embedding 的语义相似度搜索
 - **BM25 关键词检索**
 - **RRF 融合**：Reciprocal Rank Fusion 合并两路排序结果
+- **动态更新（策略 2）**：`soft_delete_by_doc_id` + `reindex`（version 递增）；检索默认 `is_deleted == false`；`hard_purge_soft_deleted` 回收空间
+
+```python
+from app.knowledge.infrastructure.doc_parser.retrieval.hybrid_search import HybridSearcher
+
+searcher = HybridSearcher()
+await searcher.index(chunks)                       # 新建 version=1
+await searcher.reindex("kb_faq_1", chunks)         # 软删旧版 + version+1
+results = await searcher.search("退货政策")
+```
 
 ## 使用方式
 

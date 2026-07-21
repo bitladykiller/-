@@ -1,8 +1,11 @@
 """
-Milvus 向量存储 — Collection 管理与向量检索。
+Milvus 向量存储 — Collection 管理、软删版本更新与向量检索。
 
-支持创建 Collection、批量插入 DocumentChunk、
-向量相似度检索。
+策略 2（软删除 + version）：
+- Schema 含 is_deleted / version / updated_at / content_hash
+- 检索默认过滤 is_deleted == false
+- 文档更新：soft_delete_by_doc_id → insert 新 version
+- hard_purge_soft_deleted：物理删除过期软删 chunk
 """
 
 from __future__ import annotations
@@ -12,6 +15,16 @@ import os
 from typing import Any
 
 from app.knowledge.infrastructure.doc_parser.retrieval.config import RetrievalConfig
+from app.knowledge.infrastructure.doc_parser.retrieval.doc_lifecycle import (
+    DEFAULT_QUERY_LIMIT,
+    build_soft_delete_record,
+    doc_id_filter,
+    hard_purge_filter,
+    merge_active_filter,
+    next_version,
+    now_ts,
+    validate_doc_id,
+)
 from app.shared.retrieval import MilvusHybridSearchCore
 from pymilvus import DataType, Function, FunctionType, MilvusClient
 
@@ -21,7 +34,7 @@ logger = logging.getLogger(__name__)
 class MilvusStore:
     """Milvus 向量存储。
 
-    管理 RAG 文档的向量索引和相似度检索。
+    管理 RAG 文档的向量索引、软删更新与相似度检索。
     """
 
     def __init__(self, config: RetrievalConfig, embedding_model=None):
@@ -73,7 +86,11 @@ class MilvusStore:
                 logger.info("RAG retrieval using default HuggingFace embeddings: %s", model_name)
                 return HuggingFaceEmbeddings(model_name=model_name)
             except Exception as exc:
-                logger.error("Failed to resolve default embedding model for RAG retrieval: %s", exc, exc_info=True)
+                logger.error(
+                    "Failed to resolve default embedding model for RAG retrieval: %s",
+                    exc,
+                    exc_info=True,
+                )
                 raise RuntimeError("embedding_model 未设置，且无法创建默认 embedding 模型") from exc
 
     # ------------------------------------------------------------------ #
@@ -91,11 +108,16 @@ class MilvusStore:
         - section_path: VARCHAR(512)
         - raw_text: VARCHAR(8192)
         - embedding_text: VARCHAR(8192)
-        - embedding: FLOAT_VECTOR(1024) → bge-m3
+        - version: INT64  文档版本（从 1 递增）
+        - is_deleted: BOOL  软删除标记
+        - updated_at: INT64  Unix 秒，插入/软删时更新
+        - content_hash: VARCHAR(64)  可选内容哈希（幂等）
+        - embedding: FLOAT_VECTOR
+        - sparse_vector: BM25 Function 输出
         """
         name = self.config.milvus_collection_name
         if self.client.has_collection(name):
-            logger.info(f"Collection {name} 已存在")
+            logger.info("Collection %s 已存在", name)
             return
 
         schema = self.client.create_schema(auto_id=False, enable_dynamic_field=True)
@@ -107,6 +129,10 @@ class MilvusStore:
         schema.add_field("section_path", DataType.VARCHAR, max_length=512)
         schema.add_field("raw_text", DataType.VARCHAR, max_length=8192)
         schema.add_field("embedding_text", DataType.VARCHAR, max_length=8192)
+        schema.add_field("version", DataType.INT64)
+        schema.add_field("is_deleted", DataType.BOOL)
+        schema.add_field("updated_at", DataType.INT64)
+        schema.add_field("content_hash", DataType.VARCHAR, max_length=64)
         bm25_fn = Function(
             name="bm25",
             function_type=FunctionType.BM25,
@@ -139,30 +165,123 @@ class MilvusStore:
             schema=schema,
             index_params=index_params,
         )
-        logger.info(f"Collection {name} 创建成功")
+        logger.info("Collection %s 创建成功（含 is_deleted/version）", name)
 
     # ------------------------------------------------------------------ #
     # 数据操作
     # ------------------------------------------------------------------ #
 
     async def _get_embedding(self, text: str) -> list[float]:
-        """获取文本的 embedding 向量。
-
-        Args:
-            text: 输入文本。
-
-        Returns:
-            1024 维浮点数列表。
-        """
+        """获取文本的 embedding 向量。"""
         if self.embedding_model is None:
             raise RuntimeError("embedding_model 未设置，无法生成向量")
         return self.embedding_model.embed_query(text)
 
-    async def insert_chunks(self, chunks: list[Any]) -> int:
+    def get_max_version(self, doc_id: str) -> int:
+        """查询某文档历史最大 version（含已软删），不存在则 0。"""
+        safe_doc = validate_doc_id(doc_id)
+        filter_expr = doc_id_filter(safe_doc, active_only=False)
+        try:
+            rows = self.client.query(
+                collection_name=self.config.milvus_collection_name,
+                filter=filter_expr,
+                output_fields=["version"],
+                limit=DEFAULT_QUERY_LIMIT,
+            )
+        except Exception as exc:
+            logger.warning("get_max_version 失败 | doc_id=%s | %s", safe_doc, exc)
+            return 0
+
+        max_v = 0
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            try:
+                max_v = max(max_v, int(row.get("version") or 0))
+            except (TypeError, ValueError):
+                continue
+        return max_v
+
+    def soft_delete_by_doc_id(self, doc_id: str) -> dict[str, int]:
+        """软删除某文档下全部未删 chunk。
+
+        Returns:
+            {"soft_deleted": n, "max_version": v}
+        """
+        safe_doc = validate_doc_id(doc_id)
+        filter_expr = doc_id_filter(safe_doc, active_only=True)
+        try:
+            rows = self.client.query(
+                collection_name=self.config.milvus_collection_name,
+                filter=filter_expr,
+                output_fields=["chunk_id", "version"],
+                limit=DEFAULT_QUERY_LIMIT,
+            )
+        except Exception as exc:
+            logger.error(
+                "soft_delete_by_doc_id query 失败 | doc_id=%s | %s",
+                safe_doc,
+                exc,
+                exc_info=True,
+            )
+            return {"soft_deleted": 0, "max_version": self.get_max_version(safe_doc)}
+
+        if not rows:
+            return {"soft_deleted": 0, "max_version": self.get_max_version(safe_doc)}
+
+        ts = now_ts()
+        max_v = 0
+        records: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            chunk_id = row.get("chunk_id")
+            if not chunk_id:
+                continue
+            try:
+                max_v = max(max_v, int(row.get("version") or 0))
+            except (TypeError, ValueError):
+                pass
+            records.append(build_soft_delete_record(str(chunk_id), updated_at=ts))
+
+        if not records:
+            return {"soft_deleted": 0, "max_version": max_v}
+
+        try:
+            self.client.upsert(
+                collection_name=self.config.milvus_collection_name,
+                data=records,
+            )
+        except Exception as exc:
+            logger.error(
+                "soft_delete_by_doc_id upsert 失败 | doc_id=%s | %s",
+                safe_doc,
+                exc,
+                exc_info=True,
+            )
+            return {"soft_deleted": 0, "max_version": max_v}
+
+        logger.info(
+            "RAG 软删除完成 | doc_id=%s soft_deleted=%s max_version=%s",
+            safe_doc,
+            len(records),
+            max_v,
+        )
+        return {"soft_deleted": len(records), "max_version": max_v}
+
+    async def insert_chunks(
+        self,
+        chunks: list[Any],
+        *,
+        version: int = 1,
+        content_hash: str = "",
+    ) -> int:
         """批量插入 DocumentChunk 到 Milvus。
 
         Args:
             chunks: DocumentChunk 列表。
+            version: 文档版本号，默认 1。
+            content_hash: 可选内容哈希。
 
         Returns:
             成功插入的数量。
@@ -170,108 +289,197 @@ class MilvusStore:
         if not chunks:
             return 0
 
-        data = []
+        version = max(1, int(version))
+        hash_value = (content_hash or "")[:64]
+        ts = now_ts()
+        data: list[dict[str, Any]] = []
         for chunk in chunks:
             text = chunk.embedding_text or chunk.raw_text
             vector = await self._get_embedding(text)
-
-            data.append({
-                "chunk_id": chunk.chunk_id,
-                "doc_id": chunk.doc_id,
-                "source_file": chunk.source_file,
-                "chunk_type": chunk.chunk_type,
-                "section_path": chunk.section_path,
-                "raw_text": chunk.raw_text,
-                "embedding_text": chunk.embedding_text,
-                "embedding": vector,
-            })
+            data.append(
+                {
+                    "chunk_id": chunk.chunk_id,
+                    "doc_id": chunk.doc_id,
+                    "source_file": chunk.source_file,
+                    "chunk_type": chunk.chunk_type,
+                    "section_path": chunk.section_path,
+                    "raw_text": chunk.raw_text,
+                    "embedding_text": chunk.embedding_text,
+                    "version": version,
+                    "is_deleted": False,
+                    "updated_at": ts,
+                    "content_hash": hash_value,
+                    "embedding": vector,
+                }
+            )
 
         result = self.client.insert(
             collection_name=self.config.milvus_collection_name,
             data=data,
         )
-        count = result.get("insert_count", 0)
-        logger.info(f"插入 {count} 条记录到 Milvus")
-        return count
+        count = result.get("insert_count", 0) if isinstance(result, dict) else 0
+        logger.info("插入 %s 条记录到 Milvus | version=%s", count, version)
+        return int(count or len(data))
+
+    async def reindex_document(
+        self,
+        doc_id: str,
+        chunks: list[Any],
+        *,
+        content_hash: str = "",
+    ) -> dict[str, int]:
+        """文档动态更新：软删旧版 → 插入新 version。
+
+        Returns:
+            soft_deleted / version / chunks
+        """
+        safe_doc = validate_doc_id(doc_id)
+        delete_info = self.soft_delete_by_doc_id(safe_doc)
+        version = next_version(delete_info.get("max_version"))
+        # 确保 chunks 上的 doc_id 一致（防止解析侧漂移）
+        for chunk in chunks:
+            if getattr(chunk, "doc_id", None) != safe_doc:
+                try:
+                    chunk.doc_id = safe_doc
+                except Exception:
+                    pass
+        inserted = await self.insert_chunks(
+            chunks,
+            version=version,
+            content_hash=content_hash,
+        )
+        return {
+            "soft_deleted": int(delete_info.get("soft_deleted") or 0),
+            "version": version,
+            "chunks": inserted,
+        }
+
+    def hard_purge_soft_deleted(
+        self,
+        *,
+        retention_seconds: int = 7 * 24 * 3600,
+        batch_limit: int = DEFAULT_QUERY_LIMIT,
+    ) -> int:
+        """物理删除已软删且超过保留期的 chunk。
+
+        Returns:
+            删除条数；失败返回 0。
+        """
+        if retention_seconds < 0 or batch_limit <= 0:
+            return 0
+        cutoff = now_ts() - int(retention_seconds)
+        filter_expr = hard_purge_filter(cutoff_ts=cutoff)
+        try:
+            rows = self.client.query(
+                collection_name=self.config.milvus_collection_name,
+                filter=filter_expr,
+                output_fields=["chunk_id"],
+                limit=batch_limit,
+            )
+            if not rows:
+                return 0
+            chunk_ids = [
+                str(row["chunk_id"])
+                for row in rows
+                if isinstance(row, dict) and row.get("chunk_id")
+            ]
+            if not chunk_ids:
+                return 0
+            ids_literal = ", ".join(f'"{cid}"' for cid in chunk_ids)
+            self.client.delete(
+                collection_name=self.config.milvus_collection_name,
+                filter=f"chunk_id in [{ids_literal}]",
+            )
+            logger.info(
+                "RAG 硬清理完成 | deleted=%s cutoff=%s collection=%s",
+                len(chunk_ids),
+                cutoff,
+                self.config.milvus_collection_name,
+            )
+            return len(chunk_ids)
+        except Exception as exc:
+            logger.error(
+                "hard_purge_soft_deleted 异常 | collection=%s | %s",
+                self.config.milvus_collection_name,
+                exc,
+                exc_info=True,
+            )
+            return 0
 
     # ------------------------------------------------------------------ #
     # 向量检索
     # ------------------------------------------------------------------ #
+
+    def _search_output_fields(self) -> list[str]:
+        return [
+            "chunk_id",
+            "doc_id",
+            "source_file",
+            "chunk_type",
+            "section_path",
+            "raw_text",
+            "embedding_text",
+            "version",
+            "is_deleted",
+            "content_hash",
+        ]
+
+    def _format_hits(self, hits: list[dict[str, Any]], score_key: str) -> list[dict[str, Any]]:
+        formatted: list[dict[str, Any]] = []
+        for hit in hits:
+            entity = hit["entity"]
+            formatted.append(
+                {
+                    "chunk_id": entity.get("chunk_id", ""),
+                    "doc_id": entity.get("doc_id", ""),
+                    "source_file": entity.get("source_file", ""),
+                    "chunk_type": entity.get("chunk_type", ""),
+                    "section_path": entity.get("section_path", ""),
+                    "raw_text": entity.get("raw_text", ""),
+                    "embedding_text": entity.get("embedding_text", ""),
+                    "version": entity.get("version", 0),
+                    "content_hash": entity.get("content_hash", ""),
+                    score_key: hit["score"],
+                }
+            )
+        return formatted
 
     async def search(
         self,
         query: str,
         top_k: int | None = None,
         filter_expr: str | None = None,
+        *,
+        include_deleted: bool = False,
     ) -> list[dict[str, Any]]:
-        """向量相似度检索。
-
-        Args:
-            query: 查询文本。
-            top_k: 返回条数（默认使用 config.vector_top_k）。
-            filter_expr: Milvus 过滤表达式（如 'chunk_type == "table"'）。
-
-        Returns:
-            检索结果列表，每项包含 chunk 信息 + score。
-        """
+        """向量相似度检索（默认排除软删）。"""
         top_k = top_k or self.config.vector_top_k
+        effective = filter_expr if include_deleted else merge_active_filter(filter_expr)
         hits = await self.retrieval_core.search_dense(
             query,
             limit=top_k,
-            filter_expr=filter_expr,
-            output_fields=[
-                "chunk_id", "doc_id", "source_file", "chunk_type",
-                "section_path", "raw_text", "embedding_text",
-            ],
+            filter_expr=effective,
+            output_fields=self._search_output_fields(),
         )
-
-        formatted = []
-        for hit in hits:
-            entity = hit["entity"]
-            formatted.append({
-                "chunk_id": entity.get("chunk_id", ""),
-                "doc_id": entity.get("doc_id", ""),
-                "source_file": entity.get("source_file", ""),
-                "chunk_type": entity.get("chunk_type", ""),
-                "section_path": entity.get("section_path", ""),
-                "raw_text": entity.get("raw_text", ""),
-                "embedding_text": entity.get("embedding_text", ""),
-                "vector_score": hit["score"],
-            })
-
-        return formatted
+        return self._format_hits(hits, "vector_score")
 
     async def hybrid_search(
         self,
         query: str,
         top_k: int | None = None,
         filter_expr: str | None = None,
+        *,
+        include_deleted: bool = False,
     ) -> list[dict[str, Any]]:
         """Native Milvus hybrid search for document retrieval."""
         top_k = top_k or self.config.rrf_final_top_k
         search_limit = max(self.config.vector_top_k, self.config.bm25_top_k, top_k)
+        effective = filter_expr if include_deleted else merge_active_filter(filter_expr)
         hits = await self.retrieval_core.search_hybrid(
             query,
             limit=top_k,
-            filter_expr=filter_expr,
-            output_fields=[
-                "chunk_id", "doc_id", "source_file", "chunk_type",
-                "section_path", "raw_text", "embedding_text",
-            ],
+            filter_expr=effective,
+            output_fields=self._search_output_fields(),
             search_limit=search_limit,
         )
-
-        formatted = []
-        for hit in hits:
-            entity = hit["entity"]
-            formatted.append({
-                "chunk_id": entity.get("chunk_id", ""),
-                "doc_id": entity.get("doc_id", ""),
-                "source_file": entity.get("source_file", ""),
-                "chunk_type": entity.get("chunk_type", ""),
-                "section_path": entity.get("section_path", ""),
-                "raw_text": entity.get("raw_text", ""),
-                "embedding_text": entity.get("embedding_text", ""),
-                "rrf_score": hit["score"],
-            })
-        return formatted
+        return self._format_hits(hits, "rrf_score")

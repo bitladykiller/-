@@ -6,9 +6,11 @@
 """
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Annotated
 
 from app.api.common import run_api_action
 from app.knowledge.application.indexing_contracts import UploadFileInfo
@@ -107,7 +109,21 @@ async def read_upload_content(
     return content
 
 
-async def _store_upload(file: UploadFile, user_id: int) -> StoredUploadFileInfo:
+def _normalize_upload_mode(mode: str | None) -> str:
+    """规范化上传索引模式：create | replace。"""
+    value = (mode or "create").strip().lower()
+    if value not in {"create", "replace"}:
+        raise HTTPException(status_code=400, detail="mode 仅支持 create 或 replace")
+    return value
+
+
+async def _store_upload(
+    file: UploadFile,
+    user_id: int,
+    *,
+    doc_id: str | None = None,
+    mode: str = "create",
+) -> StoredUploadFileInfo:
     """落盘并组装 file_info（供 IndexingService.process_file 使用）。"""
     # uuid5：同一 user_id 稳定目录前缀，避免可枚举的递增路径
     user_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
@@ -124,7 +140,9 @@ async def _store_upload(file: UploadFile, user_id: int) -> StoredUploadFileInfo:
         content_extension_mismatch_detail=CONTENT_EXTENSION_MISMATCH_DETAIL,
     )
     file_path.write_bytes(content)
-    return {
+    # content_hash：便于审计与后续幂等；不做强一致去重（可后续接 MySQL 文档表）
+    content_hash = hashlib.sha256(content).hexdigest()
+    payload: StoredUploadFileInfo = {
         "filename": file_path.name,
         "original_name": file.filename,
         "size": len(content),
@@ -134,18 +152,41 @@ async def _store_upload(file: UploadFile, user_id: int) -> StoredUploadFileInfo:
         "user_uuid": user_uuid,
         "upload_time": timestamp,
         "directory": upload_dir.as_posix(),
+        "mode": mode,
+        "content_hash": content_hash,
     }
+    if doc_id and doc_id.strip():
+        payload["doc_id"] = doc_id.strip()
+    return payload
 
 
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
     user_id: int = Form(...),
+    # Annotated 保证单元测试直接调函数时拿到真实默认值，而不是 Form 对象
+    doc_id: Annotated[str | None, Form()] = None,
+    mode: Annotated[str, Form()] = "create",
 ) -> UploadAcceptedResponse:
-    """上传并异步索引：先落盘立刻返回 task_id，解析在后台跑。"""
+    """上传并异步索引：先落盘立刻返回 task_id，解析在后台跑。
+
+    - mode=create：新建文档（可省略 doc_id，服务端自动生成）
+    - mode=replace：动态更新（**必须**传稳定 doc_id；软删旧版 + 写新 version）
+    """
     async def operation() -> UploadAcceptedResponse:
         validate_upload(file)
-        file_info = await _store_upload(file, user_id)
+        normalized_mode = _normalize_upload_mode(mode)
+        if normalized_mode == "replace" and not (doc_id and doc_id.strip()):
+            raise HTTPException(
+                status_code=400,
+                detail="replace 模式必须提供 doc_id（与首次入库相同的稳定文档 ID）",
+            )
+        file_info = await _store_upload(
+            file,
+            user_id,
+            doc_id=doc_id,
+            mode=normalized_mode,
+        )
         task_manager = await get_task_manager()
         # 勿在请求内同步 parse_document：大 PDF 会堵 worker
         task_id = await task_manager.submit(IndexingService().process_file, file_info)

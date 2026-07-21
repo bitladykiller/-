@@ -2,6 +2,7 @@
 混合检索主控 — 向量检索 + BM25 检索 → RRF 融合 → Reranker。
 
 统一入口：hybrid_search(query) → List[Dict]
+索引支持 create（index）与 replace（reindex，策略 2 软删+version）。
 """
 
 from __future__ import annotations
@@ -24,7 +25,8 @@ class HybridSearcher:
 
     用法:
         searcher = HybridSearcher(config, embedding_model)
-        searcher.index(chunks)
+        await searcher.index(chunks)
+        await searcher.reindex(doc_id, chunks)
         results = await searcher.search("查询文本")
     """
 
@@ -41,20 +43,59 @@ class HybridSearcher:
     # 索引
     # ------------------------------------------------------------------ #
 
-    async def index(self, chunks: list[Any]) -> int:
-        """将 DocumentChunk 列表写入 Milvus 检索集合。
-
-        Args:
-            chunks: DocumentChunk 列表。
-
-        Returns:
-            成功索引的数量。
-        """
-        # Milvus 向量索引
-        count = await self.milvus.insert_chunks(chunks)
-
-        logger.info(f"混合索引完成: {count} 条记录")
+    async def index(
+        self,
+        chunks: list[Any],
+        *,
+        version: int = 1,
+        content_hash: str = "",
+    ) -> int:
+        """将 DocumentChunk 列表写入 Milvus 检索集合（新建）。"""
+        count = await self.milvus.insert_chunks(
+            chunks,
+            version=version,
+            content_hash=content_hash,
+        )
+        logger.info("混合索引完成: %s 条记录 | version=%s", count, version)
         return count
+
+    async def reindex(
+        self,
+        doc_id: str,
+        chunks: list[Any],
+        *,
+        content_hash: str = "",
+    ) -> dict[str, int]:
+        """文档动态更新：软删旧 chunk，再写入新 version。"""
+        result = await self.milvus.reindex_document(
+            doc_id,
+            chunks,
+            content_hash=content_hash,
+        )
+        logger.info(
+            "混合 reindex 完成 | doc_id=%s soft_deleted=%s version=%s chunks=%s",
+            doc_id,
+            result.get("soft_deleted"),
+            result.get("version"),
+            result.get("chunks"),
+        )
+        return result
+
+    async def soft_delete_document(self, doc_id: str) -> dict[str, int]:
+        """仅软删除文档（不写入新版）。"""
+        return self.milvus.soft_delete_by_doc_id(doc_id)
+
+    def hard_purge_soft_deleted(
+        self,
+        *,
+        retention_seconds: int = 7 * 24 * 3600,
+        batch_limit: int = 16384,
+    ) -> int:
+        """物理删除过期软删 chunk。"""
+        return self.milvus.hard_purge_soft_deleted(
+            retention_seconds=retention_seconds,
+            batch_limit=batch_limit,
+        )
 
     # ------------------------------------------------------------------ #
     # 检索
@@ -69,29 +110,24 @@ class HybridSearcher:
         """混合检索。
 
         流程:
-        1. Milvus 原生 hybrid_search（向量 + BM25 + RRF）
+        1. Milvus 原生 hybrid_search（向量 + BM25 + RRF），默认排除软删
         2. Reranker 重排序（可选）→ final results
-
-        Args:
-            query: 查询文本。
-            top_k: 最终返回条数（覆盖 config.rrf_final_top_k）。
-            filter_expr: Milvus 过滤表达式。
-
-        Returns:
-            排序后的检索结果列表。
         """
         final_top_k = top_k or self.config.rrf_final_top_k
 
         fused = await self.milvus.hybrid_search(
             query,
-            top_k=max(final_top_k, self.config.rerank_top_k if self.reranker else final_top_k),
+            top_k=max(
+                final_top_k,
+                self.config.rerank_top_k if self.reranker else final_top_k,
+            ),
             filter_expr=filter_expr,
         )
 
-        # Reranker 重排序
         if self.reranker and self.reranker.available:
             fused = self.reranker.rerank(
-                query, fused,
+                query,
+                fused,
                 top_k=self.config.rerank_top_k,
                 text_field=self.config.display_field,
             )

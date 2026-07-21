@@ -8,10 +8,26 @@ class FakeChunkIndexer:
     def __init__(self, result_count: int) -> None:
         self._result_count = result_count
         self.indexed_chunks: list[dict] = []
+        self.reindex_calls: list[tuple[str, list[dict], str]] = []
 
-    async def index(self, chunks: list[dict]) -> int:
+    async def index(self, chunks: list[dict], **kwargs) -> int:
         self.indexed_chunks = chunks
         return self._result_count
+
+    async def reindex(
+        self,
+        doc_id: str,
+        chunks: list[dict],
+        *,
+        content_hash: str = "",
+    ) -> dict[str, int]:
+        self.reindex_calls.append((doc_id, chunks, content_hash))
+        self.indexed_chunks = chunks
+        return {
+            "soft_deleted": 3,
+            "version": 2,
+            "chunks": self._result_count,
+        }
 
 
 def _run(awaitable):
@@ -57,6 +73,8 @@ def test_process_file_accepts_markdown_extension(tmp_path: Path) -> None:
     assert result["status"] == "success"
     assert result["chunks"] == 1
     assert result["doc_id"] == "doc-2"
+    assert result["mode"] == "create"
+    assert result["version"] == 1
 
 
 
@@ -99,6 +117,8 @@ def test_process_file_returns_empty_document_result(tmp_path: Path) -> None:
         "status": "success",
         "chunks": 0,
         "message": "文档无有效内容",
+        "doc_id": "doc-8",
+        "mode": "create",
     }
 
 
@@ -126,6 +146,9 @@ def test_process_file_indexes_parsed_chunks(tmp_path: Path) -> None:
         "chunks": 2,
         "doc_id": "doc-9",
         "source_file": str(file_path),
+        "mode": "create",
+        "version": 1,
+        "soft_deleted": 0,
     }
 
 
@@ -156,4 +179,56 @@ def test_process_file_uses_default_doc_id_factory(tmp_path: Path) -> None:
         "chunks": 1,
         "doc_id": captured_doc_ids[0],
         "source_file": str(file_path),
+        "mode": "create",
+        "version": 1,
+        "soft_deleted": 0,
+    }
+
+
+def test_process_file_replace_requires_doc_id(tmp_path: Path) -> None:
+    file_path = tmp_path / "notes.md"
+    file_path.write_text("# x", encoding="utf-8")
+    service = IndexingService(
+        pipeline_loader=lambda: (lambda path, *, doc_id: [], FakeChunkIndexer(0)),
+    )
+    result = _run(
+        service.process_file(
+            {"path": str(file_path), "user_id": 1, "mode": "replace"}
+        )
+    )
+    assert result["status"] == "error"
+    assert "doc_id" in result["message"]
+
+
+def test_process_file_replace_calls_reindex(tmp_path: Path) -> None:
+    file_path = tmp_path / "notes.md"
+    file_path.write_text("# x\n\nbody", encoding="utf-8")
+    chunks = [{"content": "c1"}]
+    indexer = FakeChunkIndexer(result_count=1)
+
+    def load_pipeline():
+        return lambda path, *, doc_id: chunks, indexer
+
+    service = IndexingService(pipeline_loader=load_pipeline)
+    result = _run(
+        service.process_file(
+            {
+                "path": str(file_path),
+                "user_id": 1,
+                "mode": "replace",
+                "doc_id": "kb_faq_1",
+                "content_hash": "hash1",
+            }
+        )
+    )
+
+    assert indexer.reindex_calls == [("kb_faq_1", chunks, "hash1")]
+    assert result == {
+        "status": "success",
+        "chunks": 1,
+        "doc_id": "kb_faq_1",
+        "source_file": str(file_path),
+        "mode": "replace",
+        "version": 2,
+        "soft_deleted": 3,
     }

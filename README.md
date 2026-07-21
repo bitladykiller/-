@@ -35,6 +35,7 @@
 - 支持 **Markdown（.md / .markdown）/ PDF / Word（.docx）** 上传 + 内置文档解析管道
 - PDF 与 DOCX 先转为 Markdown，原生 Markdown 直接清洗分块后入库
 - 混合检索（向量 + BM25 + RRF 融合）
+- **文档动态更新（策略 2）**：`is_deleted` + `version`；`mode=replace` + 稳定 `doc_id` 时软删旧 chunk 再写新版；检索默认排除软删
 
 ### 6. 会话管理
 - MySQL `conversations` 表只存会话元信息（标题、时间、类型）
