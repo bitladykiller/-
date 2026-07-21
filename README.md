@@ -167,6 +167,8 @@ deepseek_agent/
 ## 相关文档
 
 - [docs/全流程文档索引.md](docs/全流程文档索引.md) — **全流程详细文档索引（推荐，模块 00–10）**
+- [docs/配置参数与数据字段全览.md](docs/配置参数与数据字段全览.md) — **环境变量 / AppConfig / STM·LTM / MySQL·Redis·Milvus 字段（调参必看）**
+- [specs/2026-07-21-config-and-storage-fields.md](specs/2026-07-21-config-and-storage-fields.md) — 配置与存储字段摘要（可提交）
 - [docs/modules/00-全流程图集.md](docs/modules/00-全流程图集.md) — **Mermaid 全流程图集（强烈推荐）**
 - [specs/2026-07-20-domain-skeleton-align-design.md](specs/2026-07-20-domain-skeleton-align-design.md) — 域骨架对齐设计
 - [CHANGELOG.md](CHANGELOG.md) — 版本更新日志
