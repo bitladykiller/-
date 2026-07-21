@@ -168,6 +168,45 @@ def test_prepare_replace_checks_owner() -> None:
     assert meta["original_name"] == "b.md"
 
 
+def test_prepare_replace_skips_when_hash_matches() -> None:
+    svc = DocumentService(session_factory=fake_session_factory)
+    _run(
+        svc.prepare_create(
+            user_id=1,
+            title="a.md",
+            original_name="a.md",
+            source_path="/a",
+            content_hash="samehash",
+            doc_id="doc_hash",
+        )
+    )
+    meta = _run(
+        svc.prepare_replace(
+            user_id=1,
+            doc_id="doc_hash",
+            original_name="a.md",
+            source_path="/a2",
+            content_hash="samehash",
+        )
+    )
+    assert meta["unchanged"] is True
+    assert meta["status"] == "pending"
+    assert meta["content_hash"] == "samehash"
+
+    changed = _run(
+        svc.prepare_replace(
+            user_id=1,
+            doc_id="doc_hash",
+            original_name="a2.md",
+            source_path="/a3",
+            content_hash="newhash",
+        )
+    )
+    assert changed.get("unchanged") is False
+    assert changed["status"] == "indexing"
+    assert changed["content_hash"] == "newhash"
+
+
 def test_apply_indexing_result_ready() -> None:
     svc = DocumentService(session_factory=fake_session_factory)
     _run(

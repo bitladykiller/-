@@ -5,6 +5,11 @@
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v3.31.1] - 2026-07-21
+### 改进
+- **replace 幂等**：更新文档时比对 MySQL `content_hash`，一致则跳过 reindex（不提交任务、不软删）
+- 上传响应增加 `unchanged` / `skipped`；前端更新流程识别后直接提示完成
+
 ## [v3.31.0] - 2026-07-21
 ### 新增
 - **MySQL `user_documents` 用户文档元信息表**

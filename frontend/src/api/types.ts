@@ -25,6 +25,11 @@ export interface UploadAccepted {
   doc_id?: string;
   mode?: string;
   content_hash?: string;
+  /** replace 且内容 hash 一致，已跳过 reindex */
+  unchanged?: boolean;
+  skipped?: boolean;
+  version?: number;
+  chunk_count?: number;
 }
 
 export interface TaskStatusPayload {

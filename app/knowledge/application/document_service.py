@@ -89,23 +89,39 @@ class DocumentService:
         last_task_id: str = "",
         update_title: bool = True,
     ) -> DocumentSummary:
-        """替换更新：校验归属后标记 indexing。"""
+        """替换更新：校验归属；hash 一致则跳过，否则标记 indexing。
+
+        返回 dict 额外字段：
+        - unchanged=True：content_hash 与库中一致，调用方勿 reindex
+        """
         safe = validate_doc_id(doc_id)
+        new_hash = (content_hash or "").strip()
         async with self._session_factory() as db:
             repo = UserDocumentRepository(db)
             row = await repo.get_owned(user_id, safe)
             if row is None:
                 raise ValueError(f"文档不存在或不属于当前用户: {safe}")
+
+            old_hash = (row.content_hash or "").strip()
+            # 两边都有非空 hash 且相等 → 内容未变，跳过 reindex
+            if old_hash and new_hash and old_hash == new_hash:
+                summary = repo.to_summary(row)
+                summary["unchanged"] = True
+                summary["skipped_reason"] = "content_hash_match"
+                return summary
+
             title = (original_name or row.title)[:255] if update_title else None
             row = await repo.mark_indexing(
                 row,
                 source_path=source_path,
-                content_hash=content_hash,
+                content_hash=new_hash,
                 original_name=(original_name or row.original_name)[:255],
                 title=title,
                 last_task_id=last_task_id,
             )
-            return repo.to_summary(row)
+            summary = repo.to_summary(row)
+            summary["unchanged"] = False
+            return summary
 
     async def bind_task_id(self, doc_id: str, task_id: str) -> None:
         async with self._session_factory() as db:

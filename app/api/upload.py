@@ -37,6 +37,7 @@ _UNKNOWN_FILE_TYPE_DETAIL = "无法识别文件类型"
 _UNSUPPORTED_FILE_TYPE_DETAIL = "不支持的文件类型: {extension}"
 _TASK_NOT_FOUND_DETAIL = "任务不存在: {task_id}"
 _UPLOAD_ACCEPTED_MESSAGE = "文件已上传，后台正在解析索引。请通过 task_id 查询进度。"
+_UPLOAD_UNCHANGED_MESSAGE = "内容未变化（content_hash 一致），已跳过 reindex。"
 
 _DOCUMENT_MAGIC_SIGNATURES: dict[str, tuple[bytes, ...]] = {
     ".pdf": (b"%PDF",),
@@ -66,6 +67,9 @@ class UploadAcceptedResponse(StoredUploadFileInfo, total=False):
 
     task_id: str
     message: str
+    # replace 且 hash 一致时为 true，前端无需轮询 task
+    unchanged: bool
+    skipped: bool
 
 
 def validate_upload(file: UploadFile) -> None:
@@ -155,7 +159,10 @@ async def _store_upload(
 
 
 async def _register_document_metadata(file_info: StoredUploadFileInfo) -> StoredUploadFileInfo:
-    """在提交索引前写入/更新 MySQL，保证 doc_id 与文件名绑定。"""
+    """在提交索引前写入/更新 MySQL，保证 doc_id 与文件名绑定。
+
+    replace 且 content_hash 与库中一致时，file_info['unchanged']=True。
+    """
     user_id = int(file_info.get("user_id") or 0)
     mode = str(file_info.get("mode") or "create")
     original_name = str(file_info.get("original_name") or file_info.get("filename") or "document")
@@ -184,6 +191,12 @@ async def _register_document_metadata(file_info: StoredUploadFileInfo) -> Stored
 
     file_info["doc_id"] = str(meta["doc_id"])
     file_info["title"] = str(meta.get("title") or original_name)
+    if meta.get("unchanged"):
+        file_info["unchanged"] = True
+        file_info["version"] = int(meta.get("version") or 0)  # type: ignore[typeddict-item]
+        file_info["chunk_count"] = int(meta.get("chunk_count") or 0)  # type: ignore[typeddict-item]
+    else:
+        file_info["unchanged"] = False
     return file_info
 
 
@@ -197,7 +210,7 @@ async def upload_file(
     """上传并异步索引。
 
     - mode=create：新建，服务端生成或使用传入 doc_id，写入 MySQL
-    - mode=replace：必须传已有 doc_id（归属校验），软删旧向量后写新 version
+    - mode=replace：必须传已有 doc_id（归属校验）；hash 相同则跳过，否则软删+新 version
     """
 
     async def operation() -> UploadAcceptedResponse:
@@ -216,13 +229,24 @@ async def upload_file(
         )
         file_info = await _register_document_metadata(file_info)
 
+        # hash 一致：不提交 reindex 任务
+        if file_info.get("unchanged"):
+            return {
+                **file_info,
+                "task_id": "",
+                "skipped": True,
+                "unchanged": True,
+                "message": _UPLOAD_UNCHANGED_MESSAGE,
+            }
+
         task_manager = await get_task_manager()
-        # 索引 + MySQL 状态回写
         task_id = await task_manager.submit(run_document_indexing_job, file_info)
         await document_service.bind_task_id(str(file_info["doc_id"]), task_id)
         return {
             **file_info,
             "task_id": task_id,
+            "skipped": False,
+            "unchanged": False,
             "message": _UPLOAD_ACCEPTED_MESSAGE,
         }
 

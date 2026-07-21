@@ -134,9 +134,14 @@ async function submitReplace(docId: string) {
       mode: "replace",
       docId,
     });
-    label.value = `替换索引中 task=${accepted.task_id}`;
-    pct.value = 25;
-    await pollTask(accepted.task_id);
+    if (accepted.unchanged || accepted.skipped || !accepted.task_id) {
+      label.value = accepted.message || "内容未变化，已跳过 reindex";
+      pct.value = 100;
+    } else {
+      label.value = `替换索引中 task=${accepted.task_id}`;
+      pct.value = 25;
+      await pollTask(accepted.task_id);
+    }
     replaceDocId.value = null;
     replaceFile.value = null;
     await refreshDocs();

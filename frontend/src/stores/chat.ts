@@ -190,6 +190,20 @@ export const useChatStore = defineStore("chat", () => {
   ) {
     onProgress?.("上传中…", 10);
     const accepted = await uploadDocument(userId.value, file, options);
+    if (accepted.unchanged || accepted.skipped || !accepted.task_id) {
+      onProgress?.(accepted.message || "内容未变化，已跳过 reindex", 100);
+      return {
+        task_id: accepted.task_id || "",
+        status: "completed",
+        result: {
+          status: "success",
+          doc_id: accepted.doc_id,
+          chunks: accepted.chunk_count,
+          version: accepted.version,
+          message: accepted.message,
+        },
+      };
+    }
     onProgress?.(
       `解析中 task=${accepted.task_id}${accepted.doc_id ? ` · ${accepted.doc_id}` : ""}`,
       25,
