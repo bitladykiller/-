@@ -10,22 +10,25 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from app.knowledge.application.indexing_contracts import (
+    ChunkIndexer,
     DocIDFactory,
+    FullIndexFn,
     IndexingResult,
+    ParseDocumentFn,
     PipelineLoader,
+    ReindexFn,
+    ReindexResult,
     UploadFileInfo,
 )
 from app.knowledge.infrastructure.doc_parser.retrieval.doc_lifecycle import (
     validate_doc_id,
 )
 
-# 知识域自行维护可索引的文档格式，不依赖 chat 域。
-# PDF/DOCX 会转成 Markdown 再切分；.md 本身已是 Markdown，直接进入同一管道。
-# 魔数校验在 api/upload.py，本层只认扩展名。
 _DOCUMENT_EXTENSIONS = frozenset({".pdf", ".docx", ".md", ".markdown"})
 
 _MODE_CREATE = "create"
@@ -34,10 +37,7 @@ _ALLOWED_MODES = frozenset({_MODE_CREATE, _MODE_REPLACE})
 
 
 def get_document_extension(path: str | Path | None) -> str:
-    """返回文件的小写扩展名。
-
-    上传场景下 `UploadFile.filename` 可能为 None，统一按空文件名处理。
-    """
+    """返回文件的小写扩展名。"""
     return Path(path or "").suffix.lower()
 
 
@@ -51,18 +51,24 @@ STATUS_ERROR = "error"
 _STATUS_WARNING = "warning"
 FILE_NOT_FOUND_MESSAGE = "文件不存在"
 _EMPTY_DOCUMENT_MESSAGE = "文档无有效内容"
-_MISSING_DEPENDENCY_MESSAGE = "app.knowledge.infrastructure.doc_parser 模块未安装，文档已保存但未索引"
+_MISSING_DEPENDENCY_MESSAGE = (
+    "app.knowledge.infrastructure.doc_parser 模块未安装，文档已保存但未索引"
+)
 _INVALID_MODE_MESSAGE = "mode 仅支持 create 或 replace"
 _REPLACE_REQUIRES_DOC_ID = "replace 模式必须提供合法 doc_id"
 
 
-def load_pipeline_dependencies() -> tuple[Any, Any]:
+def load_pipeline_dependencies() -> tuple[ParseDocumentFn, ChunkIndexer]:
     """延迟导入解析函数和检索索引器，降低模块 import 成本。"""
     from app.knowledge.infrastructure.doc_parser.pipeline import parse_document
     from app.knowledge.infrastructure.doc_parser.retrieval.config import RetrievalConfig
-    from app.knowledge.infrastructure.doc_parser.retrieval.hybrid_search import HybridSearcher
+    from app.knowledge.infrastructure.doc_parser.retrieval.hybrid_search import (
+        HybridSearcher,
+    )
 
-    return parse_document, HybridSearcher(RetrievalConfig())
+    return cast(ParseDocumentFn, parse_document), cast(
+        ChunkIndexer, HybridSearcher(RetrievalConfig())
+    )
 
 
 def build_doc_id(user_id: int) -> str:
@@ -92,6 +98,51 @@ def _resolve_doc_id(
     if mode == _MODE_REPLACE:
         raise ValueError(_REPLACE_REQUIRES_DOC_ID)
     return validate_doc_id(doc_id_factory(user_id))
+
+
+def _as_reindex_fn(searcher: object) -> ReindexFn | None:
+    """取出 searcher.reindex 并标成可 await 的协程函数。"""
+    reindex = getattr(searcher, "reindex", None)
+    if reindex is None or not callable(reindex):
+        return None
+    return cast(ReindexFn, reindex)
+
+
+def _as_index_fn(searcher: object) -> FullIndexFn:
+    index_fn = getattr(searcher, "index", None)
+    if index_fn is None or not callable(index_fn):
+        raise TypeError("indexer 缺少 index 方法")
+    return cast(FullIndexFn, index_fn)
+
+
+async def _call_index(
+    index_fn: FullIndexFn,
+    chunks: Sequence[Any],
+    *,
+    version: int = 1,
+    content_hash: str = "",
+) -> int:
+    """兼容 (chunks) 与 (chunks, version=, content_hash=) 两种签名。"""
+    try:
+        result = index_fn(chunks, version=version, content_hash=content_hash)
+    except TypeError:
+        result = index_fn(chunks)
+    count = await cast(Awaitable[int], result)
+    return int(count)
+
+
+async def _call_reindex(
+    reindex_fn: ReindexFn,
+    doc_id: str,
+    chunks: Sequence[Any],
+    *,
+    content_hash: str,
+) -> ReindexResult:
+    raw = await cast(
+        Awaitable[ReindexResult | dict[str, Any]],
+        reindex_fn(doc_id, chunks, content_hash=content_hash),
+    )
+    return cast(ReindexResult, raw)
 
 
 class IndexingService:
@@ -157,9 +208,10 @@ class IndexingService:
                 }
 
             if mode == _MODE_REPLACE:
-                reindex = getattr(searcher, "reindex", None)
-                if callable(reindex):
-                    result = await reindex(
+                reindex_fn = _as_reindex_fn(searcher)
+                if reindex_fn is not None:
+                    result = await _call_reindex(
+                        reindex_fn,
                         doc_id,
                         chunks,
                         content_hash=content_hash,
@@ -174,7 +226,7 @@ class IndexingService:
                         "soft_deleted": int(result.get("soft_deleted") or 0),
                     }
                 # Fake / 旧 indexer 无 reindex：退化为直接 index
-                count = await searcher.index(chunks)
+                count = await _call_index(_as_index_fn(searcher), chunks)
                 return {
                     "status": STATUS_SUCCESS,
                     "chunks": count,
@@ -185,12 +237,12 @@ class IndexingService:
                     "soft_deleted": 0,
                 }
 
-            index_fn = searcher.index
-            try:
-                count = await index_fn(chunks, version=1, content_hash=content_hash)
-            except TypeError:
-                # 兼容仅接收 chunks 的 Fake indexer
-                count = await index_fn(chunks)
+            count = await _call_index(
+                _as_index_fn(searcher),
+                chunks,
+                version=1,
+                content_hash=content_hash,
+            )
             return {
                 "status": STATUS_SUCCESS,
                 "chunks": count,

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any, TypeAlias
+from collections.abc import Awaitable, Callable, Sequence
+from typing import Any, Protocol, TypeAlias, runtime_checkable
 
 from typing_extensions import TypedDict
 
@@ -35,13 +35,55 @@ class IndexingResult(TypedDict, total=False):
     soft_deleted: int
 
 
-# (parse_document, HybridSearcher) — 延迟加载，具体类型由实现侧保证
-PipelineLoader: TypeAlias = Callable[[], tuple[Any, Any]]
+class ReindexResult(TypedDict, total=False):
+    """HybridSearcher.reindex 返回结构。"""
+
+    soft_deleted: int
+    version: int
+    chunks: int
+
+
+@runtime_checkable
+class ChunkIndexer(Protocol):
+    """索引器最小协议：create / replace。"""
+
+    async def index(
+        self,
+        chunks: Sequence[Any],
+        *,
+        version: int = 1,
+        content_hash: str = "",
+    ) -> int: ...
+
+    async def reindex(
+        self,
+        doc_id: str,
+        chunks: Sequence[Any],
+        *,
+        content_hash: str = "",
+    ) -> ReindexResult: ...
+
+
+# parse_document(path, *, doc_id) -> chunks
+ParseDocumentFn: TypeAlias = Callable[..., Sequence[Any]]
+# (parse_document, indexer)
+PipelineLoader: TypeAlias = Callable[[], tuple[ParseDocumentFn, ChunkIndexer]]
 DocIDFactory: TypeAlias = Callable[[int], str]
 
+# 兼容仅同步/简化签名的 Fake indexer
+SimpleIndexFn: TypeAlias = Callable[[Sequence[Any]], Awaitable[int]]
+FullIndexFn: TypeAlias = Callable[..., Awaitable[int]]
+ReindexFn: TypeAlias = Callable[..., Awaitable[ReindexResult | dict[str, Any]]]
+
 __all__ = [
+    "ChunkIndexer",
     "DocIDFactory",
+    "FullIndexFn",
     "IndexingResult",
+    "ParseDocumentFn",
     "PipelineLoader",
+    "ReindexFn",
+    "ReindexResult",
+    "SimpleIndexFn",
     "UploadFileInfo",
 ]
