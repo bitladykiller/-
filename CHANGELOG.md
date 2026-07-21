@@ -5,14 +5,18 @@
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v3.29.0] - 2026-07-21
+### 新增
+- **前后端分离工程化前端** `frontend/`
+  - Vue 3 + Vite + TypeScript + Pinia + Vue Router
+  - 编辑感深色控制台 UI（会话 / SSE / 上传）
+  - 多阶段 Docker 构建 + Nginx 反代 `/api` `/health` `/docs`
+  - `docker-compose` 服务 `frontend` 映射 `8080:80`
+- CORS 暴露 `X-Conversation-ID`（便于跨域调试）
+
 ## [v3.28.0] - 2026-07-21
 ### 新增
-- **内置前端 UI**（`app/static/dist`）：深色玻璃拟态客服界面
-  - 会话列表 / 新建 / 删除 / 重命名（首条消息）
-  - SSE 流式问答、快捷提问 chips
-  - 文档上传 + 任务状态轮询（md/pdf/docx）
-  - 后端健康点、响应式侧栏、Toast
-- CORS `expose_headers` 增加 `X-Conversation-ID`
+- 内置静态演示页 `app/static/dist`（可选；正式入口以 `frontend/` 为准）
 
 ## [v3.27.0] - 2026-07-21
 ### 新增

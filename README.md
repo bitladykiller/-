@@ -2,8 +2,8 @@
 
 基于 **FastAPI** 的智能客服**后端**（本仓库），支持 DeepSeek、Qwen2.5、Llama3 等多种大语言模型，覆盖 Agent、RAG、知识图谱在智能客服领域的主流应用场景。
 
-> 内置静态前端：`app/static/dist`（`docker compose up` 后打开 `http://localhost:8000/`）。  
-> 亦可自研前端对接 API（`/api/*`、`/health`、`/docs`）。
+> **前后端分离**：工程化前端见 `frontend/`（Vue 3 + Vite + TS）。  
+> Docker：`http://localhost:8080`（Nginx）→ 反代 API 到 `app:8000`。
 
 ## 功能特性
 
@@ -51,9 +51,9 @@
 - **数据库**：MySQL 8.0 + Neo4j + Redis 7.0 + Milvus 2.6
 - **LLM**：DeepSeek / Ollama（可切换）
 - **Embedding**：bge-m3（1024 维）
-- **前端**：`app/static/dist` 深色客服 UI（会话 / SSE 流式 / 上传）
-- **OpenAPI**：`http://localhost:8000/docs`
-- **界面入口**：`http://localhost:8000/`
+- **前端**：`frontend/` Vue 3 控制台（会话 / SSE / 上传）
+- **OpenAPI**：`http://localhost:8000/docs` 或经前端网关 `http://localhost:8080/docs`
+- **界面入口**：`http://localhost:8080/`（Docker）或 `npm run dev` → `:5173`
 
 ## 快速启动
 
@@ -83,7 +83,8 @@ docker compose up -d --build
 - `app` 服务启动前自动执行 MySQL 建表脚本
 - `app` 通过 `.env.docker` 自动切换到容器内服务地址和默认凭据
 - FastAPI 对外暴露 `http://localhost:8000`
-- 只有 `app` 服务映射宿主机 `8000` 端口；MySQL / Neo4j / Redis / MinIO / Milvus 都只在 Compose 内部网络可见
+- **前端** `frontend` 服务映射 `http://localhost:8080`（Nginx 反代 API）
+- 只有 `app`/`frontend` 映射宿主机端口；MySQL / Neo4j / Redis / MinIO / Milvus 都只在 Compose 内部网络可见
 - 持久化数据写入 Docker 命名卷，而不是项目目录下的 `docker_data/`
 - 卷名固定为 `kefu_mysql_data`、`kefu_neo4j_data`、`kefu_redis_data`、`kefu_milvus_data` 等，和当前目录名解耦
 

@@ -1,0 +1,75 @@
+/* AssistGen Console — editorial industrial dark */
+:root {
+  --ink: #0a0c0f;
+  --ink-2: #12151c;
+  --panel: #161a22;
+  --panel-2: #1c212c;
+  --line: rgba(232, 220, 196, 0.1);
+  --line-strong: rgba(232, 220, 196, 0.18);
+  --cream: #e8dcc4;
+  --cream-dim: rgba(232, 220, 196, 0.62);
+  --cream-faint: rgba(232, 220, 196, 0.38);
+  --ember: #e8a054;
+  --ember-soft: rgba(232, 160, 84, 0.16);
+  --mint: #7dcea0;
+  --rose: #e07a7a;
+  --serif: "Instrument Serif", Georgia, "Times New Roman", serif;
+  --sans: "Manrope", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  --shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  --radius: 18px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--sans);
+  color: var(--cream);
+  background: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: var(--ember);
+}
+
+::selection {
+  background: rgba(232, 160, 84, 0.35);
+  color: #fff;
+}
+
+/* grain */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 100;
+  opacity: 0.045;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(232, 220, 196, 0.18) transparent;
+}

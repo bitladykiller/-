@@ -59,3 +59,7 @@ data/uploads/
 
 # Documentation (local only, not tracked)
 docs/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
