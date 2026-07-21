@@ -2,7 +2,8 @@
 
 基于 **FastAPI** 的智能客服**后端**（本仓库），支持 DeepSeek、Qwen2.5、Llama3 等多种大语言模型，覆盖 Agent、RAG、知识图谱在智能客服领域的主流应用场景。
 
-> 产品侧可对接 Vue 3 等前端；**前端工程不在本 monorepo**，本仓库以 API（`/api/*`、`/health`、`/docs`）对外。
+> 内置静态前端：`app/static/dist`（`docker compose up` 后打开 `http://localhost:8000/`）。  
+> 亦可自研前端对接 API（`/api/*`、`/health`、`/docs`）。
 
 ## 功能特性
 
@@ -50,8 +51,9 @@
 - **数据库**：MySQL 8.0 + Neo4j + Redis 7.0 + Milvus 2.6
 - **LLM**：DeepSeek / Ollama（可切换）
 - **Embedding**：bge-m3（1024 维）
-- **前端**：独立工程对接本 API（本仓库不含 UI 源码）
+- **前端**：`app/static/dist` 深色客服 UI（会话 / SSE 流式 / 上传）
 - **OpenAPI**：`http://localhost:8000/docs`
+- **界面入口**：`http://localhost:8000/`
 
 ## 快速启动
 

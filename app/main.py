@@ -102,6 +102,8 @@ def configure_cors(
         allow_credentials=True,
         allow_methods=allow_methods,
         allow_headers=allow_headers,
+        # 前端 fetch 需读取 SSE 响应头中的会话 id
+        expose_headers=["X-Conversation-ID"],
     )
 
 
