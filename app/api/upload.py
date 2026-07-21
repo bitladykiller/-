@@ -7,14 +7,14 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from collections.abc import Awaitable
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 from app.api.common import run_api_action
 from app.knowledge.application.document_indexing_job import run_document_indexing_job
 from app.knowledge.application.document_service import document_service
-from app.knowledge.application.indexing_contracts import UploadFileInfo
 from app.knowledge.application.indexing_service import (
     get_document_extension,
     supports_document_indexing,
@@ -23,6 +23,7 @@ from app.shared.core.config import settings
 from app.shared.core.logger import get_logger
 from app.shared.task_queue import TaskStatusPayload, get_task_manager
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from typing_extensions import TypedDict
 
 logger = get_logger(__name__)
 
@@ -49,9 +50,14 @@ def _document_magic_signatures(extension: str) -> tuple[bytes, ...]:
     return _DOCUMENT_MAGIC_SIGNATURES.get(extension, ())
 
 
-class StoredUploadFileInfo(UploadFileInfo, total=False):
+class StoredUploadFileInfo(TypedDict, total=False):
     """上传成功后在 API 层和任务层共享的文件元信息。"""
 
+    path: str
+    user_id: int
+    doc_id: str
+    mode: str
+    content_hash: str
     filename: str
     original_name: str | None
     size: int
@@ -60,16 +66,48 @@ class StoredUploadFileInfo(UploadFileInfo, total=False):
     upload_time: str
     directory: str
     title: str
+    unchanged: bool
+    version: int
+    chunk_count: int
 
 
-class UploadAcceptedResponse(StoredUploadFileInfo, total=False):
+class UploadAcceptedResponse(TypedDict, total=False):
     """上传接口的成功返回结构。"""
 
+    path: str
+    user_id: int
+    doc_id: str
+    mode: str
+    content_hash: str
+    filename: str
+    original_name: str | None
+    size: int
+    type: str | None
+    user_uuid: str
+    upload_time: str
+    directory: str
+    title: str
     task_id: str
     message: str
-    # replace 且 hash 一致时为 true，前端无需轮询 task
     unchanged: bool
     skipped: bool
+    version: int
+    chunk_count: int
+
+
+def _optional_str(value: object | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _require_doc_id(file_info: StoredUploadFileInfo) -> str:
+    """从元信息取出 doc_id；缺失时抛业务错误。"""
+    doc_id = _optional_str(file_info.get("doc_id"))
+    if not doc_id:
+        raise HTTPException(status_code=500, detail="内部错误：缺少 doc_id")
+    return doc_id
 
 
 def validate_upload(file: UploadFile) -> None:
@@ -153,26 +191,28 @@ async def _store_upload(
         "mode": mode,
         "content_hash": content_hash,
     }
-    if doc_id and doc_id.strip():
-        payload["doc_id"] = doc_id.strip()
+    cleaned_doc_id = _optional_str(doc_id)
+    if cleaned_doc_id:
+        payload["doc_id"] = cleaned_doc_id
     return payload
 
 
 async def _register_document_metadata(file_info: StoredUploadFileInfo) -> StoredUploadFileInfo:
-    """在提交索引前写入/更新 MySQL，保证 doc_id 与文件名绑定。
-
-    replace 且 content_hash 与库中一致时，file_info['unchanged']=True。
-    """
+    """在提交索引前写入/更新 MySQL，保证 doc_id 与文件名绑定。"""
     user_id = int(file_info.get("user_id") or 0)
     mode = str(file_info.get("mode") or "create")
-    original_name = str(file_info.get("original_name") or file_info.get("filename") or "document")
+    original_name = str(
+        file_info.get("original_name") or file_info.get("filename") or "document"
+    )
     source_path = str(file_info.get("path") or "")
     content_hash = str(file_info.get("content_hash") or "")
+    incoming_doc_id = _optional_str(file_info.get("doc_id"))
+
     try:
         if mode == "replace":
             meta = await document_service.prepare_replace(
                 user_id=user_id,
-                doc_id=str(file_info.get("doc_id") or ""),
+                doc_id=incoming_doc_id or "",
                 original_name=original_name,
                 source_path=source_path,
                 content_hash=content_hash,
@@ -184,20 +224,69 @@ async def _register_document_metadata(file_info: StoredUploadFileInfo) -> Stored
                 original_name=original_name,
                 source_path=source_path,
                 content_hash=content_hash,
-                doc_id=file_info.get("doc_id"),
+                doc_id=incoming_doc_id,
             )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    file_info["doc_id"] = str(meta["doc_id"])
-    file_info["title"] = str(meta.get("title") or original_name)
-    if meta.get("unchanged"):
-        file_info["unchanged"] = True
-        file_info["version"] = int(meta.get("version") or 0)  # type: ignore[typeddict-item]
-        file_info["chunk_count"] = int(meta.get("chunk_count") or 0)  # type: ignore[typeddict-item]
+    updated = cast(StoredUploadFileInfo, {**file_info})
+    updated["doc_id"] = str(meta.get("doc_id") or "")
+    updated["title"] = str(meta.get("title") or original_name)
+    if bool(meta.get("unchanged")):
+        updated["unchanged"] = True
+        updated["version"] = int(meta.get("version") or 0)
+        updated["chunk_count"] = int(meta.get("chunk_count") or 0)
     else:
-        file_info["unchanged"] = False
-    return file_info
+        updated["unchanged"] = False
+    return updated
+
+
+async def _run_upload(
+    file: UploadFile,
+    user_id: int,
+    doc_id: str | None,
+    mode: str,
+) -> UploadAcceptedResponse:
+    """上传主流程（显式 async，便于类型检查）。"""
+    validate_upload(file)
+    normalized_mode = _normalize_upload_mode(mode)
+    if normalized_mode == "replace" and not _optional_str(doc_id):
+        raise HTTPException(
+            status_code=400,
+            detail="replace 模式必须提供 doc_id（与文档列表中的稳定文档 ID 一致）",
+        )
+
+    file_info = await _store_upload(
+        file,
+        user_id,
+        doc_id=doc_id,
+        mode=normalized_mode,
+    )
+    file_info = await _register_document_metadata(file_info)
+    resolved_doc_id = _require_doc_id(file_info)
+
+    if file_info.get("unchanged"):
+        response: UploadAcceptedResponse = {
+            **file_info,
+            "doc_id": resolved_doc_id,
+            "task_id": "",
+            "skipped": True,
+            "unchanged": True,
+            "message": _UPLOAD_UNCHANGED_MESSAGE,
+        }
+        return response
+
+    task_manager = await get_task_manager()
+    task_id = await task_manager.submit(run_document_indexing_job, file_info)
+    await document_service.bind_task_id(resolved_doc_id, task_id)
+    return {
+        **file_info,
+        "doc_id": resolved_doc_id,
+        "task_id": task_id,
+        "skipped": False,
+        "unchanged": False,
+        "message": _UPLOAD_ACCEPTED_MESSAGE,
+    }
 
 
 @router.post("/upload")
@@ -210,49 +299,17 @@ async def upload_file(
     """上传并异步索引。
 
     - mode=create：新建，服务端生成或使用传入 doc_id，写入 MySQL
-    - mode=replace：必须传已有 doc_id（归属校验）；hash 相同则跳过，否则软删+新 version
+    - mode=replace：必须传已有 doc_id；hash 相同则跳过，否则软删+新 version
     """
-
-    async def operation() -> UploadAcceptedResponse:
-        validate_upload(file)
-        normalized_mode = _normalize_upload_mode(mode)
-        if normalized_mode == "replace" and not (doc_id and doc_id.strip()):
-            raise HTTPException(
-                status_code=400,
-                detail="replace 模式必须提供 doc_id（与文档列表中的稳定文档 ID 一致）",
-            )
-        file_info = await _store_upload(
-            file,
-            user_id,
-            doc_id=doc_id,
-            mode=normalized_mode,
-        )
-        file_info = await _register_document_metadata(file_info)
-
-        # hash 一致：不提交 reindex 任务
-        if file_info.get("unchanged"):
-            return {
-                **file_info,
-                "task_id": "",
-                "skipped": True,
-                "unchanged": True,
-                "message": _UPLOAD_UNCHANGED_MESSAGE,
-            }
-
-        task_manager = await get_task_manager()
-        task_id = await task_manager.submit(run_document_indexing_job, file_info)
-        await document_service.bind_task_id(str(file_info["doc_id"]), task_id)
-        return {
-            **file_info,
-            "task_id": task_id,
-            "skipped": False,
-            "unchanged": False,
-            "message": _UPLOAD_ACCEPTED_MESSAGE,
-        }
-
+    operation: Awaitable[UploadAcceptedResponse] = _run_upload(
+        file,
+        user_id,
+        doc_id,
+        mode,
+    )
     return await run_api_action(
         "upload_file",
-        operation(),
+        operation,
         logger=logger,
         user_id=user_id,
         filename=file.filename,
@@ -262,20 +319,21 @@ async def upload_file(
 @router.get("/upload/status/{task_id}")
 async def get_upload_status(task_id: str) -> TaskStatusPayload:
     """查询文档解析任务状态。"""
-
-    async def operation() -> TaskStatusPayload:
-        task_manager = await get_task_manager()
-        status = await task_manager.get_status(task_id)
-        if status is None:
-            raise HTTPException(
-                status_code=404,
-                detail=_TASK_NOT_FOUND_DETAIL.format(task_id=task_id),
-            )
-        return status
-
+    operation: Awaitable[TaskStatusPayload] = _run_get_upload_status(task_id)
     return await run_api_action(
         "get_upload_status",
-        operation(),
+        operation,
         logger=logger,
         task_id=task_id,
     )
+
+
+async def _run_get_upload_status(task_id: str) -> TaskStatusPayload:
+    task_manager = await get_task_manager()
+    status = await task_manager.get_status(task_id)
+    if status is None:
+        raise HTTPException(
+            status_code=404,
+            detail=_TASK_NOT_FOUND_DETAIL.format(task_id=task_id),
+        )
+    return cast(TaskStatusPayload, status)
