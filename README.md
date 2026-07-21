@@ -38,6 +38,7 @@
 - **文档动态更新（策略 2）**：`is_deleted` + `version`；`mode=replace` + 稳定 `doc_id` 时软删旧 chunk 再写新版；检索默认排除软删
 - **replace 幂等**：新文件 `content_hash` 与 MySQL 一致则 **跳过 reindex**（不建任务、不软删）
 - **MySQL `user_documents`**：绑定 `doc_id` 与文件名/版本/状态；API `GET /api/documents/user/{user_id}`；前端「我的文档 / 更新」固定该行 `doc_id`
+- **RAG 书面化改写**：进入文档检索前把口语问句改成书面检索问句（默认开、超时回退；不做 HYDE/退步）
 
 ### 6. 会话管理
 - MySQL `conversations` 表只存会话元信息（标题、时间、类型）

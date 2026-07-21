@@ -203,6 +203,25 @@ class MemoryConfig:
 
 
 # ====================================================================
+# RAG 查询改写（仅书面化；不做 HYDE / 退步）
+# ====================================================================
+
+@dataclass(frozen=True)
+class RagRewriteConfig:
+    """RAG 查询书面化改写配置。
+
+    仅作用于文档检索支路；图谱检索不使用。
+    """
+
+    # 是否在进入 HybridSearcher 前做书面化改写
+    formalize_enabled: bool = True
+    # LLM 超时（秒）；超时或失败则回退原问句
+    timeout_seconds: float = 3.0
+    # 改写结果最大字符数，防止异常长输出
+    max_chars: int = 256
+
+
+# ====================================================================
 # 聚合配置
 # ====================================================================
 
@@ -217,6 +236,7 @@ class AppConfig:
     upload: UploadConfig = field(default_factory=UploadConfig)
     task_queue: TaskQueueConfig = field(default_factory=TaskQueueConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    rag_rewrite: RagRewriteConfig = field(default_factory=RagRewriteConfig)
 
 
 app_config = AppConfig()
@@ -228,6 +248,7 @@ __all__ = [
     "LTMSearchConfig",
     "LTMUpdateOnHitConfig",
     "MemoryConfig",
+    "RagRewriteConfig",
     "ReactConfig",
     "STMCompressionConfig",
     "STMConfig",

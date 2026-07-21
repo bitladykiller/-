@@ -1,7 +1,7 @@
 """检索层具体实现。
 
 职责：
-- 提供 Milvus 文档检索器实现
+- 提供 Milvus 文档检索器实现（含 RAG 书面化改写）
 - 提供 Neo4j 知识图谱检索器实现
 
 边界：
@@ -11,29 +11,78 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
+from app.chat.infrastructure.retrievers.rag_query_formalize import formalize_rag_query
 from app.chat.infrastructure.retrievers.retriever_contracts import (
     RAG_SEARCH_STEP,
     Retriever,
 )
+from app.shared.core.logger import get_logger
+
+logger = get_logger(__name__)
+
+# 可注入：async (question) -> rewritten
+FormalizeFn = Callable[[str], Awaitable[str]]
 
 
 class MilvusDocRetriever(Retriever):
-    """基于 doc_parser + Milvus 的文档检索器。"""
+    """基于 doc_parser + Milvus 的文档检索器。
 
-    def __init__(self) -> None:
+    检索前默认做书面化改写（可配置关闭）；图谱检索器不做改写。
+    """
+
+    def __init__(
+        self,
+        *,
+        formalize_fn: FormalizeFn | None = None,
+        formalize_enabled: bool | None = None,
+    ) -> None:
         from app.knowledge.infrastructure.doc_parser.retrieval.config import RetrievalConfig
         from app.knowledge.infrastructure.doc_parser.retrieval.hybrid_search import HybridSearcher
+        from app.shared.core.app_config import app_config
 
         self._searcher = HybridSearcher(RetrievalConfig())
+        self._formalize_fn = formalize_fn
+        self._formalize_enabled = (
+            formalize_enabled
+            if formalize_enabled is not None
+            else app_config.rag_rewrite.formalize_enabled
+        )
+
+    async def _rewrite_for_rag(self, task: str) -> str:
+        """书面化；关闭或失败时用原句。"""
+        text = (task or "").strip()
+        enabled = getattr(self, "_formalize_enabled", True)
+        if not text or not enabled:
+            return text
+        try:
+            formalize_fn = getattr(self, "_formalize_fn", None)
+            if formalize_fn is not None:
+                rewritten = await formalize_fn(text)
+            else:
+                rewritten = await formalize_rag_query(text)
+            rewritten = (rewritten or "").strip()
+            if rewritten and rewritten != text:
+                logger.info(
+                    "RAG 书面化 | original=%s | rewritten=%s",
+                    text[:80],
+                    rewritten[:80],
+                )
+            return rewritten or text
+        except Exception as exc:
+            logger.warning("RAG 书面化异常，使用原问 | %s", exc, exc_info=True)
+            return text
 
     async def search(self, task: str) -> dict[str, Any]:
-        """检索 Milvus 文档知识库。"""
+        """检索前书面化，再查 Milvus 文档知识库。"""
 
         errors: list[str] = []
+        original = (task or "").strip()
+        query = await self._rewrite_for_rag(original)
         try:
-            results = await self._searcher.search(task)
+            results = await self._searcher.search(query)
             records = (
                 [
                     {
@@ -56,12 +105,16 @@ class MilvusDocRetriever(Retriever):
             records = [{"message": "文档检索暂时不可用。"}]
             errors.append(str(exc))
 
-        return {
-            "task": task,
+        payload: dict[str, Any] = {
+            "task": original,
             "records": records,
             "errors": errors,
             "steps": [RAG_SEARCH_STEP],
         }
+        # 便于排障：仅当改写生效时附带
+        if query and query != original:
+            payload["rewritten_query"] = query
+        return payload
 
 
 class KnowledgeGraphRetriever(Retriever):
@@ -71,7 +124,7 @@ class KnowledgeGraphRetriever(Retriever):
         self._t2c_agent = t2c_agent
 
     async def search(self, task: str) -> dict[str, Any]:
-        """查询 Neo4j 知识图谱。"""
+        """查询 Neo4j 知识图谱（不做 RAG 书面化）。"""
 
         raw_result = await self._t2c_agent.ainvoke({"task": task})
         records: list[dict[str, Any]] = []

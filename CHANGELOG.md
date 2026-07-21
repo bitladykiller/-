@@ -5,6 +5,21 @@
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v3.32.0] - 2026-07-21
+### 新增
+- **RAG 书面化查询改写**（仅文档检索支路）
+  - `formalize_rag_query`：口语 → 政策/说明书风格检索问句
+  - 挂载于 `MilvusDocRetriever.search`（含 ReAct `rag_search`）
+  - 配置：`AppConfig.rag_rewrite`（默认开启，超时 3s 回退）
+  - **不做** HYDE / 退步改写
+  - 图谱 `KnowledgeGraphRetriever` 不改写
+
+### 涉及文件
+- `app/chat/infrastructure/retrievers/rag_query_formalize.py`
+- `app/chat/infrastructure/retrievers/retriever_implementations.py`
+- `app/shared/core/app_config.py`
+- `tests/chat/test_rag_query_formalize.py`、`test_lg_retrievers.py`
+
 ## [v3.31.1] - 2026-07-21
 ### 改进
 - **replace 幂等**：更新文档时比对 MySQL `content_hash`，一致则跳过 reindex（不提交任务、不软删）

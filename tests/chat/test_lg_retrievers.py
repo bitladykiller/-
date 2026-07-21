@@ -62,6 +62,8 @@ def test_milvus_doc_retriever_search_truncates_records() -> None:
             for index in range(6)
         ]
     )
+    retriever._formalize_enabled = False
+    retriever._formalize_fn = None
 
     result = _run(retriever.search("保修政策"))
 
@@ -76,6 +78,26 @@ def test_milvus_doc_retriever_search_truncates_records() -> None:
     }
     assert result["errors"] == []
     assert result["steps"] == [retriever_contracts.RAG_SEARCH_STEP]
+    assert retriever._searcher.calls == ["保修政策"]
+
+
+def test_milvus_doc_retriever_applies_formalize_before_search() -> None:
+    retriever = retriever_implementations.MilvusDocRetriever.__new__(
+        retriever_implementations.MilvusDocRetriever
+    )
+    retriever._searcher = FakeSearcher(result=[])
+    retriever._formalize_enabled = True
+
+    async def fake_formalize(q: str) -> str:
+        return "智能门锁保修政策"
+
+    retriever._formalize_fn = fake_formalize
+
+    result = _run(retriever.search("亲门锁保修咋样"))
+
+    assert retriever._searcher.calls == ["智能门锁保修政策"]
+    assert result["task"] == "亲门锁保修咋样"
+    assert result["rewritten_query"] == "智能门锁保修政策"
 
 
 def test_milvus_doc_retriever_search_keeps_stable_record_shape() -> None:
@@ -94,6 +116,8 @@ def test_milvus_doc_retriever_search_keeps_stable_record_shape() -> None:
             }
         ]
     )
+    retriever._formalize_enabled = False
+    retriever._formalize_fn = None
 
     result = _run(retriever.search("保修政策"))
 
@@ -114,6 +138,8 @@ def test_milvus_doc_retriever_search_returns_fallback_record_on_error() -> None:
         retriever_implementations.MilvusDocRetriever
     )
     retriever._searcher = FakeSearcher(error=RuntimeError("boom"))
+    retriever._formalize_enabled = False
+    retriever._formalize_fn = None
 
     result = _run(retriever.search("保修政策"))
 
