@@ -30,6 +30,16 @@ docker compose up -d --build
 
 Nginx 将 `/api`、`/health`、`/docs` 转发到 `app:8000`，前端请求使用相对路径。
 
+## 知识文档 UI
+
+顶栏「知识文档」打开抽屉（`UploadDrawer.vue`）：
+
+| 标签 | 行为 |
+|------|------|
+| 上传新文档 | `POST /api/upload` `mode=create` → 轮询 task |
+| 我的文档 / 更新 | `GET /api/documents/user/{userId}` 列表；更新时固定该行 `doc_id` + `mode=replace` |
+| hash 未变 | 响应 `unchanged/skipped`，不轮询 task |
+
 ## 环境变量
 
 见 `.env.example`。生产镜像构建时 `VITE_API_BASE_URL` 为空（同源反代）。

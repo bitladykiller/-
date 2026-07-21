@@ -36,7 +36,8 @@
 - PDF 与 DOCX 先转为 Markdown，原生 Markdown 直接清洗分块后入库
 - 混合检索（向量 + BM25 + RRF 融合）
 - **文档动态更新（策略 2）**：`is_deleted` + `version`；`mode=replace` + 稳定 `doc_id` 时软删旧 chunk 再写新版；检索默认排除软删
-- **MySQL `user_documents`**：绑定 `doc_id` 与文件名/版本/状态；前端「我的文档」列表 +「更新文档」必须使用该 `doc_id`
+- **replace 幂等**：新文件 `content_hash` 与 MySQL 一致则 **跳过 reindex**（不建任务、不软删）
+- **MySQL `user_documents`**：绑定 `doc_id` 与文件名/版本/状态；API `GET /api/documents/user/{user_id}`；前端「我的文档 / 更新」固定该行 `doc_id`
 
 ### 6. 会话管理
 - MySQL `conversations` 表只存会话元信息（标题、时间、类型）
@@ -53,7 +54,7 @@
 - **数据库**：MySQL 8.0 + Neo4j + Redis 7.0 + Milvus 2.6
 - **LLM**：DeepSeek / Ollama（可切换）
 - **Embedding**：bge-m3（1024 维）
-- **前端**：`frontend/` Vue 3 控制台（会话 / SSE / 上传）
+- **前端**：`frontend/` Vue 3 控制台（会话 / SSE / 知识文档上传与更新）
 - **OpenAPI**：`http://localhost:8000/docs` 或经前端网关 `http://localhost:8080/docs`
 - **界面入口**：`http://localhost:8080/`（Docker）或 `npm run dev` → `:5173`
 

@@ -25,6 +25,7 @@
 - **BM25 关键词检索**
 - **RRF 融合**：Reciprocal Rank Fusion 合并两路排序结果
 - **动态更新（策略 2）**：`soft_delete_by_doc_id` + `reindex`（version 递增）；检索默认 `is_deleted == false`；`hard_purge_soft_deleted` 回收空间
+- **业务侧幂等**：replace 前由 `DocumentService.prepare_replace` 比对 MySQL `content_hash`，相同则不调用 reindex
 
 ```python
 from app.knowledge.infrastructure.doc_parser.retrieval.hybrid_search import HybridSearcher
