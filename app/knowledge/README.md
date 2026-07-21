@@ -22,7 +22,8 @@ app/knowledge/
 
 ## 持久化说明
 
-本域主存储是 Redis / Milvus / 文件，**不是** MySQL repository。  
+本域主存储是 Redis / Milvus / 文件；**文档元信息**另存 MySQL `user_documents`
+（`doc_id` 与 Milvus chunk 对齐，供列表与 replace 更新）。  
 因此不强制建立空的 `infrastructure/models` 或 `repository` 目录。
 
 ## 依赖

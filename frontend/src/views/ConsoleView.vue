@@ -91,7 +91,7 @@ watch(error, (v) => {
         </div>
         <div class="actions">
           <button type="button" class="ghost" @click="uploadOpen = true">
-            上传文档
+            知识文档
           </button>
           <button
             type="button"

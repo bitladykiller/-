@@ -219,6 +219,7 @@ def test_store_upload_writes_file_and_returns_stable_metadata(
     assert file_info == {
         "filename": "manual_20260102_030405.pdf",
         "original_name": "manual.pdf",
+        "title": "manual.pdf",
         "size": len(b"%PDF-1.7"),
         "type": "application/pdf",
         "path": (tmp_path / "user-uuid" / "20260102_030405" / "manual_20260102_030405.pdf").as_posix(),
@@ -239,8 +240,16 @@ def test_process_upload_runs_validation_storage_and_task_submission(
 ) -> None:
     file = FakeUploadFile("guide.pdf")
     manager = FakeTaskManager(task_id="task-9")
-    file_info = {"path": "uploads/guide.pdf", "filename": "guide.pdf", "user_id": 7}
+    file_info = {
+        "path": "uploads/guide.pdf",
+        "filename": "guide.pdf",
+        "user_id": 7,
+        "mode": "create",
+        "content_hash": "h",
+        "original_name": "guide.pdf",
+    }
     captured: list[tuple[str, object]] = []
+    bound: list[tuple[str, str]] = []
 
     def fake_validate_upload(upload_file: UploadFile) -> None:
         captured.append(("validate", upload_file))
@@ -251,32 +260,40 @@ def test_process_upload_runs_validation_storage_and_task_submission(
         **kwargs: object,
     ) -> dict[str, object]:
         captured.append(("store", (upload_file, user_id, kwargs)))
-        return file_info
+        return dict(file_info)
+
+    async def fake_register(info: dict[str, object]) -> dict[str, object]:
+        captured.append(("register", info.get("path")))
+        info = dict(info)
+        info["doc_id"] = "upload_7_abc"
+        info["title"] = "guide.pdf"
+        return info
+
+    async def fake_bind(doc_id: str, task_id: str) -> None:
+        bound.append((doc_id, task_id))
 
     async def fake_get_task_manager() -> FakeTaskManager:
         return manager
 
     monkeypatch.setattr(upload_api, "validate_upload", fake_validate_upload)
     monkeypatch.setattr(upload_api, "_store_upload", fake_store_upload)
+    monkeypatch.setattr(upload_api, "_register_document_metadata", fake_register)
     monkeypatch.setattr(upload_api, "get_task_manager", fake_get_task_manager)
+    monkeypatch.setattr(upload_api.document_service, "bind_task_id", fake_bind)
 
     response = _run(upload_api.upload_file(_as_upload(file), 7))
 
-    assert captured == [
-        ("validate", _as_upload(file)),
-        ("store", (_as_upload(file), 7, {"doc_id": None, "mode": "create"})),
-    ]
+    assert captured[0] == ("validate", _as_upload(file))
+    assert captured[1][0] == "store"
+    assert captured[2] == ("register", "uploads/guide.pdf")
     assert len(manager.submit_calls) == 1
     submitted_func, submitted_args = manager.submit_calls[0]
-    # process_file 是绑定方法，校验所属类与方法名
-    assert getattr(submitted_func, "__self__", None).__class__ is upload_api.IndexingService
-    assert getattr(submitted_func, "__name__", "") == "process_file"
-    assert submitted_args == (file_info,)
-    assert response == {
-        **file_info,
-        "task_id": "task-9",
-        "message": "文件已上传，后台正在解析索引。请通过 task_id 查询进度。",
-    }
+    assert submitted_func is upload_api.run_document_indexing_job
+    assert submitted_args[0]["doc_id"] == "upload_7_abc"
+    assert bound == [("upload_7_abc", "task-9")]
+    assert response["task_id"] == "task-9"
+    assert response["doc_id"] == "upload_7_abc"
+    assert response["message"] == "文件已上传，后台正在解析索引。请通过 task_id 查询进度。"
 
 
 def test_get_upload_status_or_raise_returns_status_and_raises_404(

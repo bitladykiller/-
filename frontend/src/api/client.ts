@@ -4,7 +4,10 @@ import type {
   MessageResponse,
   TaskStatusPayload,
   UploadAccepted,
+  UserDocumentSummary,
 } from "./types";
+
+export type { UserDocumentSummary };
 
 /** 开发走 Vite 代理；生产由 nginx 同源反代，默认空字符串 */
 const BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
@@ -71,13 +74,37 @@ export async function deleteConversation(id: number): Promise<MessageResponse> {
   return res.json();
 }
 
+export async function listDocuments(
+  userId: number,
+): Promise<UserDocumentSummary[]> {
+  const res = await fetch(`${BASE}/api/documents/user/${userId}`);
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export async function getDocument(
+  userId: number,
+  docId: string,
+): Promise<UserDocumentSummary> {
+  const res = await fetch(
+    `${BASE}/api/documents/user/${userId}/${encodeURIComponent(docId)}`,
+  );
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
 export async function uploadDocument(
   userId: number,
   file: File,
+  options?: { mode?: "create" | "replace"; docId?: string },
 ): Promise<UploadAccepted> {
   const form = new FormData();
   form.append("user_id", String(userId));
   form.append("file", file);
+  form.append("mode", options?.mode ?? "create");
+  if (options?.docId) {
+    form.append("doc_id", options.docId);
+  }
   const res = await fetch(`${BASE}/api/upload`, { method: "POST", body: form });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();

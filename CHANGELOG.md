@@ -5,6 +5,25 @@
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v3.31.0] - 2026-07-21
+### 新增
+- **MySQL `user_documents` 用户文档元信息表**
+  - 稳定 `doc_id` ↔ 展示名/原始文件名/版本/状态/hash
+  - API：`GET /api/documents/user/{user_id}`、`GET /api/documents/user/{user_id}/{doc_id}`
+  - 上传 `create/replace` 前写元数据，索引完成后回写 `ready|failed` + version/chunks
+- **前端知识文档抽屉**
+  - 标签「上传新文档」/「我的文档 / 更新」
+  - 列表展示 doc_id、version、status；「更新文档」固定绑定该行 doc_id 调 `mode=replace`
+- 增量迁移脚本：`configs/mysql-init/migration_user_documents.sql`
+
+### 涉及文件
+- `app/knowledge/infrastructure/models/user_document.py`
+- `app/knowledge/infrastructure/repository/user_document_repository.py`
+- `app/knowledge/application/document_service.py` / `document_indexing_job.py`
+- `app/api/documents.py` / `app/api/upload.py`
+- `frontend/src/components/UploadDrawer.vue` / `api/client.ts`
+- `configs/mysql-init/init.sql`、`migration_user_documents.sql`
+
 ## [v3.30.0] - 2026-07-21
 ### 新增
 - **RAG 文档动态更新（策略 2：软删除 + version）**

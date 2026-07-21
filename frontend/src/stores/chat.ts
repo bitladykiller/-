@@ -183,10 +183,17 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  async function upload(file: File, onProgress?: (label: string, pct: number) => void) {
+  async function upload(
+    file: File,
+    onProgress?: (label: string, pct: number) => void,
+    options?: { mode?: "create" | "replace"; docId?: string },
+  ) {
     onProgress?.("上传中…", 10);
-    const accepted = await uploadDocument(userId.value, file);
-    onProgress?.(`解析中 task=${accepted.task_id}`, 25);
+    const accepted = await uploadDocument(userId.value, file, options);
+    onProgress?.(
+      `解析中 task=${accepted.task_id}${accepted.doc_id ? ` · ${accepted.doc_id}` : ""}`,
+      25,
+    );
 
     for (let i = 0; i < 120; i++) {
       const st = await getUploadStatus(accepted.task_id);
@@ -194,8 +201,11 @@ export const useChatStore = defineStore("chat", () => {
       if (st.status === "running") onProgress?.("解析索引中…", 60);
       if (st.status === "completed") {
         const n = st.result?.chunks;
+        const doc = st.result?.doc_id || accepted.doc_id;
         onProgress?.(
-          typeof n === "number" ? `完成，${n} 个片段` : "索引完成",
+          typeof n === "number"
+            ? `完成，${n} 个片段${doc ? ` · ${doc}` : ""}`
+            : "索引完成",
           100,
         );
         return st;
