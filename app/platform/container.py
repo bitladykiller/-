@@ -57,6 +57,10 @@ class AppContainer:
     # ---- 摘要链缓存 ----
     summarize_chain: Any = None
 
+    # ---- 后台定时任务（LTM 硬清理等）----
+    _background_tasks: list[asyncio.Task[Any]] = field(default_factory=list)
+    _background_stop: asyncio.Event | None = field(default=None, init=False)
+
     _closed: bool = field(default=False, init=False)
 
     @classmethod
@@ -98,11 +102,64 @@ class AppContainer:
         if self.memory_middleware is None:
             await self._init_memory_middleware()
 
+    def start_background_jobs(self) -> None:
+        """启动进程内后台任务（LTM 软删记录的定时硬清理）。"""
+        if self._background_stop is not None:
+            return
+        from app.knowledge.infrastructure.ltm.purge_scheduler import (
+            run_ltm_hard_purge_loop,
+        )
+        from app.shared.core.config import settings
+
+        purge_cfg = settings.app_config.memory.ltm.purge
+        if not purge_cfg.enabled or not settings.app_config.memory.ltm.enabled:
+            logger.info("跳过 LTM 硬清理调度（ltm 或 purge 未启用）")
+            return
+
+        stop_event = asyncio.Event()
+        self._background_stop = stop_event
+
+        def _get_ltm() -> Any | None:
+            mw = self.memory_middleware
+            if mw is None:
+                return None
+            return getattr(mw, "milvus_ltm", None)
+
+        task = asyncio.create_task(
+            run_ltm_hard_purge_loop(
+                get_ltm=_get_ltm,
+                purge_config=purge_cfg,
+                stop_event=stop_event,
+            ),
+            name="ltm_hard_purge_loop",
+        )
+        self._background_tasks.append(task)
+        logger.info("已启动后台任务: ltm_hard_purge_loop")
+
+    async def stop_background_jobs(self) -> None:
+        """停止后台任务并等待退出。"""
+        if self._background_stop is not None:
+            self._background_stop.set()
+        tasks = list(self._background_tasks)
+        self._background_tasks.clear()
+        self._background_stop = None
+        if not tasks:
+            return
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        logger.info("后台任务已全部停止")
+
     async def close(self) -> None:
         """关闭所有外部连接（按依赖逆序）。"""
         if self._closed:
             return
         self._closed = True
+
+        try:
+            await self.stop_background_jobs()
+        except Exception:
+            logger.debug("停止后台任务时出错", exc_info=True)
 
         if self.task_manager is not None:
             try:

@@ -139,6 +139,23 @@ class LTMUpdateOnHitConfig:
 
 
 @dataclass(frozen=True)
+class LTMPurgeConfig:
+    """已软删 LTM 的定时硬清理配置。
+
+    业务删会话仍走 soft_delete；本任务定期把 is_deleted=true
+    且超过保留期的记录从 Milvus 物理删除，回收空间。
+    """
+
+    enabled: bool = True
+    # 调度间隔（秒）：默认 1 小时
+    interval_seconds: int = 3600
+    # 软删后至少保留多久再硬删（秒）：默认 7 天
+    retention_seconds: int = 7 * 24 * 3600
+    # 单次 query 上限（与 soft_delete 一致）
+    batch_limit: int = 16384
+
+
+@dataclass(frozen=True)
 class LTMConfig:
     """长期记忆总配置。"""
 
@@ -147,6 +164,7 @@ class LTMConfig:
     search: LTMSearchConfig = field(default_factory=LTMSearchConfig)
     deduplication: LTMDeduplicationConfig = field(default_factory=LTMDeduplicationConfig)
     update_on_hit: LTMUpdateOnHitConfig = field(default_factory=LTMUpdateOnHitConfig)
+    purge: LTMPurgeConfig = field(default_factory=LTMPurgeConfig)
 
 
 # ====================================================================

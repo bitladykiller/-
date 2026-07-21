@@ -73,6 +73,10 @@ def build_lifespan(
         await set_container(container)
 
         await warm_up(runtime_logger)
+        # 定时硬清理已软删的 LTM（Milvus 物理删除）；测试 FakeContainer 可无此方法
+        start_jobs = getattr(container, "start_background_jobs", None)
+        if callable(start_jobs):
+            start_jobs()
         runtime_logger.info("启动完成")
         try:
             yield

@@ -5,6 +5,21 @@
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v3.27.0] - 2026-07-21
+### 新增
+- LTM **定时硬清理**：软删且超过保留期的记录从 Milvus 物理删除
+  - `SimpleLongTermMemory.hard_purge_soft_deleted`
+  - 后台循环 `purge_scheduler.run_ltm_hard_purge_loop`
+  - `AppContainer.start_background_jobs` 在 lifespan 启动，关闭时取消
+  - 配置：`AppConfig.memory.ltm.purge`（interval 默认 1h，retention 默认 7 天）
+
+### 涉及文件
+- `app/shared/core/app_config.py`
+- `app/knowledge/infrastructure/ltm/simple_long_term_memory.py`
+- `app/knowledge/infrastructure/ltm/purge_scheduler.py`
+- `app/platform/container.py`、`app/main.py`
+- `tests/knowledge/test_ltm_hard_purge.py`
+
 ## [v3.26.0] - 2026-07-21
 ### 改进
 - **检索计划方案 A**：由互斥五选一改为能力标签编排

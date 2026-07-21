@@ -591,6 +591,73 @@ class SimpleLongTermMemory:
             )
             return 0
 
+    async def hard_purge_soft_deleted(
+        self,
+        *,
+        retention_seconds: int | None = None,
+        batch_limit: int | None = None,
+    ) -> int:
+        """物理删除已软删且超过保留期的 LTM 记录。
+
+        filter：is_deleted == true 且 updated_at < now - retention
+        （软删时会写 updated_at，故可用 updated_at 近似软删时间）
+
+        Returns:
+            删除条数；失败返回 0 并打错误日志。
+        """
+        purge_cfg = settings.app_config.memory.ltm.purge
+        retention = (
+            retention_seconds
+            if retention_seconds is not None
+            else purge_cfg.retention_seconds
+        )
+        limit = batch_limit if batch_limit is not None else purge_cfg.batch_limit
+        if retention < 0 or limit <= 0:
+            return 0
+
+        cutoff = self._now_ts() - int(retention)
+        filter_expr = f"is_deleted == true and updated_at < {cutoff}"
+        try:
+            rows = self.milvus_client.query(
+                collection_name=self.collection_name,
+                filter=filter_expr,
+                output_fields=["memory_id"],
+                limit=limit,
+            )
+            if not rows:
+                return 0
+
+            memory_ids = [
+                str(row["memory_id"])
+                for row in rows
+                if isinstance(row, dict) and row.get("memory_id")
+            ]
+            if not memory_ids:
+                return 0
+
+            # 按主键物理删除；表达式删除在部分版本对动态字段更挑
+            ids_literal = ", ".join(f'"{mid}"' for mid in memory_ids)
+            delete_filter = f"memory_id in [{ids_literal}]"
+            self.milvus_client.delete(
+                collection_name=self.collection_name,
+                filter=delete_filter,
+            )
+            logger.info(
+                "LTM 硬清理完成 | deleted=%s cutoff=%s collection=%s",
+                len(memory_ids),
+                cutoff,
+                self.collection_name,
+            )
+            return len(memory_ids)
+        except Exception as exc:
+            logger.error(
+                "hard_purge_soft_deleted 异常 | collection=%s | %s",
+                self.collection_name,
+                exc,
+                exc_info=True,
+            )
+            return 0
+
     async def update_memory_hit_info(self, memory: LongTermMemory) -> bool:
         """
         使用 Milvus partial_update 更新命中计数器。
