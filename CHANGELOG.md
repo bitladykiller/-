@@ -5,6 +5,10 @@
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v3.29.1] - 2026-07-21
+### 移除
+- 删除旧版内嵌静态页 `app/static/dist`（前后端分离后仅保留 `frontend/` + Docker Nginx）
+
 ## [v3.29.0] - 2026-07-21
 ### 新增
 - **前后端分离工程化前端** `frontend/`
@@ -13,10 +17,6 @@
   - 多阶段 Docker 构建 + Nginx 反代 `/api` `/health` `/docs`
   - `docker-compose` 服务 `frontend` 映射 `8080:80`
 - CORS 暴露 `X-Conversation-ID`（便于跨域调试）
-
-## [v3.28.0] - 2026-07-21
-### 新增
-- 内置静态演示页 `app/static/dist`（可选；正式入口以 `frontend/` 为准）
 
 ## [v3.27.0] - 2026-07-21
 ### 新增

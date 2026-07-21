@@ -64,7 +64,8 @@ async def _fake_reset_container():
     _container_instance = None
 
 
-def test_import_app_main_registers_health_and_optional_static() -> None:
+def test_import_app_main_registers_health_without_legacy_static() -> None:
+    """默认应用：健康检查存在；工程化前端在独立 frontend 服务，不再挂载 app/static。"""
     main_module = _import_fresh("app.main")
 
     route_names = {
@@ -74,11 +75,8 @@ def test_import_app_main_registers_health_and_optional_static() -> None:
 
     assert main_module.app.title == main_module.APP_TITLE
     assert "/health" in route_paths
-    # 有 app/static/dist 时挂载静态前端；缺失时由另一用例覆盖 skip 逻辑
-    if main_module.STATIC_DIR.is_dir():
-        assert "static" in route_names
-    else:
-        assert "static" not in route_names
+    assert "static" not in route_names
+    assert not main_module.STATIC_DIR.is_dir()
 
 
 def test_create_app_logs_and_skips_missing_static_dir(tmp_path) -> None:
