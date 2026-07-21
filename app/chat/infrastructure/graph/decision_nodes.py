@@ -26,7 +26,14 @@ from app.chat.infrastructure.graph.memory_context import (
 from app.chat.infrastructure.graph.message_utils import (
     build_safe_messages,
 )
-from app.chat.infrastructure.graph.state import AgentState, RetrievalPlan, Router
+from app.chat.infrastructure.graph.state import (
+    AgentState,
+    ExecutionPlanType,
+    RetrievalComplexity,
+    RetrievalMode,
+    RetrievalPlan,
+    Router,
+)
 from app.chat.infrastructure.modeling.models import (
     GuardrailsDecision,
     RetrievalPlanOutput,
@@ -56,13 +63,55 @@ RetrievalEdgeName = Literal[
     "execute_react",
 ]
 _GUARDRAILS_BLOCK_MESSAGE = "抱歉，我家暂时没有这方面的商品，可以在别家看看哦～"
-_RETRIEVAL_EDGE_MAP: dict[str, RetrievalEdgeName] = {
+_RETRIEVAL_EDGE_MAP: dict[ExecutionPlanType, RetrievalEdgeName] = {
     "GRAPH_ONLY": "execute_graph_only",
     "RAG_ONLY": "execute_rag_only",
     "PARALLEL": "execute_parallel",
     "GRAPH_THEN_RAG": "execute_then",
     "AGENT_REACT": "execute_react",
 }
+
+
+def resolve_execution_plan(
+    *,
+    need_graph: bool,
+    need_rag: bool,
+    mode: RetrievalMode | str,
+    complexity: RetrievalComplexity | str,
+) -> ExecutionPlanType:
+    """将能力标签解析为执行层路径（五类 execute 节点之一）。
+
+    规则：
+    - multi_hop → AGENT_REACT
+    - 只要 graph → GRAPH_ONLY
+    - 只要 rag → RAG_ONLY
+    - 两侧都要 + sequential → GRAPH_THEN_RAG
+    - 两侧都要 + 其它 → PARALLEL
+    - 两侧都不要 → AGENT_REACT（安全兜底）
+    """
+    if complexity == "multi_hop":
+        return "AGENT_REACT"
+    if need_graph and need_rag:
+        if mode == "sequential":
+            return "GRAPH_THEN_RAG"
+        return "PARALLEL"
+    if need_graph:
+        return "GRAPH_ONLY"
+    if need_rag:
+        return "RAG_ONLY"
+    return "AGENT_REACT"
+
+
+def _normalize_mode(raw: object) -> RetrievalMode:
+    if raw in ("single", "parallel", "sequential"):
+        return raw  # type: ignore[return-value]
+    return "single"
+
+
+def _normalize_complexity(raw: object) -> RetrievalComplexity:
+    if raw in ("simple", "multi_hop"):
+        return raw  # type: ignore[return-value]
+    return "simple"
 
 SCOPE_DESCRIPTION = """
 个人电商经营范围：智能家居产品（智能照明/安防/控制/音箱/厨电/清洁）。
@@ -170,7 +219,7 @@ async def retrieval_plan_route(
     *,
     config: RunnableConfig,
 ) -> dict[str, object]:
-    """根据问题特征选择最优检索策略。"""
+    """根据问题输出能力标签，并解析为执行路径。"""
     _ = config
     wrapped_question, _ = wrap_user_message(question_from_state(state))
     output = await ainvoke_structured_question_output(
@@ -181,19 +230,49 @@ async def retrieval_plan_route(
         question=wrapped_question,
     )
 
-    plan: RetrievalPlan = {"logic": output.logic, "plan": output.plan}
+    mode = _normalize_mode(getattr(output, "mode", "single"))
+    complexity = _normalize_complexity(getattr(output, "complexity", "simple"))
+    need_graph = bool(getattr(output, "need_graph", False))
+    need_rag = bool(getattr(output, "need_rag", False))
+    resolved = resolve_execution_plan(
+        need_graph=need_graph,
+        need_rag=need_rag,
+        mode=mode,
+        complexity=complexity,
+    )
+    plan: RetrievalPlan = {
+        "logic": str(getattr(output, "logic", "") or ""),
+        "need_graph": need_graph,
+        "need_rag": need_rag,
+        "mode": mode,
+        "complexity": complexity,
+        "resolved_plan": resolved,
+    }
     return {"retrieval_plan": plan}
 
 
 def retrieval_plan_edge(state: AgentState) -> RetrievalEdgeName:
-    """根据检索计划路由到对应的执行节点。
+    """根据已解析的 resolved_plan 路由到执行节点；缺失则 REACT 兜底。"""
+    raw = state.retrieval_plan
+    if not raw:
+        return "execute_react"
 
-    未知/缺失 plan 默认 AGENT_REACT：宁可走兜底多步检索，也不静默失败。
-    """
-    plan: dict[str, object] = dict(state.retrieval_plan or {})
-    plan_name = plan.get("plan")
-    key = plan_name if isinstance(plan_name, str) and plan_name else "AGENT_REACT"
-    return _RETRIEVAL_EDGE_MAP.get(key, "execute_react")
+    resolved = raw.get("resolved_plan")
+    if isinstance(resolved, str) and resolved in _RETRIEVAL_EDGE_MAP:
+        return _RETRIEVAL_EDGE_MAP[resolved]  # type: ignore[index]
+
+    # 兼容：旧状态仅有 plan 字段，或 resolved 丢失时按能力重算
+    legacy = raw.get("plan")  # type: ignore[typeddict-item]
+    if isinstance(legacy, str) and legacy in _RETRIEVAL_EDGE_MAP:
+        return _RETRIEVAL_EDGE_MAP[legacy]  # type: ignore[index]
+
+    recomputed = resolve_execution_plan(
+        need_graph=bool(raw.get("need_graph")),
+        need_rag=bool(raw.get("need_rag")),
+        mode=_normalize_mode(raw.get("mode")),
+        complexity=_normalize_complexity(raw.get("complexity")),
+    )
+    return _RETRIEVAL_EDGE_MAP[recomputed]
 
 
 __all__ = [
@@ -201,6 +280,7 @@ __all__ = [
     "build_general_query_system_prompt",
     "guardrails_edge",
     "guardrails_node",
+    "resolve_execution_plan",
     "respond_to_general_query",
     "retrieval_plan_edge",
     "retrieval_plan_route",

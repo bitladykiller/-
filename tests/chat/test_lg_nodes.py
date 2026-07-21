@@ -36,12 +36,47 @@ def _run(awaitable):
     return asyncio.run(awaitable)
 
 
+def test_resolve_execution_plan_capability_matrix() -> None:
+    resolve = lg_decision_nodes.resolve_execution_plan
+    assert (
+        resolve(need_graph=True, need_rag=False, mode="single", complexity="simple")
+        == "GRAPH_ONLY"
+    )
+    assert (
+        resolve(need_graph=False, need_rag=True, mode="single", complexity="simple")
+        == "RAG_ONLY"
+    )
+    assert (
+        resolve(need_graph=True, need_rag=True, mode="parallel", complexity="simple")
+        == "PARALLEL"
+    )
+    assert (
+        resolve(need_graph=True, need_rag=True, mode="sequential", complexity="simple")
+        == "GRAPH_THEN_RAG"
+    )
+    assert (
+        resolve(need_graph=True, need_rag=True, mode="parallel", complexity="multi_hop")
+        == "AGENT_REACT"
+    )
+    assert (
+        resolve(need_graph=False, need_rag=False, mode="single", complexity="simple")
+        == "AGENT_REACT"
+    )
+
+
 def test_route_edges_map_state_to_expected_node_names() -> None:
     state = AgentState(
         messages=[],
         router={"type": "general", "logic": ""},
         next_action="end",
-        retrieval_plan={"logic": "", "plan": "GRAPH_ONLY"},
+        retrieval_plan={
+            "logic": "",
+            "need_graph": True,
+            "need_rag": False,
+            "mode": "single",
+            "complexity": "simple",
+            "resolved_plan": "GRAPH_ONLY",
+        },
     )
 
     assert lg_decision_nodes.route_query(state) == "respond_to_general_query"
@@ -50,12 +85,26 @@ def test_route_edges_map_state_to_expected_node_names() -> None:
 
     state.router = {"type": "rag_doc-query", "logic": ""}
     state.next_action = "continue"
-    state.retrieval_plan = {"logic": "", "plan": "GRAPH_THEN_RAG"}
+    state.retrieval_plan = {
+        "logic": "",
+        "need_graph": True,
+        "need_rag": True,
+        "mode": "sequential",
+        "complexity": "simple",
+        "resolved_plan": "GRAPH_THEN_RAG",
+    }
     assert lg_decision_nodes.route_query(state) == "retrieval_plan_router"
     assert lg_decision_nodes.guardrails_edge(state) == "retrieval_plan_route"
     assert lg_decision_nodes.retrieval_plan_edge(state) == "execute_then"
 
-    state.retrieval_plan = {"logic": "", "plan": "UNKNOWN"}
+    state.retrieval_plan = {
+        "logic": "",
+        "need_graph": True,
+        "need_rag": True,
+        "mode": "parallel",
+        "complexity": "multi_hop",
+        "resolved_plan": "AGENT_REACT",
+    }
     assert lg_decision_nodes.retrieval_plan_edge(state) == "execute_react"
     state.retrieval_plan = None
     assert lg_decision_nodes.retrieval_plan_edge(state) == "execute_react"
@@ -117,12 +166,20 @@ def test_guardrails_node_wraps_question_and_blocks_end(monkeypatch) -> None:
     assert result["messages"][0].content == "抱歉，我家暂时没有这方面的商品，可以在别家看看哦～"
 
 
-def test_retrieval_plan_route_wraps_question_and_returns_plan(monkeypatch) -> None:
+def test_retrieval_plan_route_wraps_question_and_returns_capability_plan(
+    monkeypatch,
+) -> None:
     captured: dict[str, str] = {}
 
     async def fake_ainvoke_structured_question_output(**kwargs):
         captured["question"] = kwargs["question"]
-        return SimpleNamespace(logic="先查图再查文档", plan="GRAPH_THEN_RAG")
+        return SimpleNamespace(
+            logic="先查图再查文档",
+            need_graph=True,
+            need_rag=True,
+            mode="sequential",
+            complexity="simple",
+        )
 
     monkeypatch.setattr(
         lg_decision_nodes,
@@ -143,7 +200,11 @@ def test_retrieval_plan_route_wraps_question_and_returns_plan(monkeypatch) -> No
     assert result == {
         "retrieval_plan": {
             "logic": "先查图再查文档",
-            "plan": "GRAPH_THEN_RAG",
+            "need_graph": True,
+            "need_rag": True,
+            "mode": "sequential",
+            "complexity": "simple",
+            "resolved_plan": "GRAPH_THEN_RAG",
         }
     }
 

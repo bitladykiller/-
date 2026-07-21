@@ -16,7 +16,8 @@ from typing import Any, Literal, TypeAlias
 from app.chat.infrastructure.graph.state import (
     GuardrailsAction,
     ReactJudgeDecision,
-    RetrievalPlanType,
+    RetrievalComplexity,
+    RetrievalMode,
 )
 from app.shared.core.config import settings
 from app.shared.core.config_models import ServiceType
@@ -158,10 +159,26 @@ react_judge_model = LazyModelProxy("react_judge", MODEL_TEMPERATURES["react_judg
 
 
 class RetrievalPlanOutput(BaseModel):
-    """检索计划路由器的输出结构。"""
+    """检索计划路由器的输出：能力标签 + 编排，而非互斥五选一。
 
-    logic: str = Field(description="选择该计划的理由")
-    plan: RetrievalPlanType = Field(description="最合适的检索策略")
+    执行路径由代码根据字段组合解析（见 resolve_execution_plan）。
+    """
+
+    logic: str = Field(description="选择该能力组合的理由")
+    need_graph: bool = Field(description="是否需要查询 Neo4j 结构化知识图谱")
+    need_rag: bool = Field(description="是否需要查询文档 RAG 知识库")
+    mode: RetrievalMode = Field(
+        default="single",
+        description=(
+            "当 need_graph 与 need_rag 同时为 true 时："
+            "parallel=并行查询；sequential=先图后文档；"
+            "single=理论上只应一侧为 true，若两侧都 true 则按 parallel 处理"
+        ),
+    )
+    complexity: RetrievalComplexity = Field(
+        default="simple",
+        description="simple=单跳可答；multi_hop=模糊/多跳/需动态探索 → 走 ReAct",
+    )
 
 
 class GuardrailsDecision(BaseModel):

@@ -13,7 +13,7 @@
 
 ### 2. 智能 Agent (LangGraph)
 - 四层嵌套子图：主图（路由分发）→ RetrievalPlan → 执行器 / ReAct 子图 → Text2Cypher 子图
-- 5 路检索策略：GRAPH_ONLY / RAG_ONLY / PARALLEL / GRAPH_THEN_RAG / AGENT_REACT
+- 检索计划（能力标签）：`need_graph` / `need_rag` / `mode` / `complexity` → 解析为执行路径 GRAPH_ONLY / RAG_ONLY / PARALLEL / GRAPH_THEN_RAG / AGENT_REACT
 - Retriever 抽象接口（依赖倒置），策略模式（Cypher 生成），注册表模式（检索器管理）
 - Prompt 注入 4 层防线：XML 隔离 + 结构化输出 + Guardrails + 写操作硬拦截
 - 温度分级体系：Router 0.1 → Cypher 0.2 → ReAct 0.4 → General 0.7

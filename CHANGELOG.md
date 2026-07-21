@@ -5,11 +5,25 @@
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v3.26.0] - 2026-07-21
+### 改进
+- **检索计划方案 A**：由互斥五选一改为能力标签编排
+  - LLM 输出 `need_graph` / `need_rag` / `mode(single|parallel|sequential)` / `complexity(simple|multi_hop)`
+  - 代码 `resolve_execution_plan` 解析为执行路径：GRAPH_ONLY / RAG_ONLY / PARALLEL / GRAPH_THEN_RAG / AGENT_REACT
+  - 边路由使用 `resolved_plan`；缺失则 REACT 兜底
+
+### 涉及文件
+- `app/chat/infrastructure/graph/state.py`
+- `app/chat/infrastructure/graph/decision_nodes.py`
+- `app/chat/infrastructure/modeling/models.py`、`prompts.py`
+- `tests/chat/test_lg_nodes.py`
+
 ## [v3.24.1] - 2026-07-20
 ### 文档
 - 澄清本仓库为**后端 only**（前端不在 monorepo）
 - 文档索引补「能力覆盖地图」与诚实边界（鉴权/SerpAPI/handoff）
 - 场景 D 上传类型与 `completed` 状态与代码对齐
+- 在现有 03–08 等模块内扩写「关键函数」详解（不另增文档编号）
 
 ## [v3.24.0] - 2026-07-20
 ### 改进
