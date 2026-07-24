@@ -5,6 +5,61 @@
 > **前后端分离**：工程化前端见 `frontend/`（Vue 3 + Vite + TS）。  
 > Docker：`http://localhost:8080`（Nginx）→ 反代 API 到 `app:8000`。
 
+## 架构概览
+
+```mermaid
+flowchart TB
+    subgraph Client["客户端 (Client)"]
+        FE["前端 Vue 3 / curl / API 客户端"]
+    end
+
+    subgraph AppContainer["AssistGen 后端容器 (kefu_app :8000)"]
+        API["FastAPI (app/main.py)"]
+        
+        subgraph APILayer["API 协议层 (app/api)"]
+            CAPI["/api/conversations"]
+            UAPI["/api/upload"]
+            LAPI["/api/chat/stream (SSE)"]
+        end
+
+        subgraph DDDDomain["DDD 业务领域"]
+            direction TB
+            CS["Chat 域 (app/chat)\nConversation & Agent Execution"]
+            KS["Knowledge 域 (app/knowledge)\nIndexing, STM & LTM"]
+            US["User 域 (app/user)\nUser Profile & Facts"]
+        end
+
+        subgraph AgentGraph["LangGraph 智能体主图"]
+            Router["Router\n(意图识别 0.1)"] --> Guard["Guardrails\n(安全拦截)"]
+            Guard --> Plan["RetrievalPlan\n(路径决策)"]
+            Plan --> Exec["Execution Pipeline\n(KG / RAG / ReAct)"]
+            Exec --> After["after_response\n(记忆同步/画像刷新)"]
+        end
+
+        TQ["共享任务队列 (Task Queue)"]
+    end
+
+    subgraph Infrastructure["基础设施 (Infra)"]
+        MY[(MySQL 8.0\n元数据/画像)]
+        RD[(Redis 7.0\nSTM/任务/缓存)]
+        NJ[(Neo4j 5.x\n知识图谱)]
+        MV[(Milvus 2.6\nLTM/向量块)]
+        LLM[DeepSeek / Ollama LLM]
+    end
+
+    FE --> API
+    API --> CAPI & UAPI & LAPI
+    CAPI --> CS --> MY
+    UAPI --> TQ --> KS
+    LAPI --> CS --> AgentGraph
+    AgentGraph --> LLM
+    Exec --> NJ & MV
+    After --> KS & US
+    KS --> RD & MV
+    US --> MY & RD
+    TQ --> RD
+```
+
 ## 功能特性
 
 ### 1. 通用问答 & 深度思考
@@ -92,10 +147,10 @@ docker compose up -d --build
 - 持久化数据写入 Docker 命名卷，而不是项目目录下的 `docker_data/`
 - 卷名固定为 `kefu_mysql_data`、`kefu_neo4j_data`、`kefu_redis_data`、`kefu_milvus_data` 等，和当前目录名解耦
 
-### 3. 查看服务状态
+如果宿主机 `8080` 已被其他服务占用，可以只覆盖前端端口：
 
 ```bash
-docker compose ps
+FRONTEND_PORT=8081 docker compose up -d frontend
 ```
 
 如果需要连同数据库和向量库数据一起清空：
@@ -114,7 +169,7 @@ docker volume ls | grep '^local.*kefu_'
 
 项目当前只保留 `docker compose` 这一种启动方式，不再保留其他应用启动入口。
 
-### 4. 开发检查（可选）
+### 3. 开发检查（可选）
 
 根目录 [pyproject.toml](pyproject.toml) 收敛了 `pytest` / `ruff` / `mypy`；  
 [pyrightconfig.json](pyrightconfig.json) 指定 **Pylance/basedpyright 只检查 `app/`**（排除 `tests/`）。
@@ -148,8 +203,7 @@ deepseek_agent/
 │   ├── platform/                # 应用容器
 │   └── scripts/                 # Compose 内部脚本
 ├── configs/                     # Docker 初始化配置
-├── specs/                       # 可跟踪设计文档
-├── docs/                        # 本机详细文档（gitignore，见 modules 00–10）
+├── docs/                        # 模块详细文档 (00–07 及面试手册)
 ├── scripts/                     # 仓库级辅助脚本
 ├── tests/                       # 与领域对齐的测试
 ├── docker-compose.yml
