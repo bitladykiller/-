@@ -1,5 +1,8 @@
 # 03 · 对话域与 Agent 主图全解析
 
+> 📖 **函数级明细**：本文末 附录 G · Chat 域逐函数手册（图节点/ReAct/检索器/KG/建模层全函数）。
+
+
 > **流程图（必看）**：[00-全流程图集.md](00-全流程图集.md) 的 §5 SSE 主链路、§6 主图状态机、§7 决策细节、§8 能力标签检索编排、§9 Pipeline、§10 ReAct。
 
 ## 0.1 学习导航
@@ -1115,3 +1118,241 @@ POST /api/langgraph/query (Form: query, user_id, conversation_id?)
 ## A7. 口述演示脚本（2 分钟）
 
 「用户问保修政策：Router 判 rag_doc-query → Guard 确认在智能家居范围 → Plan 标 need_rag → resolved RAG_ONLY → enrich_question 注入 P0–P3 → MilvusDocRetriever 混合检索 → summarize 成自然语言 → after_response 写 STM。若问题是订单号查物流：Plan need_graph → GRAPH_ONLY 走 Text2Cypher。若问题又模糊又要多跳：AGENT_REACT，最多 5 轮充分性检查。」
+
+---
+
+## 附录 G · 函数手册：Chat 域逐函数明细
+
+> 签名与源码逐字一致（v3.35.1）。📌=热路径 🔒=并发语义 ⚠️=历史踩坑。
+
+### G.1 `application/agent_query_service.py`
+
+#### 📌 `def stream_agent_query(*, query, user_id: int | str, thread_id: str) -> GraphStream`
+
+组 `InputState(messages=[HumanMessage(query)])` →
+`graph.astream(stream_mode="messages", config={configurable:
+{thread_id, user_id: str(user_id)}})`。configurable 是记忆与检索的
+作用域约定：thread_id≡STM/LTM session、user_id≡画像/分域。
+非 async 函数——返回异步迭代器本身。
+
+### G.2 `application/conversation_service.py`
+
+- `run_db_operation(session_factory, logger, action_name, operation, *args, **context)`：
+  统一 session 生命周期；**ResourceNotFoundError 直接放行不打堆栈**
+  （正常控制流），其余异常 error+堆栈后 raise
+- `ConversationService` 方法：`create_conversation(user_id)` /
+  `get_user_conversations`（过滤默认标题）/
+  `delete_conversation(cid, uid)`（repo 删→`_clear_conversation_memories`：
+  STM clear_session + LTM soft_delete_session_memories，**失败只记日志
+  不回滚**——避免"库删了但接口 500"）/
+  📌 `ensure_conversation(uid, cid|None) -> int`（传 id→归属校验；None→
+  创建；⚠️ 会话 id 三位一体的唯一来源，杜绝 uuid 孤儿线程）/
+  `list_messages(cid, uid)`（先归属后读 MessageRepository）/
+  `update_conversation_name(cid, uid, name)`
+- 模块私有 `_create_conversation/_get_user_conversations/_delete_conversation/
+  _update_conversation_name/_get_owned_conversation/_list_messages`：
+  repo 适配函数（db 会话第一参）
+
+### G.3 `infrastructure/repository/`
+
+**conversation_repository.py**：`create`（默认标题「新会话」）/
+`get_by_id` / `list_by_user`（排除默认标题+时间倒序）/
+`get_owned(cid, uid)`（**id∧user_id 双条件**）/
+`delete(cid, uid)`（⚠️ 归属校验→兼容清理历史 messages 表（表缺失
+rollback 后重载对象）→删行；非本人 ResourceNotFoundError 统一文案防
+枚举）/ `rename(cid, uid, name)`。
+
+**message_repository.py**：`add_turn(cid, user_content, assistant_content)`
+（两行一次提交，append-only）/ `list_by_conversation(cid)`（id 正序→
+`{role, content, created_at(iso)}`）。写入方：turn_completed 消费者。
+
+### G.4 `infrastructure/graph/state.py`
+
+`Router{type, logic}` / `RetrievalPlan{logic, need_graph, need_rag, mode,
+complexity, resolved_plan}` / `InputState{messages}` /
+`AgentState`（+router/retrieval_plan/next_action/memory_state——
+memory_state 是**请求内缓存**，见 load_memory_state）。
+
+### G.5 `infrastructure/graph/decision_nodes.py`
+
+| 函数 | 要点 |
+|---|---|
+| `resolve_execution_plan(*, need_graph, need_rag, mode, complexity) -> ExecutionPlanType` | 纯函数决策表：multi_hop→AGENT_REACT；双真∧sequential→GRAPH_THEN_RAG；双真→PARALLEL；单真→对应 ONLY；全假→REACT 兜底 |
+| `_normalize_retrieval_mode/_normalize_complexity` | 白名单归一（LLM 输出防脏）；⚠️ 曾与上传模式校验同名 `_normalize_mode` 跨文件看串 |
+| `build_general_query_system_prompt(*, state, config, general_query_system_prompt)` | 模板 format(router.logic) + 记忆上下文追加（load 失败仅用基础模板） |
+| 📌 `analyze_and_route_query(state, *, config)` | build_safe_messages→router_model 结构化输出 Router |
+| `route_query(state) -> GeneralRouteName` | general→通用回复；否则→guardrails（path map 键，builder 里映射真实节点） |
+| `respond_to_general_query(state, *, config)` | 记忆增强 system + agent_model.ainvoke |
+| `guardrails_node(state, *, config)` | wrap_user_message 后判定 end/continue；end→固定拒答文案 + next_action="end" |
+| `guardrails_edge(state)` | end→after_response（跳过检索直接收尾） |
+| `retrieval_plan_route(state, *, config)` | 结构化输出 RetrievalPlanOutput→归一化→resolve→存 RetrievalPlan（含 resolved_plan） |
+| `retrieval_plan_edge(state) -> RetrievalEdgeName` | 读 resolved_plan；缺失→读 legacy plan→再缺→按能力重算；全兜底 REACT |
+
+### G.6 `infrastructure/graph/execution_pipeline.py` / `retrieval_nodes.py`
+
+`ExecutionPipeline(progress_message, fallback)`：
+- 📌 `execute_single(state, config, retriever, *, …)`：enrich_question→
+  search_retriever→summarize_and_build_response
+- 📌 `execute_dual(state, config, kg, rag, *, mode="parallel"|"sequential", …)`：
+  parallel→`asyncio.gather` 双路（各自专用查询构造器）；sequential→
+  先 KG 后把其 records 拼进 RAG 查询；merge→摘要
+
+四个节点 `execute_graph_only/rag_only/parallel/then`：get_retriever 取
+实例→KG 缺失时 `no_neo4j_response()` 降级→委托 pipeline 对应方法。
+
+### G.7 `infrastructure/graph/execution_utils.py`
+
+| 函数 | 要点 |
+|---|---|
+| `records_from_result(result)` | 安全取 records（缺失/非 list→[]） |
+| `merge_retriever_records(*results)` | 顺序合并（KG 在前——图谱结构化数据权威度高） |
+| `build_graph_only_query / build_rag_only_query / build_graph_then_rag_query` | 路径专用查询模板；then 版把图谱 records JSON 拼进文档查询 |
+| `search_retriever(retriever, query)` | None→空结果占位（KG 不可用时 pipeline 不炸） |
+| `ainvoke_structured_question_output(*, system_prompt, human_prompt, model, output_schema, question)` | "system+单问题模板"结构化链的统一封装（guardrails/plan 共用） |
+| `summarize_records(query, records, fallback)` | 空 records→fallback；否则摘要 LLM |
+| 📌 `summarize_and_build_response(query, records, *, progress_message, fallback)` | 摘要 + 两段式 MessagePayload（进度条消息+正文，SSE 体验） |
+
+### G.8 `infrastructure/graph/memory_context.py`
+
+| 函数 | 要点 |
+|---|---|
+| `build_memory_section(title, body)` | 空 body→""（空段不注入） |
+| `format_recent_messages / format_user_profile` | P0/P1 文本化（角色中文标签；画像字段+tags+facts） |
+| 📌 `build_memory_context(summary, recent, ltm, profile)` | P0→P3 顺序拼装 + 冲突优先级说明头；全空→"" |
+| `build_enriched_question(question, memory_state)` | 上下文 + 「用户当前问题：」 |
+| `configurable_scope(config) -> (tenant, user, session)` | configurable 缺省值兜底（default/anonymous/default） |
+| 📌 `load_memory_state(state, config, user_input)` | **state.memory_state 请求内缓存**——一次请求多节点要记忆时只打一次 before_agent；失败 warning→None（无记忆继续） |
+| `enrich_question(state, config, question)` | load→None 原句；否则增强 |
+
+### G.9 `infrastructure/graph/message_utils.py`
+
+`build_safe_messages(system_prompt, messages)`：system + 逐条转 dict，
+**user 消息经 wrap_user_message XML 隔离**（防注入第一层）。
+`build_progress_response/build_simple_message_response`：MessagePayload
+构造。`find_last_user_message/find_last_assistant_message`：after_response
+取本轮对话（assistant 版跳过进度提示条）。`_message_role`：兼容
+dict/LangChain Message。
+
+### G.10 `infrastructure/graph/lifecycle_nodes.py` / `timing.py` / `builder.py`
+
+- 📌 `after_response(state, *, config)`：缺任一侧消息跳过（拒答路径防脏
+  会话）→`_publish_turn_completed`（get_container_if_initialized 机会型
+  取 event_queue；成功即返回——写扩散交消费者）→失败回退
+  `_write_turn_memory` fire-and-forget（引用集合防 GC；
+  `flush_pending_memory_writes()` 供测试/停机等待）
+- `timed_node(node_name, handler)`：functools.wraps 包装计时；异常也记
+  elapsed+outcome=error 后原样抛
+- builder 模块级装配：`_NODE_REGISTRATIONS` 十节点（全部过 timed_node）
+  + 三组条件边 + 执行节点统一汇 after_response → `graph = compile()`
+  （无 checkpointer——会话记忆由自建 STM 承担，thread_id 仅作用域键）
+
+### G.11 `infrastructure/react/react.py`
+
+- 🔒 `get_react_subgraph(builder)`：容器缓存 + 双检锁（子图编译一次）
+- 📌 `execute_react(state, *, config)`：Neo4j 不可用→no_neo4j_response；
+  enrich 问题→懒建子图（`create_react_agent(react_model, [neo4j_query,
+  rag_search], REACT_SYSTEM_PROMPT)`，两工具闭包捕获检索器、结果
+  JSON 化）→循环 ≤max_attempts(5)：ainvoke(recursion_limit=11)→
+  step_exhausted 标记检测→否则取窗口 20 条 transcript 交
+  react_judge_model 结构化判定 sufficient/retry→充分即两段式返回；
+  不足带 reason 重试（消息重置为 原问题+上轮候选，防上下文膨胀）→
+  轮次耗尽→固定 fallback_answer
+
+### G.12 `infrastructure/retrievers/`
+
+**contracts.py**：`Retriever` Protocol（`search(task) -> dict`
+统一 `{task, records, errors, steps}`）；`RetrieverRegistry`
+register/get/`__contains__`；常量 KG_RETRIEVER_NAME/RAG_RETRIEVER_NAME。
+
+**retriever_runtime.py**：
+- 📌 `get_retriever(name)`：锁外快判 `_registry_ready`（两检索器齐）直
+  返；否则 🔒 registry_lock 内 `_ensure_registry`（⚠️ 曾锁外创建，
+  并发双建互覆盖）→`_register_kg_retriever`（Neo4j 缺→静默跳过，RAG
+  仍可用）→`_register_rag_retriever`
+- `_ensure_text2cypher_agent(container, graph)`：kg_components 缓存
+  NorthwindCypherRetriever + create_text2cypher_agent（⚠️ 曾直接读写
+  容器下划线私有字段）
+
+**retriever_implementations.py**：
+- `MilvusDocRetriever.__init__(*, formalize_fn=None, formalize_enabled=None, searcher=None)`：
+  searcher 缺省 **get_shared_searcher()**（与索引侧共用连接与模型）
+- `_rewrite_for_rag(task)`：开关关/空→原句；改写变化才记日志；异常回原句
+- 📌 `search(task)`：书面化→searcher.search→前 5 条投影字段；
+  ImportError/异常→占位 records + errors；改写生效附 rewritten_query
+- `KnowledgeGraphRetriever.search(task)`：t2c_agent.ainvoke→
+  records/cyphers 两种返回形态归一化（dict/list/标量全兼容）
+
+**rag_query_formalize.py**：`light_normalize_query`（去口语前缀）/
+`formalize_rag_query(question, *, config=None, model=None,
+structured_invoke=None)`——`asyncio.wait_for(timeout=3s)` 包 LLM 结构化
+改写；关闭/超时/失败逐级回退轻清洗或原句；`_clip` 限长 256。
+
+### G.13 `infrastructure/kg/`
+
+- **neo4j_conn.py**：`get_neo4j_graph()`（async 门面）/
+  `_get_neo4j_graph(container)`：容器缓存 + 周期健康检查时间戳；连接
+  失败缓存 None（不可用状态也缓存，避免每请求重试风暴）
+- **northwind_retriever.py**：`NorthwindCypherRetriever.get_examples(query, k=5)`
+  ——27 组内置 CypherExample 语义匹配返回 few-shot 文本
+- **predefined_cypher/utils.py**：embedding 请求构造/零向量回退/
+  `extract_parameter_names`（$param 提取）/`extract_parameters_with_rules`
+  （规则法参数抽取）/`parse_json_response`/`cosine_similarity_score`/
+  `_VectorQueryMatcher`（match_query 语义匹配模板 top_k；
+  extract_parameters 规则→可选 LLM 兜底）/`create_vector_query_matcher`
+- **text2cypher_workflow.py**：`create_text2cypher_agent(llm, graph,
+  cypher_example_retriever, llm_cypher_validation=True, max_attempts=3,
+  attempt_cypher_execution_on_final_attempt=False,
+  predefined_cypher_dict=None, query_descriptions=None) -> CompiledStateGraph`
+  ——子图：**预定义模板快路径**（语义命中直接执行）→未命中走
+  guardrails→generate（few-shot）→validate→correct（≤3 修正循环）→execute
+- **validation/**：`validate_cypher_query_syntax`（EXPLAIN）/
+  `correct_cypher_query_relationship_direction`（LangChain
+  CypherQueryCorrector）/`validate_cypher_query_with_llm`/
+  `validate_cypher_query_with_schema`（属性名/枚举值/数值范围三组，
+  见 schema_validation_rules 的 build_validation_task_groups +
+  三个 validate_property_*）/
+  ⚠️ `validate_no_writes_in_cypher_query`（CREATE/DELETE/MERGE/SET/
+  REMOVE 等写子句硬拦截——注入防线第四层）；
+  models.py 的 `Neo4jStructuredSchema` 及其 get_*_enum/range 族提供
+  校验数据源；cypher_extractors 抽取待验证实体
+
+### G.14 `infrastructure/modeling/`
+
+**models.py**：
+- `MODEL_TEMPERATURES`（agent .7/router .1/plan .1/guardrails .1/
+  cypher .2/react .4/judge .1/extractor .3）+
+  `MODEL_TIMEOUTS_SECONDS`（决策类 10s/cypher 20s/生成类 60s）+
+  重试 1 次——⚠️ v3.35 前无任何超时，上游挂起即无限等待
+- `class LazyModelProxy`：`__getattr__` 转发时才真正建模型（import 期
+  不连外部服务）；`__slots__` 防误设属性
+- `_get_model(name, temperature)`：有运行循环→容器 llm_models 缓存；
+  无循环（脚本/测试）→直建
+- `_create_model`：按 AGENT_SERVICE 分支 ChatDeepSeek（timeout+
+  max_retries）/ ChatOllama（client_kwargs.timeout）
+- `create_llm_for_role(role)`：容器装配用统一工厂
+- 结构化输出模型：RetrievalPlanOutput/GuardrailsDecision/
+  ReactAnswerCheckOutput
+
+**prompts.py**：`load_prompts_from_yaml(logger, yaml_path)` 可选覆盖 +
+七个 prompt 常量（ROUTER/GENERAL/GUARDRAILS/RETRIEVAL_PLAN/REACT/
+REACT_ANSWER_CHECK/SUMMARIZE）。
+
+**utils/helpers.py**：`question_from_state(state)`（兼容多模态 content
+列表取文本）/`no_neo4j_response()`（KG 专属降级文案，与 RAG 不可用区分）。
+
+### G.15 函数 → 测试对照
+
+| 范围 | 测试 |
+|---|---|
+| 决策/边/plan 解析 | tests/chat/test_lg_nodes.py（含 after_response 后台化回归） |
+| 执行工具/查询构造 | test_lg_execution_utils.py |
+| 记忆上下文/注入 | test_lg_context.py、test_lg_memory_prompt.py、test_lg_memory_runtime.py |
+| message_utils | test_lg_message_utils.py |
+| 模型工厂（超时断言） | test_lg_models.py |
+| prompts | test_lg_prompts.py |
+| ReAct 循环 | test_lg_react.py |
+| 检索器/运行时注册 | test_lg_retrievers.py |
+| 书面化改写 | test_rag_query_formalize.py |
+| Neo4j 连接缓存 | test_lg_neo4j_conn.py |
+| 预定义模板/验证链 | test_predefined_cypher_utils.py、test_northwind_cypher_retriever.py、test_text2cypher_validation.py、test_text2cypher_workflow.py |
+| 会话服务/仓库 | test_conversation_service.py、test_conversation_repository.py、test_delete_conversation_memory_cleanup.py |

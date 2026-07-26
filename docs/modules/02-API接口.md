@@ -1,5 +1,8 @@
 # 02 · API 层全解析（v3.35 对齐版）
 
+> 📖 **函数级明细**：本文末 附录 F · API 层逐函数手册（main.py 与 api/* 每个函数的签名/错误映射/排障速查）。
+
+
 > **流程图**：[00-全流程图集.md](00-全流程图集.md) §4 会话时序、§5 SSE 问答、§15 上传索引、§31+ 鉴权/事件管线。
 > **本文对齐代码版本**：v3.35.1。所有路径、参数、错误文案均与 `app/api/` 源码逐一核对。
 
@@ -689,3 +692,110 @@ curl -N -X POST http://localhost:8000/api/langgraph/query \
 | status 变 interrupted | **回退通道**任务随进程消失；stream 通道会自动续跑不出现此态 |
 | SSE 无输出 | 全是 tool/research_plan 被过滤；拿 X-Request-ID 查后端日志 |
 | SSE 收到 `event: error` | 流中途后端异常；已生成内容有效，整条重试即可 |
+
+---
+
+## 附录 F · 函数手册：API 层逐函数明细
+
+> 签名与源码逐字一致（v3.35.1）。📌=热路径 ⚠️=历史踩坑。
+> 共享依赖（run_blocking/log_degradation 等）见 [01 附录 A](01-系统总览.md)。
+
+### F.1 `app/main.py`
+
+| 函数 | 签名 | 要点 |
+|---|---|---|
+| `warm_up_runtime_resources` | `async (runtime_logger) -> None` | lifespan 里预热 MemoryMiddleware，首请求不吃初始化延迟 |
+| `close_runtime_resources` | `async () -> None` | 即 `reset_container()`（关闭全部外部连接） |
+| `build_lifespan` | `(runtime_logger, *, warm_up=…, close_runtime=…)` | 返回 asynccontextmanager：build 容器→set→warm_up→start_background_jobs（FakeContainer 无此方法则跳过）→yield→close。warm_up/close 可注入，测试替换 |
+| `configure_cors` | `(app, *, allow_origins, allow_methods, allow_headers)` | ⚠️ credentials=False：规范禁止 `*`+credentials；expose `X-Conversation-ID` |
+| 📌 `register_middleware` | `(app, runtime_logger, *, clock=time.time)` | `log_requests`：取/造 request_id → contextvars → 调用链 → 响应头回写 + 一行访问日志（方法/路径/状态/耗时ms）。clock 可注入测耗时 |
+| `register_routes` | `(app, *, app_api_router, health_status)` | 挂 `/api` + `/health`（浅）+ `/health/deep`（内联调 run_deep_health_check，degraded→503） |
+| `register_static_files` | `(app, *, static_dir, runtime_logger)` | 目录存在才挂载（前端独立部署时跳过） |
+| `create_app` | `(*, runtime_logger=…, app_api_router=…, static_dir=…, health_status=…) -> FastAPI` | 装配序：lifespan→CORS→中间件→路由→静态。全参可注入=可测工厂 |
+
+### F.2 `app/api/deps.py`
+
+#### 📌 `def get_current_user(credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer_scheme)]) -> AuthenticatedUser`
+
+- `_bearer_scheme = HTTPBearer(auto_error=False)`：缺头时**自己**给中文
+  401（框架默认是 403 且无文案控制）
+- 流程：无凭据→401「缺少访问令牌，请先登录」；`verify_access_token`
+  抛 `AuthError`→401（过期/伪造各自文案）+ `WWW-Authenticate: Bearer`；
+  成功→`set_current_user_id(id)`（contextvars，供日志与 RAG 分域）→返回
+- `CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]`
+  ——业务 handler 的唯一身份入口；**任何 handler 不得再收 user_id 参数**
+
+### F.3 `app/api/common.py`
+
+| 函数 | 签名 | 要点 |
+|---|---|---|
+| `build_message_response` | `(message: str) -> MessageResponse` | `{"message": str}` |
+| 📌 `run_api_action` | `async (action_name, operation: Awaitable, *, logger, **context) -> ApiResult` | 异常映射：HTTPException 透传；ResourceNotFoundError→404（**不打堆栈**，正常控制流）；其余→error 日志(带 format_log_context 上下文+堆栈)+500。⚠️ operation 是**已构造协程**不是函数引用 |
+
+### F.4 `app/api/auth.py`
+
+| 函数 | 签名 | 错误映射 |
+|---|---|---|
+| `_token_response` | `(user_id, username) -> TokenResponse` | 组装 `{access_token, token_type:"bearer", user_id, username}` |
+| `register` | `async (request: CredentialsRequest) -> TokenResponse` | RegistrationError→400（占用/不合规）；注册即登录 |
+| `login` | `async (request) -> TokenResponse` | AuthError→401 统一「用户名或密码错误」（防撞库探测） |
+| `me` | `async (current_user: CurrentUser) -> ProfileResponse` | 前端启动探活令牌；无副作用 |
+
+### F.5 `app/api/conversations.py`
+
+五个 handler 全部 `CurrentUser` 注入 + `run_api_action` 包装：
+
+| handler | 转发 | 归属失败 |
+|---|---|---|
+| `create_conversation()` | `service.create_conversation(current_user.id)` | — |
+| `get_my_conversations()` | `service.get_user_conversations(id)`（过滤「新会话」默认标题） | — |
+| `get_conversation_messages(conversation_id)` | `service.list_messages(cid, uid)`——**先归属校验再读 MySQL messages** | 404 |
+| `delete_conversation(conversation_id)` | `service.delete_conversation(cid, uid)`（MySQL+STM+LTM 四处清理） | 404 |
+| `update_conversation_name(conversation_id, request)` | `service.update_conversation_name(cid, uid, name)` | 404 |
+
+### F.6 `app/api/upload.py`
+
+| 函数 | 签名 | 要点 |
+|---|---|---|
+| `_document_magic_signatures` | `(extension) -> tuple[bytes, ...]` | `.pdf→(%PDF,)`、`.docx→(PK\x03\x04,)`；md 空元组 |
+| `_optional_str` | `(value) -> str \| None` | strip 后空→None |
+| `_require_doc_id` | `(file_info) -> str` | 注册元数据后 doc_id 必在；缺失=内部错误 500 |
+| `validate_upload` | `(file: UploadFile) -> None` | 扩展名白名单 + content_type 存在；400 |
+| `read_upload_content` | `async (file, *, max_upload_size_bytes, file_size_exceeded_detail, content_extension_mismatch_detail) -> bytes` | 读全量→限长→魔数前缀校验；文案参数化便于测试 |
+| `_normalize_upload_mode` | `(mode) -> str` | 复用领域层 `normalize_upload_mode` 唯一实现，仅把 ValueError 翻 400（⚠️ 曾两处各写一份会分叉） |
+| `_store_upload` | `async (file, user_id, *, doc_id=None, mode='create') -> StoredUploadFileInfo` | 目录 `{UPLOAD_DIR}/{uuid5(user_id)}/{ts}/`；sha256 content_hash；⚠️ UPLOAD_DIR 必须绝对路径且对齐卷挂载点 |
+| `_register_document_metadata` | `async (file_info) -> StoredUploadFileInfo` | create→prepare_create / replace→prepare_replace（归属+hash 幂等）；ValueError→400；unchanged 时带回 version/chunk_count |
+| `_resolve_owner` | `(visibility, user_id) -> str` | global→配置 `rag_visibility.global_owner`（与检索过滤同源）；private→str(user_id)；非法 400 |
+| 📌 `_submit_indexing` | `async (file_info: dict) -> str` | **get_container_if_initialized 机会型访问**：容器在→写 PENDING(origin="stream")+publish 事件；否则/失败→回退 task_manager.submit。返回 12 位 task_id |
+| 📌 `_run_upload` | `async (file, user_id, doc_id, mode, visibility='global') -> UploadAcceptedResponse` | 主编排：校验→owner→落盘→注册元数据→unchanged 短路（task_id=""）→提交→bind_task_id |
+| `upload_file` | handler | CurrentUser 提供 user_id；run_api_action 包装 |
+| `get_upload_status / _run_get_upload_status` | `async (task_id, current_user)` | 读状态；None→404「任务不存在」。需登录；task_id 随机不可枚举故暂不做归属绑定 |
+
+### F.7 `app/api/documents.py`
+
+| handler | 转发 | 要点 |
+|---|---|---|
+| `list_my_documents()` | `document_service.list_user_documents(uid)` | 上传管理视角（检索是全局的） |
+| `get_my_document(doc_id)` | `get_user_document(uid, doc_id)`；None→404 | |
+| `delete_my_document(doc_id)` | `delete_document(uid, doc_id)` | MySQL 删行+Milvus 软删；响应带 `soft_deleted_chunks` |
+
+### F.8 `app/api/langgraph.py`
+
+| 函数 | 签名 | 要点 |
+|---|---|---|
+| `format_sse_data` | `(payload) -> str` | `data: {json}\n\n` |
+| `format_sse_error` | `(message) -> str` | `event: error\ndata: {json}\n\n`——流开始后无法再改 HTTP 状态码，必须帧内表达错误 |
+| `_chunk_tags` | `(metadata) -> list[str]` | 容错提取字符串 tags |
+| 📌 `_should_emit_sse_chunk` | `(chunk, metadata) -> bool` | 过滤：空 content / additional_kwargs.tool_calls / tags 含 research_plan（内部规划不外泄） |
+| `_merge_usage` | `(total: dict, chunk) -> None` | 累计 usage_metadata 的 in/out/total（模型不上报则保持空） |
+| `_get_sse_limiter` | `async () -> limiter \| None` | 机会型取容器限流器；None=放行（测试/未初始化） |
+| 📌 `langgraph_query` | `async (current_user, query=Form, conversation_id: int\|None=Form) -> StreamingResponse` | 顺序：**limiter.acquire（在会话解析前，429 不留空会话行）** → ensure_conversation（404 时释放槽位）→ thread=str(id) → astream → 流内 try/except 发 error 帧 → finally release+usage 日志。响应头 X-Conversation-ID 于流开始前写入 |
+
+### F.9 面向排障的函数级速查
+
+| 症状 | 看哪个函数 |
+|---|---|
+| 全部 401 | `deps.get_current_user`（SECRET_KEY 是否与签发端一致） |
+| 上传后永远 pending | `_submit_indexing`（事件是否投递成功）→ events.handle_document_index_requested |
+| SSE 只断流无错误帧 | `langgraph_query` 内层 except 是否被改掉 |
+| 删除报 500 而非 404 | Service/Repo 是否抛了裸异常而非 ResourceNotFoundError |
