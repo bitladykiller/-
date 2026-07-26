@@ -89,7 +89,7 @@ class AppContainer:
         """按依赖顺序依次初始化所有组件。
 
         初始化顺序（与实现一致）：
-        1. TaskManager（Redis 任务队列，上传依赖）
+        1. TaskManager（进程内后台任务 + Redis 状态，上传依赖）
         2. MemoryMiddleware（STM/LTM/Extractor，问答依赖）
 
         Args:
@@ -109,9 +109,13 @@ class AppContainer:
             raise
 
     async def _init_task_manager(self, config: Any) -> None:
-        from app.shared.task_queue import _TaskManager, create_redis_client
+        from app.shared.background_tasks import _TaskManager, create_redis_client
 
-        self.task_manager = _TaskManager(create_redis_client(config.REDIS_URL))
+        manager = _TaskManager(create_redis_client(config.REDIS_URL))
+        # 后台任务只活在进程内存里：上一代进程留下的 running 记录不会再有人推进，
+        # 启动时先把它们收敛成 interrupted，避免前端永远轮询一个不会完成的任务
+        await manager.reconcile_orphaned_tasks()
+        self.task_manager = manager
 
     async def _init_memory_middleware(self) -> None:
         self.memory_middleware = _create_memory_middleware()
@@ -268,20 +272,12 @@ def _create_memory_middleware() -> Any:
     from app.knowledge.infrastructure.orchestration.memory_middleware import MemoryMiddleware
     from app.knowledge.infrastructure.stm.redis_short_term_memory import RedisShortTermMemory
     from app.shared.core.config import settings
+    from app.shared.core.embeddings import get_embedding_model
     from pymilvus import MilvusClient
 
-    if settings.EMBEDDING_TYPE == "ollama":
-        from langchain_ollama import OllamaEmbeddings
-
-        embedding_model = OllamaEmbeddings(
-            model=settings.EMBEDDING_MODEL,
-            base_url=settings.OLLAMA_BASE_URL,
-        )
-    else:
-        from langchain_community.embeddings import HuggingFaceEmbeddings
-
-        embedding_model = HuggingFaceEmbeddings(model_name=settings.EMBEDDING_MODEL)  # type: ignore[assignment]
-
+    # 与 RAG 文档检索共用同一个 embedding 实例：两侧向量必须同源，
+    # 且 HuggingFace 路径的模型权重没必要在进程里存两份
+    embedding_model = get_embedding_model()
     memory_extractor_llm = create_llm_for_role("memory_extractor")
 
     return MemoryMiddleware(

@@ -5,7 +5,6 @@ from __future__ import annotations
 import threading
 
 from app.shared.retrieval import MilvusHybridSearchCore
-from app.shared.retrieval import milvus_hybrid_core as core_module
 
 
 class FakeMilvusClient:
@@ -113,8 +112,54 @@ async def test_search_dense_applies_score_threshold() -> None:
     assert await core.search_dense("查询", limit=3, score_threshold=0.95) == []
 
 
-async def test_search_hybrid_falls_back_to_dense_when_hybrid_fails(monkeypatch) -> None:
-    monkeypatch.setattr(core_module, "_get_sparse_analyzer", lambda _lang: (lambda q: ["tok"]))
+async def test_search_hybrid_sends_raw_query_text_to_bm25_field() -> None:
+    """稀疏分支必须把原文交给 Milvus，由服务端 BM25 Function 分词。
+
+    历史实现在客户端用 abs(hash(token)) % 2**24 造 token id：
+    既跨进程不稳定（Python 字符串 hash 按进程随机化），又和 Milvus
+    自己词表的编号对不上，导致稀疏召回几乎恒为空、RRF 静默退化成纯向量检索。
+    """
+    client = FakeMilvusClient()
+    core = _build_core(client)
+
+    await core.search_hybrid("路由器 经常 断网", limit=3, search_limit=6)
+
+    assert len(client.hybrid_calls) == 1
+    dense_req, sparse_req = client.hybrid_calls[0]["reqs"]
+
+    assert sparse_req.anns_field == "sparse_vector"
+    # 关键：传的是原始查询字符串，不是客户端算出来的 {token_id: weight}
+    assert sparse_req.data == ["路由器 经常 断网"]
+    assert "drop_ratio_search" in sparse_req.param
+    assert sparse_req.limit == 6
+
+    assert dense_req.anns_field == "embedding"
+    assert dense_req.data == [[0.1, 0.2]]
+
+
+async def test_search_hybrid_query_encoding_is_deterministic() -> None:
+    """同一查询两次构造出的稀疏请求必须完全一致（旧实现做不到）。"""
+    core = _build_core(FakeMilvusClient())
+
+    first = core.build_sparse_request("路由器", limit=5, filter_expr=None)
+    second = core.build_sparse_request("路由器", limit=5, filter_expr=None)
+
+    assert first.data == second.data == ["路由器"]
+    assert first.param == second.param
+
+
+async def test_search_hybrid_propagates_filter_to_both_branches() -> None:
+    client = FakeMilvusClient()
+    core = _build_core(client)
+
+    await core.search_hybrid("查询", limit=3, filter_expr="is_deleted == false")
+
+    dense_req, sparse_req = client.hybrid_calls[0]["reqs"]
+    assert dense_req.expr == "is_deleted == false"
+    assert sparse_req.expr == "is_deleted == false"
+
+
+async def test_search_hybrid_falls_back_to_dense_when_hybrid_fails() -> None:
     client = FakeMilvusClient(hybrid_raises=True)
     core = _build_core(client)
 
@@ -124,56 +169,13 @@ async def test_search_hybrid_falls_back_to_dense_when_hybrid_fails(monkeypatch) 
     assert hits == [{"score": 0.9, "entity": {"memory_id": "m1"}}]
 
 
-async def test_search_hybrid_skips_sparse_when_analyzer_unavailable(monkeypatch) -> None:
-    def missing_analyzer(_lang: str):
-        raise ImportError("no sparse extra")
+async def test_search_hybrid_returns_empty_when_embedding_fails() -> None:
+    class BrokenEmbedding:
+        def embed_query(self, text: str):
+            raise RuntimeError("model down")
 
-    monkeypatch.setattr(core_module, "_get_sparse_analyzer", missing_analyzer)
     client = FakeMilvusClient()
-    core = _build_core(client)
+    core = _build_core(client, BrokenEmbedding())
 
-    hits = await core.search_hybrid("查询", limit=3)
-
-    # 稀疏不可用直接走 dense，不应该尝试 hybrid_search
+    assert await core.search_hybrid("查询", limit=3) == []
     assert client.hybrid_calls == []
-    assert hits == [{"score": 0.9, "entity": {"memory_id": "m1"}}]
-
-
-def test_encode_query_sparse_counts_token_frequency(monkeypatch) -> None:
-    monkeypatch.setattr(
-        core_module,
-        "_get_sparse_analyzer",
-        lambda _lang: (lambda q: ["a", "b", "a"]),
-    )
-    core = _build_core(FakeMilvusClient())
-
-    sparse = core.encode_query_sparse("任意")
-
-    assert sorted(sparse.values()) == [1.0, 2.0]
-
-
-def test_sparse_analyzer_is_built_once_per_language(monkeypatch) -> None:
-    """analyzer 构造昂贵（要加载词典），必须按语言缓存而不是每查询重建。"""
-    builds: list[str] = []
-
-    core_module._get_sparse_analyzer.cache_clear()
-
-    class FakeTokenizerModule:
-        @staticmethod
-        def build_default_analyzer(language: str):
-            builds.append(language)
-            return lambda text: text.split()
-
-    import sys
-    import types
-
-    fake_pkg = types.ModuleType("pymilvus.model.sparse.bm25.tokenizers")
-    fake_pkg.build_default_analyzer = FakeTokenizerModule.build_default_analyzer  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "pymilvus.model.sparse.bm25.tokenizers", fake_pkg)
-
-    core = _build_core(FakeMilvusClient())
-    for _ in range(5):
-        core.encode_query_sparse("路由器 断网")
-
-    assert builds == ["zh"]
-    core_module._get_sparse_analyzer.cache_clear()

@@ -30,6 +30,7 @@ from app.shared.core.app_config import (
     STMWindowConfig,
 )
 from app.shared.core.config import settings
+from app.shared.core.degradation import log_degradation
 from app.shared.core.json_utils import extract_first_json_object
 from app.shared.core.logger import get_logger
 from pydantic import BaseModel
@@ -373,8 +374,8 @@ class RedisShortTermMemory:
                 pipe.zadd(key, {compress_message(message): message_score(message)})
                 queue_window_pruning(pipe, key, self.settings)
                 await pipe.execute()
-        except Exception:
-            logger.warning("[stm] append_message 失败", exc_info=True)
+        except Exception as exc:
+            log_degradation(logger, "stm.append_message", exc, session=session_id)
 
     async def append_messages(
         self,
@@ -395,8 +396,8 @@ class RedisShortTermMemory:
                 pipe.zadd(key, scored)
                 queue_window_pruning(pipe, key, self.settings)
                 await pipe.execute()
-        except Exception:
-            logger.warning("[stm] append_messages 失败", exc_info=True)
+        except Exception as exc:
+            log_degradation(logger, "stm.append_messages", exc, session=session_id)
 
     async def get_recent_messages(
         self,
@@ -412,7 +413,7 @@ class RedisShortTermMemory:
             raw = await self.redis.zrevrange(key, 0, limit - 1)
             return decode_messages(raw)
         except Exception as exc:
-            logger.debug(f"[stm] 读取最近消息失败: {exc}")
+            log_degradation(logger, "stm.get_recent_messages", exc, session=session_id)
             return []
 
     async def get_message_count(self, tenant_id: str, user_id: str, session_id: str) -> int:
@@ -421,7 +422,7 @@ class RedisShortTermMemory:
             key = self._build_session_keys(tenant_id, user_id, session_id)["messages"]
             return await self.redis.zcard(key)
         except Exception as exc:
-            logger.debug(f"[stm] 获取消息计数失败: {exc}")
+            log_degradation(logger, "stm.get_message_count", exc, session=session_id)
             return 0
 
     async def get_summary(
@@ -435,7 +436,7 @@ class RedisShortTermMemory:
             key = self._build_session_keys(tenant_id, user_id, session_id)["summary"]
             return decode_model(await self.redis.get(key), SessionSummary)
         except Exception as exc:
-            logger.debug(f"[stm] 读取会话摘要失败: {exc}")
+            log_degradation(logger, "stm.get_summary", exc, session=session_id)
             return None
 
     async def save_summary(
@@ -454,7 +455,7 @@ class RedisShortTermMemory:
                 ex=self.settings.ttl_seconds,
             )
         except Exception as exc:
-            logger.debug(f"[stm] 保存会话摘要失败: {exc}")
+            log_degradation(logger, "stm.save_summary", exc, session=session_id)
 
     async def get_meta(self, tenant_id: str, user_id: str, session_id: str) -> SessionMeta:
         """读取会话元信息,不存在时返回默认对象。"""
@@ -464,7 +465,7 @@ class RedisShortTermMemory:
             if meta:
                 return meta
         except Exception as exc:
-            logger.debug(f"[stm] 读取会话元信息失败: {exc}")
+            log_degradation(logger, "stm.get_meta", exc, session=session_id)
         return SessionMeta()
 
     async def save_meta(
@@ -483,7 +484,7 @@ class RedisShortTermMemory:
                 ex=self.settings.ttl_seconds,
             )
         except Exception as exc:
-            logger.debug(f"[stm] 保存会话元信息失败: {exc}")
+            log_degradation(logger, "stm.save_meta", exc, session=session_id)
 
     def should_compress(
         self,
@@ -557,7 +558,7 @@ class RedisShortTermMemory:
                 save_meta=lambda meta: self.save_meta(tenant_id, user_id, session_id, meta),
             )
         except Exception as exc:
-            logger.debug(f"[stm] 压缩会话记忆失败: {exc}")
+            log_degradation(logger, "stm.compress_session_memory", exc, session=session_id)
             return False
 
     async def refresh_ttl(self, tenant_id: str, user_id: str, session_id: str) -> None:
@@ -570,7 +571,7 @@ class RedisShortTermMemory:
                 self.redis.expire(keys["meta"], self.settings.ttl_seconds),
             )
         except Exception as exc:
-            logger.debug(f"[stm] 刷新 TTL 失败: {exc}")
+            log_degradation(logger, "stm.refresh_ttl", exc, session=session_id)
 
     async def clear_session(
         self,
@@ -592,12 +593,12 @@ class RedisShortTermMemory:
             )
             return int(deleted or 0)
         except Exception as exc:
-            logger.warning(
-                "[stm] clear_session 失败 | tenant=%s user=%s session=%s | %s",
-                tenant_id,
-                user_id,
-                session_id,
+            log_degradation(
+                logger,
+                "stm.clear_session",
                 exc,
-                exc_info=True,
+                tenant=tenant_id,
+                user=user_id,
+                session=session_id,
             )
             return 0

@@ -2,8 +2,8 @@ import asyncio
 import sys
 import types
 
-import app.shared.task_queue as task_queue_module
-from app.shared.task_queue import (
+import app.shared.background_tasks as background_tasks_module
+from app.shared.background_tasks import (
     TaskStatus,
     build_task_status_payload,
     dump_task_status_payload,
@@ -157,7 +157,7 @@ def test_run_task_with_status_updates_marks_failed_and_logs() -> None:
 def test_task_manager_submit_and_complete_task() -> None:
     async def scenario() -> None:
         store = FakeTaskStore()
-        manager = task_queue_module._TaskManager(store)
+        manager = background_tasks_module._TaskManager(store)
 
         async def job(value: int) -> dict[str, int]:
             return {"value": value}
@@ -176,14 +176,14 @@ def test_task_manager_submit_and_complete_task() -> None:
 def test_task_manager_submit_logs_callable_name_for_callable_object() -> None:
     async def scenario() -> None:
         store = FakeTaskStore()
-        manager = task_queue_module._TaskManager(store)
+        manager = background_tasks_module._TaskManager(store)
 
         class SampleJob:
             async def __call__(self) -> None:
                 return None
 
         info_logs: list[tuple[str, tuple[object, ...]]] = []
-        original_logger = task_queue_module.logger
+        original_logger = background_tasks_module.logger
 
         class FakeModuleLogger:
             def info(self, msg: str, *args, **kwargs) -> None:
@@ -192,12 +192,12 @@ def test_task_manager_submit_logs_callable_name_for_callable_object() -> None:
             def error(self, msg: str, *args, **kwargs) -> None:
                 return None
 
-        task_queue_module.logger = FakeModuleLogger()
+        background_tasks_module.logger = FakeModuleLogger()
         try:
             task_id = await manager.submit(SampleJob())
             await asyncio.sleep(0.01)
         finally:
-            task_queue_module.logger = original_logger
+            background_tasks_module.logger = original_logger
 
         assert task_id
         assert any(log == ("任务已提交 | task_id=%s | func=%s", (task_id, "SampleJob")) for log in info_logs)
@@ -208,7 +208,7 @@ def test_task_manager_submit_logs_callable_name_for_callable_object() -> None:
 def test_task_manager_marks_failed_tasks() -> None:
     async def scenario() -> None:
         store = FakeTaskStore()
-        manager = task_queue_module._TaskManager(store)
+        manager = background_tasks_module._TaskManager(store)
 
         async def job() -> None:
             raise RuntimeError("boom")
@@ -249,7 +249,7 @@ def test_get_task_manager_reuses_existing_instance(monkeypatch) -> None:
             return client
 
         monkeypatch.setattr(
-            task_queue_module,
+            background_tasks_module,
             "create_redis_client",
             fake_create_redis_client,
         )
@@ -264,8 +264,8 @@ def test_get_task_manager_reuses_existing_instance(monkeypatch) -> None:
             types.SimpleNamespace(get_container=fake_get_container),
         )
 
-        first = await task_queue_module.get_task_manager()
-        second = await task_queue_module.get_task_manager()
+        first = await background_tasks_module.get_task_manager()
+        second = await background_tasks_module.get_task_manager()
 
         assert first is second
         assert len(created_clients) == 1
@@ -281,7 +281,7 @@ async def test_app_container_close_releases_task_manager() -> None:
     from app.platform.container import AppContainer
 
     store = FakeTaskStore()
-    container = AppContainer(task_manager=task_queue_module._TaskManager(store))
+    container = AppContainer(task_manager=background_tasks_module._TaskManager(store))
 
     await container.close()
 
@@ -294,9 +294,127 @@ async def test_app_container_close_swallows_task_manager_errors() -> None:
     from app.platform.container import AppContainer
 
     failing_store = FakeTaskStore(fail_on_close=True)
-    container = AppContainer(task_manager=task_queue_module._TaskManager(failing_store))
+    container = AppContainer(task_manager=background_tasks_module._TaskManager(failing_store))
 
     await container.close()
 
     assert failing_store.closed is True
     assert container.task_manager is None
+
+
+# ---------------------------------------------------------------------- #
+# 进程重启后的孤儿任务收敛
+# ---------------------------------------------------------------------- #
+
+
+class ScannableTaskStore(FakeTaskStore):
+    """支持 scan_iter 的状态存储替身。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.scan_patterns: list[str] = []
+
+    async def scan_iter(self, match: str):
+        self.scan_patterns.append(match)
+        for key in list(self.values):
+            yield key
+
+
+#: 显式表示"这条记录没有 worker_id 字段"（模拟本次改动之前写入的历史数据）
+_NO_WORKER_FIELD = object()
+
+
+def _seed(store: ScannableTaskStore, task_id: str, status, worker_id: object) -> None:
+    payload = background_tasks_module.build_task_status_payload(
+        task_id,
+        status,
+        worker_id="" if worker_id is _NO_WORKER_FIELD else str(worker_id),
+    )
+    if worker_id is _NO_WORKER_FIELD:
+        payload.pop("worker_id", None)
+    prefix = background_tasks_module._TASK_CFG.task_key_prefix
+    store.values[f"{prefix}{task_id}"] = background_tasks_module.dump_task_status_payload(payload)
+
+
+def _status_of(store: ScannableTaskStore, task_id: str) -> str:
+    prefix = background_tasks_module._TASK_CFG.task_key_prefix
+    payload = background_tasks_module.load_task_status_payload(store.values[f"{prefix}{task_id}"])
+    assert payload is not None
+    return payload["status"]
+
+
+def test_is_orphaned_task_only_flags_unfinished_foreign_records() -> None:
+    unfinished_mine = {"status": "running", "worker_id": "me"}
+    unfinished_other = {"status": "running", "worker_id": "old"}
+    unfinished_legacy = {"status": "pending"}
+    finished_other = {"status": "completed", "worker_id": "old"}
+
+    assert background_tasks_module.is_orphaned_task(unfinished_mine, current_worker_id="me") is False
+    assert background_tasks_module.is_orphaned_task(unfinished_other, current_worker_id="me") is True
+    # 历史记录没有 worker_id，按旧进程处理
+    assert background_tasks_module.is_orphaned_task(unfinished_legacy, current_worker_id="me") is True
+    assert background_tasks_module.is_orphaned_task(finished_other, current_worker_id="me") is False
+
+
+async def test_reconcile_marks_previous_worker_tasks_as_interrupted() -> None:
+    """重启后旧任务不能永远停在 running，否则前端一直转圈。"""
+    store = ScannableTaskStore()
+    current = background_tasks_module.WORKER_ID
+    _seed(store, "orphan-running", background_tasks_module.TaskStatus.RUNNING, "old-worker")
+    _seed(store, "orphan-pending", background_tasks_module.TaskStatus.PENDING, "old-worker")
+    _seed(store, "legacy-running", background_tasks_module.TaskStatus.RUNNING, _NO_WORKER_FIELD)
+    _seed(store, "mine-running", background_tasks_module.TaskStatus.RUNNING, current)
+    _seed(store, "done", background_tasks_module.TaskStatus.COMPLETED, "old-worker")
+
+    manager = background_tasks_module._TaskManager(store)
+    reconciled = await manager.reconcile_orphaned_tasks()
+
+    assert reconciled == 3
+    assert _status_of(store, "orphan-running") == "interrupted"
+    assert _status_of(store, "orphan-pending") == "interrupted"
+    # 无 worker_id 的历史记录同样按孤儿处理
+    assert _status_of(store, "legacy-running") == "interrupted"
+    # 当前进程自己的任务和已终结的任务不动
+    assert _status_of(store, "mine-running") == "running"
+    assert _status_of(store, "done") == "completed"
+
+
+async def test_reconcile_records_reason_for_interruption() -> None:
+    store = ScannableTaskStore()
+    _seed(store, "orphan", background_tasks_module.TaskStatus.RUNNING, "old-worker")
+
+    await background_tasks_module._TaskManager(store).reconcile_orphaned_tasks()
+
+    prefix = background_tasks_module._TASK_CFG.task_key_prefix
+    payload = background_tasks_module.load_task_status_payload(store.values[f"{prefix}orphan"])
+    assert payload is not None
+    assert payload["error"] == background_tasks_module.INTERRUPTED_ERROR_MESSAGE
+    # 收敛记录归属当前进程，避免下次启动重复处理
+    assert payload["worker_id"] == background_tasks_module.WORKER_ID
+
+
+async def test_reconcile_returns_zero_when_scan_fails() -> None:
+    """扫描失败不能阻断启动。"""
+
+    class BrokenStore(ScannableTaskStore):
+        async def scan_iter(self, match: str):
+            raise RuntimeError("redis unavailable")
+            yield  # pragma: no cover
+
+    manager = background_tasks_module._TaskManager(BrokenStore())
+
+    assert await manager.reconcile_orphaned_tasks() == 0
+
+
+async def test_submit_stamps_current_worker_id() -> None:
+    store = ScannableTaskStore()
+    manager = background_tasks_module._TaskManager(store)
+
+    async def noop() -> str:
+        return "ok"
+
+    task_id = await manager.submit(noop)
+    status = await manager.get_status(task_id)
+
+    assert status is not None
+    assert status["worker_id"] == background_tasks_module.WORKER_ID

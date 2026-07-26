@@ -42,6 +42,7 @@ from app.shared.core.app_config import (
 )
 from app.shared.core.async_bridge import run_blocking
 from app.shared.core.config import settings
+from app.shared.core.degradation import log_degradation
 from app.shared.core.logger import get_logger
 from app.shared.retrieval import MilvusHybridSearchCore
 from pymilvus import MilvusClient
@@ -386,10 +387,11 @@ class SimpleLongTermMemory:
         try:
             return await run_blocking(self.embedding_model.embed_query, text)
         except Exception as exc:
-            logger.error(
-                f"embedding 生成异常 | "
-                f"text_preview={preview_text(text, EMBEDDING_LOG_PREVIEW_LIMIT)} | {exc}",
-                exc_info=True,
+            log_degradation(
+                logger,
+                "ltm.get_embedding",
+                exc,
+                text_preview=preview_text(text, EMBEDDING_LOG_PREVIEW_LIMIT),
             )
             return None
 
@@ -439,10 +441,13 @@ class SimpleLongTermMemory:
             await insert_records(self.milvus_client, self.collection_name, [record])
             return memory_id
         except Exception as exc:
-            logger.error(
-                f"save_memory 异常 | tenant={tenant_id} user={user_id} "
-                f"type={memory_type} | {exc}",
-                exc_info=True,
+            log_degradation(
+                logger,
+                "ltm.save_memory",
+                exc,
+                tenant=tenant_id,
+                user=user_id,
+                type=memory_type,
             )
             return None
 
@@ -476,10 +481,13 @@ class SimpleLongTermMemory:
                 self.deduplication_config.similarity_threshold,
             )
         except Exception as exc:
-            logger.error(
-                f"deduplicate_memory 异常 | tenant={tenant_id} "
-                f"user={user_id} type={memory_type} | {exc}",
-                exc_info=True,
+            log_degradation(
+                logger,
+                "ltm.deduplicate_memory",
+                exc,
+                tenant=tenant_id,
+                user=user_id,
+                type=memory_type,
             )
             return False
 
@@ -512,12 +520,7 @@ class SimpleLongTermMemory:
             await upsert_records(self.milvus_client, self.collection_name, records)
             return True
         except Exception as exc:
-            logger.error(
-                "update_memory_hit_infos 异常 | count=%s | %s",
-                len(memories),
-                exc,
-                exc_info=True,
-            )
+            log_degradation(logger, "ltm.update_memory_hit_infos", exc, count=len(memories))
             return False
 
     # ------------------------------------------------------------------ #
@@ -561,10 +564,13 @@ class SimpleLongTermMemory:
             )
             return search_results_from_hits(hits)
         except Exception as exc:
-            logger.error(
-                f"hybrid_search 异常 | tenant={tenant_id} user={user_id} "
-                f"query={preview_text(query, SEARCH_LOG_PREVIEW_LIMIT)} | {exc}",
-                exc_info=True,
+            log_degradation(
+                logger,
+                "ltm.hybrid_search",
+                exc,
+                tenant=tenant_id,
+                user=user_id,
+                query=preview_text(query, SEARCH_LOG_PREVIEW_LIMIT),
             )
             return []
 
@@ -615,13 +621,13 @@ class SimpleLongTermMemory:
             )
             return len(memory_ids)
         except Exception as exc:
-            logger.error(
-                "soft_delete_session_memories 异常 | tenant=%s user=%s session=%s | %s",
-                tenant_id,
-                user_id,
-                session_id,
+            log_degradation(
+                logger,
+                "ltm.soft_delete_session_memories",
                 exc,
-                exc_info=True,
+                tenant=tenant_id,
+                user=user_id,
+                session=session_id,
             )
             return 0
 
@@ -670,11 +676,8 @@ class SimpleLongTermMemory:
             )
             return len(memory_ids)
         except Exception as exc:
-            logger.error(
-                "hard_purge_soft_deleted 异常 | collection=%s | %s",
-                self.collection_name,
-                exc,
-                exc_info=True,
+            log_degradation(
+                logger, "ltm.hard_purge_soft_deleted", exc, collection=self.collection_name
             )
             return 0
 

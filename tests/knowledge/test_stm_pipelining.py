@@ -9,11 +9,13 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from app.knowledge.domain.schemas import MessageRecord, SessionMeta
+import redis.exceptions as redis_exceptions
+from app.knowledge.domain.schemas import MessageRecord, SessionMeta, SessionSummary
 from app.knowledge.infrastructure.stm.redis_short_term_memory import (
     RedisShortTermMemory,
     rewrite_recent_messages,
 )
+from app.knowledge.infrastructure.stm.stm_compressor import compress_message
 
 
 class FakePipeline:
@@ -235,3 +237,156 @@ async def test_compress_session_memory_reads_state_concurrently() -> None:
     # 轮次与消息数都为 0，build_compression_context 返回 None → 不触发压缩
     assert await stm.compress_session_memory("t", "u", "s", never_called) is False
     assert arrived == 4
+
+
+# ---------------------------------------------------------------------- #
+# 读写方法与降级路径
+# ---------------------------------------------------------------------- #
+
+
+class FullRedis(FakeRedis):
+    """实现 STM 用到的全部 Redis 命令。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.store: dict[str, str] = {}
+        self.zsets: dict[str, list[bytes]] = {}
+        self.expire_calls: list[str] = []
+
+    async def get(self, key: str) -> str | None:
+        return self.store.get(key)
+
+    async def set(self, key: str, value: str, ex: int | None = None, nx: bool = False):
+        if nx and key in self.store:
+            return None
+        self.store[key] = value
+        return True
+
+    async def delete(self, *keys: str) -> int:
+        removed = 0
+        for key in keys:
+            removed += 1 if self.store.pop(key, None) is not None else 0
+            removed += 1 if self.zsets.pop(key, None) is not None else 0
+        return removed
+
+    async def zcard(self, key: str) -> int:
+        return len(self.zsets.get(key, []))
+
+    async def zrevrange(self, key: str, start: int, end: int) -> list[bytes]:
+        return self.zsets.get(key, [])[start : end + 1]
+
+    async def expire(self, key: str, ttl: int) -> bool:
+        self.expire_calls.append(key)
+        return True
+
+
+class BrokenRedis(FullRedis):
+    """所有命令都抛外部依赖故障，用于验证降级不炸。"""
+
+    async def get(self, key: str):
+        raise redis_exceptions.ConnectionError("down")
+
+    async def set(self, key: str, value: str, ex: int | None = None, nx: bool = False):
+        raise redis_exceptions.ConnectionError("down")
+
+    async def zcard(self, key: str) -> int:
+        raise redis_exceptions.ConnectionError("down")
+
+    async def zrevrange(self, key: str, start: int, end: int):
+        raise redis_exceptions.ConnectionError("down")
+
+    async def expire(self, key: str, ttl: int):
+        raise redis_exceptions.ConnectionError("down")
+
+    async def delete(self, *keys: str) -> int:
+        raise redis_exceptions.ConnectionError("down")
+
+    def pipeline(self, transaction: bool = True):
+        raise redis_exceptions.ConnectionError("down")
+
+
+def _stm(redis) -> RedisShortTermMemory:
+    return RedisShortTermMemory(redis)  # type: ignore[arg-type]
+
+
+async def test_summary_round_trip() -> None:
+    stm = _stm(FullRedis())
+    summary = SessionSummary(content="摘要", compressed_at=1, compressed_round=2)
+
+    await stm.save_summary("t", "u", "s", summary)
+
+    assert await stm.get_summary("t", "u", "s") == summary
+
+
+async def test_meta_round_trip_and_default() -> None:
+    stm = _stm(FullRedis())
+
+    assert await stm.get_meta("t", "u", "s") == SessionMeta()
+
+    meta = SessionMeta(total_turns=4, last_updated_at=9, last_compressed_turn=2)
+    await stm.save_meta("t", "u", "s", meta)
+
+    assert await stm.get_meta("t", "u", "s") == meta
+
+
+async def test_message_count_and_recent_messages() -> None:
+    redis = FullRedis()
+    stm = _stm(redis)
+    key = "agent:stm:t:u:s:messages"
+    redis.zsets[key] = [compress_message(_message("m1", 1)), compress_message(_message("m2", 2))]
+
+    assert await stm.get_message_count("t", "u", "s") == 2
+    messages = await stm.get_recent_messages("t", "u", "s")
+    assert [m.message_id for m in messages] == ["m2", "m1"]
+
+
+async def test_refresh_ttl_touches_all_session_keys() -> None:
+    redis = FullRedis()
+    stm = _stm(redis)
+
+    await stm.refresh_ttl("t", "u", "s")
+
+    assert sorted(key.rsplit(":", 1)[-1] for key in redis.expire_calls) == [
+        "messages",
+        "meta",
+        "summary",
+    ]
+
+
+async def test_clear_session_removes_every_key() -> None:
+    redis = FullRedis()
+    stm = _stm(redis)
+    redis.store["agent:stm:t:u:s:summary"] = "{}"
+    redis.store["agent:stm:t:u:s:meta"] = "{}"
+    redis.zsets["agent:stm:t:u:s:messages"] = [b"x"]
+
+    assert await stm.clear_session("t", "u", "s") == 3
+
+
+async def test_all_reads_degrade_gracefully_on_redis_outage() -> None:
+    """Redis 全挂时每个读接口都要给出兜底值，而不是抛异常打断对话。"""
+    stm = _stm(BrokenRedis())
+
+    assert await stm.get_summary("t", "u", "s") is None
+    assert await stm.get_meta("t", "u", "s") == SessionMeta()
+    assert await stm.get_recent_messages("t", "u", "s") == []
+    assert await stm.get_message_count("t", "u", "s") == 0
+    assert await stm.clear_session("t", "u", "s") == 0
+
+
+async def test_all_writes_degrade_gracefully_on_redis_outage() -> None:
+    stm = _stm(BrokenRedis())
+
+    # 不抛异常即为通过
+    await stm.append_message("t", "u", "s", _message("m1"))
+    await stm.append_messages("t", "u", "s", [_message("m1")])
+    await stm.save_summary("t", "u", "s", SessionSummary(content="x", compressed_at=1, compressed_round=1))
+    await stm.save_meta("t", "u", "s", SessionMeta())
+    await stm.refresh_ttl("t", "u", "s")
+
+
+async def test_should_compress_delegates_to_runtime_settings() -> None:
+    stm = _stm(FullRedis())
+
+    assert stm.should_compress(total_turns=100, last_compressed_turn=0, message_count=0) is True
+    assert stm.should_compress(total_turns=1, last_compressed_turn=1, message_count=0) is False

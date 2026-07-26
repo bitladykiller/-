@@ -11,7 +11,6 @@ Milvus 向量存储 — Collection 管理、软删版本更新与向量检索。
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from app.knowledge.infrastructure.doc_parser.retrieval.config import RetrievalConfig
@@ -71,39 +70,22 @@ class MilvusStore:
             dense_metric_type=self.config.milvus_metric_type,
             dense_search_params={"nprobe": self.config.milvus_nlist},
             hybrid_rrf_k=self.config.rrf_k,
+            bm25_drop_ratio=self.config.bm25_drop_ratio,
         )
 
     def _resolve_embedding_model(self, embedding_model):
-        """Resolve the embedding model for document retrieval.
+        """解析文档检索使用的 embedding 模型。
 
-        RAG retrieval is used from multiple entry points and many of them do not
-        explicitly inject an embedding model. Resolve a default model here so the
-        retrieval stack remains self-contained.
+        未显式注入时走全局共享工厂——**必须**和长期记忆用同一个模型，
+        否则两边向量落在不同语义空间。这里曾经自己读 os.getenv 并自带一套
+        默认值，形成第二个配置真相来源，见 `app.shared.core.embeddings`。
         """
         if embedding_model is not None:
             return embedding_model
 
-        model_name = os.getenv("OLLAMA_EMBEDDING_MODEL") or os.getenv("EMBEDDING_MODEL") or "bge-m3"
-        base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        from app.shared.core.embeddings import get_embedding_model
 
-        try:
-            from langchain_ollama import OllamaEmbeddings
-
-            logger.info("RAG retrieval using default Ollama embeddings: %s", model_name)
-            return OllamaEmbeddings(model=model_name, base_url=base_url)
-        except Exception:
-            try:
-                from langchain_community.embeddings import HuggingFaceEmbeddings
-
-                logger.info("RAG retrieval using default HuggingFace embeddings: %s", model_name)
-                return HuggingFaceEmbeddings(model_name=model_name)
-            except Exception as exc:
-                logger.error(
-                    "Failed to resolve default embedding model for RAG retrieval: %s",
-                    exc,
-                    exc_info=True,
-                )
-                raise RuntimeError("embedding_model 未设置，且无法创建默认 embedding 模型") from exc
+        return get_embedding_model()
 
     # ------------------------------------------------------------------ #
     # Collection 管理

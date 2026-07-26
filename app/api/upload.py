@@ -17,11 +17,12 @@ from app.knowledge.application.document_indexing_job import run_document_indexin
 from app.knowledge.application.document_service import document_service
 from app.knowledge.application.indexing_service import (
     get_document_extension,
+    normalize_upload_mode,
     supports_document_indexing,
 )
+from app.shared.background_tasks import TaskStatusPayload, get_task_manager
 from app.shared.core.config import settings
 from app.shared.core.logger import get_logger
-from app.shared.task_queue import TaskStatusPayload, get_task_manager
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from typing_extensions import TypedDict
 
@@ -145,10 +146,11 @@ async def read_upload_content(
 
 
 def _normalize_upload_mode(mode: str | None) -> str:
-    value = (mode or "create").strip().lower()
-    if value not in {"create", "replace"}:
-        raise HTTPException(status_code=400, detail="mode 仅支持 create 或 replace")
-    return value
+    """复用领域层的唯一校验实现，只负责把 ValueError 翻成 HTTP 400。"""
+    try:
+        return normalize_upload_mode(mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 async def _store_upload(
@@ -336,4 +338,4 @@ async def _run_get_upload_status(task_id: str) -> TaskStatusPayload:
             status_code=404,
             detail=_TASK_NOT_FOUND_DETAIL.format(task_id=task_id),
         )
-    return cast(TaskStatusPayload, status)
+    return status

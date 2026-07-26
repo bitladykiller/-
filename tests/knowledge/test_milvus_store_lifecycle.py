@@ -300,3 +300,138 @@ async def test_search_can_include_soft_deleted() -> None:
     await store.search("查询", top_k=3, include_deleted=True)
 
     assert client.search_calls[0]["filter"] == ""
+
+
+# ---------------------------------------------------------------------- #
+# 构造期：Collection 建表与 embedding 解析
+# ---------------------------------------------------------------------- #
+
+
+class FakeSchema:
+    def __init__(self) -> None:
+        self.fields: list[tuple[str, object, dict]] = []
+        self.functions: list[object] = []
+
+    def add_field(self, name: str, dtype: object, **kwargs) -> None:
+        self.fields.append((name, dtype, kwargs))
+
+    def add_function(self, func: object) -> None:
+        self.functions.append(func)
+
+
+class FakeIndexParams:
+    def __init__(self) -> None:
+        self.indices: list[dict] = []
+
+    def add_index(self, **kwargs) -> None:
+        self.indices.append(kwargs)
+
+
+class SchemaAwareClient(FakeMilvusClient):
+    def __init__(self, *, collection_exists: bool = False) -> None:
+        super().__init__()
+        self.collection_exists = collection_exists
+        self.schema = FakeSchema()
+        self.index_params = FakeIndexParams()
+        self.create_collection_calls: list[dict[str, Any]] = []
+        self.uri: str | None = None
+
+    def has_collection(self, name: str) -> bool:
+        self.has_collection_name = name
+        return self.collection_exists
+
+    def create_schema(self, **kwargs):
+        self.create_schema_kwargs = kwargs
+        return self.schema
+
+    def prepare_index_params(self):
+        return self.index_params
+
+    def create_collection(self, **kwargs) -> None:
+        self.create_collection_calls.append(kwargs)
+
+
+def _construct_store(monkeypatch, client: SchemaAwareClient) -> MilvusStore:
+    import app.knowledge.infrastructure.doc_parser.retrieval.milvus_store as store_module
+
+    def fake_milvus_client(uri: str):
+        client.uri = uri
+        return client
+
+    monkeypatch.setattr(store_module, "MilvusClient", fake_milvus_client)
+    return MilvusStore(
+        RetrievalConfig(milvus_collection_name="rag_documents", enable_rerank=False),
+        FakeBatchEmbedding(),
+    )
+
+
+def test_constructor_creates_collection_with_bm25_function(monkeypatch) -> None:
+    client = SchemaAwareClient(collection_exists=False)
+
+    store = _construct_store(monkeypatch, client)
+
+    assert len(client.create_collection_calls) == 1
+    field_names = [name for name, _dtype, _kw in client.schema.fields]
+    assert "chunk_id" in field_names
+    assert "sparse_vector" in field_names
+    assert "is_deleted" in field_names
+    # BM25 由服务端 Function 产出，这是稀疏检索能对上 id 空间的前提
+    assert len(client.schema.functions) == 1
+    indexed = [entry["field_name"] for entry in client.index_params.indices]
+    assert sorted(indexed) == ["embedding", "sparse_vector"]
+    assert store.retrieval_core.bm25_drop_ratio == store.config.bm25_drop_ratio
+
+
+def test_constructor_skips_creation_when_collection_exists(monkeypatch) -> None:
+    client = SchemaAwareClient(collection_exists=True)
+
+    _construct_store(monkeypatch, client)
+
+    assert client.create_collection_calls == []
+
+
+def test_constructor_builds_uri_from_config(monkeypatch) -> None:
+    client = SchemaAwareClient(collection_exists=True)
+
+    _construct_store(monkeypatch, client)
+
+    from app.shared.core.config import settings
+
+    assert client.uri == f"http://{settings.MILVUS_HOST}:{settings.MILVUS_PORT}"
+
+
+def test_resolve_embedding_model_falls_back_to_shared_factory(monkeypatch) -> None:
+    """未注入时必须走全局共享工厂，不能自己读环境变量另建一份。"""
+    import app.shared.core.embeddings as embeddings_module
+
+    sentinel = FakeBatchEmbedding()
+    monkeypatch.setattr(embeddings_module, "create_embedding_model", lambda: sentinel)
+    embeddings_module.reset_embedding_model()
+
+    store = MilvusStore.__new__(MilvusStore)
+    resolved = store._resolve_embedding_model(None)
+
+    assert resolved is sentinel
+    embeddings_module.reset_embedding_model()
+
+
+async def test_hybrid_search_formats_rrf_scores() -> None:
+    client = FakeMilvusClient()
+    store = _build_store(client)
+
+    class StubCore:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def search_hybrid(self, query, **kwargs):
+            self.calls.append({"query": query, **kwargs})
+            return [{"score": 0.66, "entity": {"chunk_id": "c9", "raw_text": "hi"}}]
+
+    stub = StubCore()
+    store.retrieval_core = stub  # type: ignore[assignment]
+
+    results = await store.hybrid_search("查询", top_k=2)
+
+    assert results[0]["chunk_id"] == "c9"
+    assert results[0]["rrf_score"] == 0.66
+    assert "is_deleted == false" in stub.calls[0]["filter_expr"]

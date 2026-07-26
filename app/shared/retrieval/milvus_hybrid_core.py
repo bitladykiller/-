@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import logging
-from functools import lru_cache
 from typing import Any
 
 from app.shared.core.async_bridge import run_blocking
@@ -24,25 +23,8 @@ logger = logging.getLogger(__name__)
 
 QUERY_LOG_PREVIEW_LIMIT = 100
 EMBEDDING_LOG_PREVIEW_LIMIT = 200
-_SPARSE_TOKEN_ID_SPACE = 2**24
-
-
-@lru_cache(maxsize=4)
-def _get_sparse_analyzer(language: str) -> Any:
-    """按语言缓存 BM25 分词器。
-
-    WHY 缓存：`build_default_analyzer` 每次调用都会重新构建分词器
-    （中文analyzer 会加载词典），而它对同一语言是完全无状态的纯配置对象。
-    之前每个查询都重建一次，白白付出词典加载成本。
-
-    Raises:
-        ImportError: pymilvus 未安装稀疏检索扩展时由调用方降级处理。
-    """
-    from pymilvus.model.sparse.bm25.tokenizers import (  # pyright: ignore[reportMissingImports]
-        build_default_analyzer,
-    )
-
-    return build_default_analyzer(language=language)
+#: BM25 检索时丢弃低权重项的比例，降低长尾 token 的干扰
+DEFAULT_BM25_DROP_RATIO = 0.2
 
 
 class MilvusHybridSearchCore:
@@ -66,7 +48,7 @@ class MilvusHybridSearchCore:
         dense_metric_type: str = "COSINE",
         dense_search_params: dict[str, Any] | None = None,
         hybrid_rrf_k: int = 60,
-        sparse_language: str = "zh",
+        bm25_drop_ratio: float = DEFAULT_BM25_DROP_RATIO,
     ) -> None:
         self.milvus_client = milvus_client
         self.embedding_model = embedding_model
@@ -76,7 +58,7 @@ class MilvusHybridSearchCore:
         self.dense_metric_type = dense_metric_type
         self.dense_search_params = dense_search_params or {"nprobe": 16}
         self.hybrid_rrf_k = hybrid_rrf_k
-        self.sparse_language = sparse_language
+        self.bm25_drop_ratio = bm25_drop_ratio
 
     # ------------------------------------------------------------------ #
     # 向量生成
@@ -125,34 +107,32 @@ class MilvusHybridSearchCore:
             )
             return None
 
-    def encode_query_sparse(self, query: str) -> dict[int, float]:
-        """把查询编码成 Milvus BM25 期望的稀疏向量格式。
+    def build_sparse_request(
+        self,
+        query: str,
+        *,
+        limit: int,
+        filter_expr: str | None,
+    ) -> AnnSearchRequest:
+        """构造 BM25 稀疏检索请求。
 
-        分词器不可用时返回空 dict，调用方据此降级为纯 dense 检索。
+        WHY 直接传原始文本，而不是客户端算好的稀疏向量：
+        collection 上声明了服务端 BM25 `Function`（raw_text → sparse_vector），
+        doc 侧的 token id 由 **Milvus 自己的词表**生成。查询侧同样把原文交给
+        Milvus，让它套用同一个 Function，两边才落在同一个 id 空间里。
+
+        这里曾经用 `abs(hash(token)) % 2**24` 在客户端硬算 token id，有两重错误：
+        1. Python 的字符串 hash 默认按进程随机化，同一个词每次启动都是不同的 id；
+        2. 就算固定了种子，客户端也无从得知 Milvus 内部词表的编号。
+        结果是稀疏分支几乎召不回任何东西，RRF 静默退化成纯向量检索。
         """
-        try:
-            analyzer = _get_sparse_analyzer(self.sparse_language)
-        except ImportError:
-            logger.warning("pymilvus sparse analyzer unavailable, sparse query disabled")
-            return {}
-        except Exception as exc:  # pragma: no cover - defensive path
-            logger.error("sparse analyzer init failed | %s", exc, exc_info=True)
-            return {}
-
-        try:
-            sparse: dict[int, float] = {}
-            for token in analyzer(query):
-                token_id = abs(hash(token)) % _SPARSE_TOKEN_ID_SPACE
-                sparse[token_id] = sparse.get(token_id, 0.0) + 1.0
-            return sparse
-        except Exception as exc:  # pragma: no cover - defensive path
-            logger.error(
-                "sparse query encoding failed | query_preview=%s | %s",
-                query[:QUERY_LOG_PREVIEW_LIMIT],
-                exc,
-                exc_info=True,
-            )
-            return {}
+        return AnnSearchRequest(
+            data=[query],
+            anns_field=self.sparse_field,
+            param={"drop_ratio_search": self.bm25_drop_ratio},
+            limit=limit,
+            expr=filter_expr,
+        )
 
     # ------------------------------------------------------------------ #
     # 检索
@@ -194,41 +174,38 @@ class MilvusHybridSearchCore:
     ) -> list[dict[str, Any]]:
         """Milvus 原生 hybrid 检索（dense + BM25 sparse，RRF 融合）。
 
-        稀疏编码不可用或 hybrid 调用失败时，自动降级为纯 dense 检索。
+        hybrid 调用失败时降级为纯 dense 检索——降级会打 warning，
+        因为它意味着召回质量下降，不该悄悄发生。
         """
         query_vector = await self.embed_query(query)
         if not query_vector:
             return []
 
         search_limit = search_limit or limit
-        sparse_query = self.encode_query_sparse(query)
-        if sparse_query:
-            try:
-                raw = await run_blocking(
-                    self.milvus_client.hybrid_search,
-                    collection_name=self.collection_name,
-                    reqs=[
-                        self._build_dense_request(query_vector, search_limit, filter_expr),
-                        AnnSearchRequest(
-                            data=[sparse_query],
-                            anns_field=self.sparse_field,
-                            param={"metric_type": "BM25"},
-                            limit=search_limit,
-                            expr=filter_expr,
-                        ),
-                    ],
-                    ranker=RRFRanker(k=self.hybrid_rrf_k),
-                    limit=limit,
-                    output_fields=output_fields or [],
-                )
-                return self._normalize_hits(raw, score_threshold=score_threshold)
-            except Exception as exc:
-                logger.warning(
-                    "milvus hybrid_search failed, fallback to dense | collection=%s | %s",
-                    self.collection_name,
-                    exc,
-                    exc_info=True,
-                )
+        try:
+            raw = await run_blocking(
+                self.milvus_client.hybrid_search,
+                collection_name=self.collection_name,
+                reqs=[
+                    self._build_dense_request(query_vector, search_limit, filter_expr),
+                    self.build_sparse_request(
+                        query,
+                        limit=search_limit,
+                        filter_expr=filter_expr,
+                    ),
+                ],
+                ranker=RRFRanker(k=self.hybrid_rrf_k),
+                limit=limit,
+                output_fields=output_fields or [],
+            )
+            return self._normalize_hits(raw, score_threshold=score_threshold)
+        except Exception as exc:
+            logger.warning(
+                "milvus hybrid_search failed, fallback to dense | collection=%s | %s",
+                self.collection_name,
+                exc,
+                exc_info=True,
+            )
 
         return await self.search_dense(
             query,

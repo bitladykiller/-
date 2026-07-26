@@ -13,7 +13,6 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TypeAlias
 
-import redis.asyncio as aioredis
 from app.knowledge.domain.prompt_builder import build_compression_prompt
 from app.knowledge.domain.schemas import (
     AgentMemoryState,
@@ -27,6 +26,7 @@ from app.knowledge.infrastructure.orchestration.profile_adapter import (
     save_user_profile,
 )
 from app.shared.core.config import settings
+from app.shared.core.degradation import log_degradation
 from app.shared.core.logger import get_logger
 from app.user.domain.schemas import UserProfileData
 
@@ -68,12 +68,20 @@ class MemoryMiddleware:
         self.ltm_enabled = settings.app_config.memory.ltm.enabled
         self._errors_warned: set[str] = set()
 
-    def _warn_once(self, key: str, message: str) -> None:
-        """同一类降级警告仅记录一次，避免日志刷屏。"""
+    def _degrade_once(self, key: str, operation: str, exc: BaseException, **context: Any) -> None:
+        """同一类降级只记录一次，避免日志刷屏。
+
+        与旧版 `_warn_once` 的区别：旧版只打一句固定文案，既没有异常对象也没有
+        堆栈——外部抖动和代码缺陷在日志里长得一模一样。现在交给 `log_degradation`
+        分类：外部故障 warning，非预期异常 error + 完整堆栈。
+
+        仍然按 key 去重：首次已经带上完整堆栈，足够定位和告警，
+        没必要让同一个问题每轮对话都刷一遍。
+        """
         if key in self._errors_warned:
             return
-        logger.warning(message)
         self._errors_warned.add(key)
+        log_degradation(logger, operation, exc, **context)
 
     async def before_agent(
         self,
@@ -118,11 +126,14 @@ class MemoryMiddleware:
                 self.redis_stm.get_summary(tenant_id, user_id, session_id),
                 self.redis_stm.get_recent_messages(tenant_id, user_id, session_id),
             )
-        except (aioredis.RedisError, asyncio.TimeoutError, ConnectionError):
-            self._warn_once("redis_stm_read", "[memory] Redis STM 读取失败，短期记忆降级")
-        except Exception:
-            self._warn_once(
-                "redis_stm_read", "[memory] Redis STM 读取失败（未知错误），短期记忆降级"
+        except Exception as exc:
+            self._degrade_once(
+                "redis_stm_read",
+                "memory.read_short_term",
+                exc,
+                tenant=tenant_id,
+                user=user_id,
+                session=session_id,
             )
         return None, []
 
@@ -133,12 +144,8 @@ class MemoryMiddleware:
             return None
         try:
             return await self.profile_reader(uid, getattr(self.redis_stm, "redis", None))
-        except (aioredis.RedisError, asyncio.TimeoutError, ConnectionError):
-            self._warn_once("user_profile", "[memory] 用户画像读取失败，降级为空画像")
-        except Exception:
-            self._warn_once(
-                "user_profile", "[memory] 用户画像读取失败（未知错误），降级为空画像"
-            )
+        except Exception as exc:
+            self._degrade_once("user_profile", "memory.read_user_profile", exc, user=uid)
         return {}
 
     async def _read_long_term(
@@ -152,11 +159,13 @@ class MemoryMiddleware:
             return []
         try:
             return await self.milvus_ltm.hybrid_search(tenant_id, user_id, user_input)
-        except (asyncio.TimeoutError, ConnectionError):
-            self._warn_once("milvus_ltm", "[memory] Milvus LTM 检索失败，长期记忆降级")
-        except Exception:
-            self._warn_once(
-                "milvus_ltm", "[memory] Milvus LTM 检索失败（未知错误），长期记忆降级"
+        except Exception as exc:
+            self._degrade_once(
+                "milvus_ltm",
+                "memory.read_long_term",
+                exc,
+                tenant=tenant_id,
+                user=user_id,
             )
         return []
 
@@ -209,10 +218,15 @@ class MemoryMiddleware:
 
             await self.redis_stm.save_meta(tenant_id, user_id, session_id, meta)
             await self.redis_stm.refresh_ttl(tenant_id, user_id, session_id)
-        except (aioredis.RedisError, asyncio.TimeoutError, ConnectionError):
-            self._warn_once("redis_stm_write", "[memory] Redis STM 写入失败")
-        except Exception:
-            self._warn_once("redis_stm_write", "[memory] Redis STM 写入失败（未知错误）")
+        except Exception as exc:
+            self._degrade_once(
+                "redis_stm_write",
+                "memory.write_short_term",
+                exc,
+                tenant=tenant_id,
+                user=user_id,
+                session=session_id,
+            )
 
         # ---- 2) 压缩 + 抽取（仅 should_compress 为真时）----
         # WHY 不在每轮 extract：控 LLM 成本，压缩点语义更完整
@@ -284,11 +298,18 @@ class MemoryMiddleware:
                             getattr(self.redis_stm, "redis", None),
                         )
                     except Exception as exc:
-                        logger.debug(f"[memory] 用户画像更新失败(user_id={user_id}): {exc}")
-        except (asyncio.TimeoutError, ConnectionError):
-            self._warn_once("compress", "[memory] 记忆压缩失败")
-        except Exception:
-            self._warn_once("compress", "[memory] 记忆压缩失败（未知错误）")
+                        log_degradation(
+                            logger, "memory.write_user_profile", exc, user=user_id
+                        )
+        except Exception as exc:
+            self._degrade_once(
+                "compress",
+                "memory.compress_and_extract",
+                exc,
+                tenant=tenant_id,
+                user=user_id,
+                session=session_id,
+            )
 
         # ---- 3) 命中统计（旁路逻辑，失败不影响主路径）----
         # 一次 upsert 刷完全部命中，避免逐条往返 Milvus
@@ -297,7 +318,11 @@ class MemoryMiddleware:
                 await self.milvus_ltm.update_memory_hit_infos(
                     [result.memory for result in long_term_memories]
                 )
-            except (asyncio.TimeoutError, ConnectionError):
-                self._warn_once("ltm_hit_update", "[memory] LTM 命中统计刷新失败")
-            except Exception:
-                self._warn_once("ltm_hit_update", "[memory] LTM 命中统计刷新失败（未知错误）")
+            except Exception as exc:
+                self._degrade_once(
+                    "ltm_hit_update",
+                    "memory.refresh_ltm_hits",
+                    exc,
+                    tenant=tenant_id,
+                    user=user_id,
+                )

@@ -13,15 +13,25 @@ from app.knowledge.infrastructure.orchestration.memory_middleware import MemoryM
 
 
 class FakeLogger:
+    """记录降级日志。
+
+    `exceptions` 单独收集：命中它说明 log_degradation 判定为"疑似代码缺陷"
+    并打了堆栈，是我们希望缺陷不再被静默吞掉的关键信号。
+    """
+
     def __init__(self) -> None:
         self.warnings: list[str] = []
         self.debugs: list[str] = []
+        self.exceptions: list[str] = []
 
-    def warning(self, message: str) -> None:
-        self.warnings.append(message)
+    def warning(self, message: str, *args: object) -> None:
+        self.warnings.append(message % args if args else message)
 
-    def debug(self, message: str) -> None:
-        self.debugs.append(message)
+    def debug(self, message: str, *args: object) -> None:
+        self.debugs.append(message % args if args else message)
+
+    def exception(self, message: str, *args: object) -> None:
+        self.exceptions.append(message % args if args else message)
 
 
 class FakeRedisShortTermMemory:
@@ -298,14 +308,46 @@ def test_before_agent_degrades_and_warns_once_on_memory_load_failures(monkeypatc
     assert second.recent_messages == []
     assert second.user_profile == {}
     assert second.long_term_memories == []
-    # 三路读取是并发的，告警到达顺序不确定，只断言集合与"每类只告警一次"
-    assert sorted(logger.warnings) == sorted(
-        [
-            "[memory] Redis STM 读取失败（未知错误），短期记忆降级",
-            "[memory] 用户画像读取失败（未知错误），降级为空画像",
-            "[memory] Milvus LTM 检索失败（未知错误），长期记忆降级",
-        ]
+    # 三路都是 RuntimeError（非外部依赖故障）→ 判定为疑似代码缺陷，
+    # 走 logger.exception 带堆栈，而不是一句没有异常信息的 warning。
+    # 并发读取导致到达顺序不确定，因此只断言集合。
+    assert len(logger.exceptions) == 3
+    assert logger.warnings == []
+    operations = sorted(entry.split(" 降级")[0] for entry in logger.exceptions)
+    assert operations == [
+        "memory.read_long_term",
+        "memory.read_short_term",
+        "memory.read_user_profile",
+    ]
+    assert all("疑似代码缺陷" in entry for entry in logger.exceptions)
+
+
+def test_before_agent_treats_redis_outage_as_expected_degradation(monkeypatch) -> None:
+    """外部依赖故障走 warning，不该被当成代码缺陷告警。"""
+    import redis.exceptions as redis_exceptions
+
+    class OutageRedis(FakeRedisShortTermMemory):
+        async def get_summary(self, tenant_id, user_id, session_id):
+            raise redis_exceptions.ConnectionError("redis down")
+
+    async def ok_profile_reader(user_id: int, redis_client: object | None):
+        return {}
+
+    logger = FakeLogger()
+    monkeypatch.setattr(memory_middleware, "logger", logger)
+    middleware = MemoryMiddleware(
+        redis_stm=OutageRedis(should_compress_result=False),
+        milvus_ltm=FakeLongTermMemory(),
+        memory_extractor=FakeMemoryExtractor(),
+        profile_reader=ok_profile_reader,
     )
+
+    state = _run(middleware.before_agent("tenant-1", "42", "session-1", "怎么修空调"))
+
+    assert state.recent_messages == []
+    assert logger.exceptions == []
+    assert len(logger.warnings) == 1
+    assert "memory.read_short_term" in logger.warnings[0]
 
 
 def test_after_agent_persists_turn_extracts_memory_and_updates_hits() -> None:
@@ -421,7 +463,9 @@ def test_after_agent_logs_profile_write_failure_without_aborting(monkeypatch) ->
     assert milvus_ltm.saved_memories == [
         ("tenant-1", "5", "solution_note", "建议先检查电源和 WiFi", "session-1")
     ]
-    assert logger.debugs == ["[memory] 用户画像更新失败(user_id=5): profile failed"]
+    assert len(logger.exceptions) == 1
+    assert "memory.write_user_profile" in logger.exceptions[0]
+    assert "profile failed" in logger.exceptions[0]
 
 
 def test_after_agent_skips_extraction_when_compress_did_not_complete() -> None:
@@ -536,7 +580,8 @@ def test_after_agent_swallows_hit_refresh_failure(monkeypatch) -> None:
         )
     )
 
-    assert logger.warnings == ["[memory] LTM 命中统计刷新失败（未知错误）"]
+    assert len(logger.exceptions) == 1
+    assert "memory.refresh_ltm_hits" in logger.exceptions[0]
 
 
 async def test_before_agent_reads_all_sources_concurrently() -> None:

@@ -150,3 +150,35 @@ def test_reset_shared_searcher_forces_rebuild() -> None:
 
     assert first is not second
     assert len(FakeMilvusStore.instances) == 2
+
+
+def test_retrieval_config_milvus_host_follows_settings(monkeypatch) -> None:
+    """Docker 下 MILVUS_HOST=milvus，RAG 侧不能再硬编码 localhost。
+
+    历史上 RetrievalConfig 写死 localhost:19530，而 LTM 走 settings.MILVUS_URL，
+    导致容器部署时长期记忆连得上、文档检索连不上。
+    """
+    from app.shared.core.config import settings
+
+    monkeypatch.setattr(settings, "MILVUS_HOST", "milvus", raising=False)
+    monkeypatch.setattr(settings, "MILVUS_PORT", 19531, raising=False)
+
+    config = RetrievalConfig()
+
+    assert config.milvus_host == "milvus"
+    assert config.milvus_port == 19531
+
+
+def test_retrieval_config_reads_settings_by_default() -> None:
+    """默认值确实来自 settings，而不是字面量。"""
+    from app.shared.core.config import settings
+
+    config = RetrievalConfig()
+
+    assert config.milvus_host == settings.MILVUS_HOST
+    assert config.milvus_port == int(settings.MILVUS_PORT)
+
+
+def test_retrieval_config_rejects_invalid_drop_ratio() -> None:
+    with pytest.raises(ValueError, match="bm25_drop_ratio"):
+        RetrievalConfig(bm25_drop_ratio=1.0)

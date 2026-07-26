@@ -1,14 +1,29 @@
-"""异步任务队列。
+"""进程内后台任务 + Redis 状态上报。
 
 职责：
 - 为文档解析等长耗时任务生成 task_id
+- 用 `asyncio.create_task` 在**当前进程**执行任务协程
 - 用 Redis 保存任务状态，供轮询接口读取
-- 用 `asyncio.create_task` 托管后台协程
+- 启动时把上一代进程遗留的"运行中"任务标记为 interrupted
 
 边界：
-- 这里只负责"提交 / 状态流转 / 结果持久化"
-- 不负责具体的文档解析业务
+- 只负责"提交 / 状态流转 / 结果持久化"，不负责具体文档解析业务
 - 关闭时只释放 Redis 连接，不主动改写后台任务生命周期
+
+⚠️ 这**不是**分布式任务队列，别把它当 Celery / ARQ 用：
+
+- 任务协程跑在当前进程的事件循环里，Redis 只存状态，不存待执行的任务
+- 进程重启 / 崩溃 → 正在执行的任务直接消失，不会自动续跑，也没有重试
+- 多副本部署时任务不会被分担，谁接到 HTTP 请求就在谁那儿执行
+
+模块原名 `task_queue.py`，容易让人以为有队列的投递与持久化保证，故改名。
+真需要"重启后继续执行 / 跨副本分担 / 自动重试"，要换成真正的队列
+（Redis Stream、ARQ、Celery），而不是在这里打补丁。
+
+作为退而求其次的可观测性兜底：每个状态记录会带上写入它的进程 id
+（`worker_id`）。进程启动时调用 `reconcile_orphaned_tasks()`，把其它
+worker 留下的 pending/running 记录改成 `interrupted`——这样孤儿任务
+至少是"可见的失败"，而不是永远停在 running 让前端一直转圈。
 """
 
 from __future__ import annotations
@@ -16,13 +31,14 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections.abc import Callable, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine
 from datetime import datetime
 from enum import Enum
 from typing import Any, Protocol, TypeAlias
 
 import redis.asyncio as aioredis
 from app.shared.core.config import settings
+from app.shared.core.degradation import log_degradation
 from app.shared.core.logger import get_logger
 from typing_extensions import TypedDict
 
@@ -38,6 +54,17 @@ class TaskStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    #: 执行该任务的进程已消失（重启/崩溃），任务不会自动续跑
+    INTERRUPTED = "interrupted"
+
+
+#: 尚未终结的状态。进程重启后这些记录若属于旧 worker，即为孤儿。
+UNFINISHED_STATUSES = frozenset({TaskStatus.PENDING.value, TaskStatus.RUNNING.value})
+
+INTERRUPTED_ERROR_MESSAGE = "执行该任务的进程已重启，任务未完成且不会自动续跑，请重新提交。"
+
+#: 当前进程标识。用于区分"我正在跑的任务"和"上一代进程遗留的任务"。
+WORKER_ID = uuid.uuid4().hex[:12]
 
 
 class TaskStatusPayload(TypedDict, total=False):
@@ -46,6 +73,7 @@ class TaskStatusPayload(TypedDict, total=False):
     task_id: str
     status: str
     updated_at: str
+    worker_id: str
     result: Any
     error: str
 
@@ -70,6 +98,8 @@ class TaskStore(Protocol):
 
     async def get(self, key: str) -> str | None: ...
 
+    def scan_iter(self, match: str) -> AsyncIterator[str]: ...
+
     async def close(self) -> Any: ...
 
 
@@ -79,12 +109,14 @@ def build_task_status_payload(
     *,
     result: Any = None,
     error: str | None = None,
+    worker_id: str = WORKER_ID,
 ) -> TaskStatusPayload:
     """构造统一的任务状态负载。"""
     payload: TaskStatusPayload = {
         "task_id": task_id,
         "status": status.value,
         "updated_at": datetime.now().isoformat(),
+        "worker_id": worker_id,
     }
     if result is not None:
         payload["result"] = result
@@ -131,7 +163,23 @@ def load_task_status_payload(raw: str | None) -> TaskStatusPayload | None:
     error = raw_payload.get("error")
     if isinstance(error, str):
         payload["error"] = error
+
+    # worker_id 是后加的字段：历史记录没有，按"归属未知的旧进程"处理
+    worker_id = raw_payload.get("worker_id")
+    if isinstance(worker_id, str):
+        payload["worker_id"] = worker_id
     return payload
+
+
+def is_orphaned_task(payload: TaskStatusPayload, *, current_worker_id: str) -> bool:
+    """判断这条状态是否属于"上一代进程遗留的未完成任务"。
+
+    满足两个条件才算孤儿：状态尚未终结，且写入它的不是当前进程。
+    缺少 `worker_id` 的历史记录一律视为旧进程留下的。
+    """
+    if payload.get("status") not in UNFINISHED_STATUSES:
+        return False
+    return payload.get("worker_id") != current_worker_id
 
 
 def create_redis_client(redis_url: str) -> TaskStore:
@@ -254,6 +302,45 @@ class _TaskManager:
         """读取任务状态，不存在时返回 None。"""
         return await read_task_status(self._redis, task_id)
 
+    async def reconcile_orphaned_tasks(self) -> int:
+        """把上一代进程遗留的未完成任务标记为 interrupted。
+
+        任务协程只活在进程内存里，进程没了任务就没了，但 Redis 里的状态还停在
+        `running`——前端会一直转圈等一个永远不会来的结果。启动时扫一遍，
+        把不属于当前 worker 的 pending/running 记录改成 `interrupted`，
+        让"任务丢了"变成一个明确、可展示的终态。
+
+        Returns:
+            被标记的任务数；扫描失败返回 0（不阻断启动）。
+        """
+        pattern = f"{_TASK_CFG.task_key_prefix}*"
+        reconciled = 0
+        try:
+            async for key in self._redis.scan_iter(match=pattern):
+                payload = load_task_status_payload(await self._redis.get(key))
+                if payload is None:
+                    continue
+                if not is_orphaned_task(payload, current_worker_id=WORKER_ID):
+                    continue
+                await write_task_status(
+                    self._redis,
+                    payload["task_id"],
+                    TaskStatus.INTERRUPTED,
+                    error=INTERRUPTED_ERROR_MESSAGE,
+                )
+                reconciled += 1
+        except Exception as exc:
+            log_degradation(logger, "background_tasks.reconcile_orphaned_tasks", exc)
+            return 0
+
+        if reconciled:
+            logger.warning(
+                "已将 %s 个上一代进程遗留的任务标记为 interrupted | worker=%s",
+                reconciled,
+                WORKER_ID,
+            )
+        return reconciled
+
     async def close(self) -> None:
         """关闭底层 Redis 连接。
 
@@ -283,11 +370,15 @@ async def get_task_manager() -> _TaskManager:
 
 
 __all__ = [
+    "INTERRUPTED_ERROR_MESSAGE",
+    "UNFINISHED_STATUSES",
+    "WORKER_ID",
     "TaskStatus",
     "TaskStatusPayload",
     "build_task_status_payload",
     "dump_task_status_payload",
     "get_task_manager",
+    "is_orphaned_task",
     "load_task_status_payload",
     "read_task_status",
     "run_task_with_status_updates",

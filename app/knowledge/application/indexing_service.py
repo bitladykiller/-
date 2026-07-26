@@ -10,19 +10,15 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Awaitable, Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 from app.knowledge.application.indexing_contracts import (
     ChunkIndexer,
     DocIDFactory,
-    FullIndexFn,
     IndexingResult,
     ParseDocumentFn,
     PipelineLoader,
-    ReindexFn,
-    ReindexResult,
     UploadFileInfo,
 )
 from app.knowledge.infrastructure.doc_parser.retrieval.doc_lifecycle import (
@@ -78,7 +74,13 @@ def build_doc_id(user_id: int) -> str:
     return f"upload_{user_id}_{uuid.uuid4().hex[:8]}"
 
 
-def _normalize_mode(raw: object) -> str:
+def normalize_upload_mode(raw: object) -> str:
+    """把上传模式归一化成 `create` / `replace`，非法值抛 ValueError。
+
+    这是**唯一**的上传模式校验实现：API 层（`app.api.upload`）与索引层
+    都从这里取，避免两处各写一份、日后只改一处而行为分叉。
+    API 层负责把 ValueError 翻译成 HTTP 400。
+    """
     if raw is None or raw == "":
         return _MODE_CREATE
     mode = str(raw).strip().lower()
@@ -102,49 +104,11 @@ def _resolve_doc_id(
     return validate_doc_id(doc_id_factory(user_id))
 
 
-def _as_reindex_fn(searcher: object) -> ReindexFn | None:
-    """取出 searcher.reindex 并标成可 await 的协程函数。"""
-    reindex = getattr(searcher, "reindex", None)
-    if reindex is None or not callable(reindex):
-        return None
-    return cast(ReindexFn, reindex)
-
-
-def _as_index_fn(searcher: object) -> FullIndexFn:
-    index_fn = getattr(searcher, "index", None)
-    if index_fn is None or not callable(index_fn):
-        raise TypeError("indexer 缺少 index 方法")
-    return cast(FullIndexFn, index_fn)
-
-
-async def _call_index(
-    index_fn: FullIndexFn,
-    chunks: Sequence[Any],
-    *,
-    version: int = 1,
-    content_hash: str = "",
-) -> int:
-    """兼容 (chunks) 与 (chunks, version=, content_hash=) 两种签名。"""
-    try:
-        result = index_fn(chunks, version=version, content_hash=content_hash)
-    except TypeError:
-        result = index_fn(chunks)
-    count = await cast(Awaitable[int], result)
-    return int(count)
-
-
-async def _call_reindex(
-    reindex_fn: ReindexFn,
-    doc_id: str,
-    chunks: Sequence[Any],
-    *,
-    content_hash: str,
-) -> ReindexResult:
-    raw = await cast(
-        Awaitable[ReindexResult | dict[str, Any]],
-        reindex_fn(doc_id, chunks, content_hash=content_hash),
-    )
-    return cast(ReindexResult, raw)
+# NOTE: 索引器统一遵循 `ChunkIndexer` 协议（index + reindex，签名固定）。
+# 这里曾经有一层"兼容层"：用 `except TypeError` 嗅探 index 的签名、
+# 用 getattr 探测 reindex 是否存在，并在缺失时退化成全量 index。
+# 那些分支只为早期的测试替身而存在，生产实现从来都两个方法齐全——
+# 生产代码不该为测试替身让路，该改的是替身。已删除，契约以 Protocol 为准。
 
 
 class IndexingService:
@@ -185,7 +149,7 @@ class IndexingService:
             return {"status": STATUS_ERROR, "message": f"不支持的文件类型: {ext}"}
 
         try:
-            mode = _normalize_mode(file_info.get("mode"))
+            mode = normalize_upload_mode(file_info.get("mode"))
             doc_id = _resolve_doc_id(
                 file_info,
                 user_id=user_id,
@@ -210,40 +174,19 @@ class IndexingService:
                 }
 
             if mode == _MODE_REPLACE:
-                reindex_fn = _as_reindex_fn(searcher)
-                if reindex_fn is not None:
-                    result = await _call_reindex(
-                        reindex_fn,
-                        doc_id,
-                        chunks,
-                        content_hash=content_hash,
-                    )
-                    return {
-                        "status": STATUS_SUCCESS,
-                        "chunks": int(result.get("chunks") or 0),
-                        "doc_id": doc_id,
-                        "source_file": str(path),
-                        "mode": mode,
-                        "version": int(result.get("version") or 0),
-                        "soft_deleted": int(result.get("soft_deleted") or 0),
-                    }
-                # Fake / 旧 indexer 无 reindex：退化为直接 index
-                count = await _call_index(_as_index_fn(searcher), chunks)
+                result = await searcher.reindex(doc_id, chunks, content_hash=content_hash)
                 return {
                     "status": STATUS_SUCCESS,
-                    "chunks": count,
+                    "chunks": int(result.get("chunks") or 0),
                     "doc_id": doc_id,
                     "source_file": str(path),
                     "mode": mode,
-                    "version": 0,
-                    "soft_deleted": 0,
+                    "version": int(result.get("version") or 0),
+                    "soft_deleted": int(result.get("soft_deleted") or 0),
                 }
 
-            count = await _call_index(
-                _as_index_fn(searcher),
-                chunks,
-                version=1,
-                content_hash=content_hash,
+            count = int(
+                await searcher.index(chunks, version=1, content_hash=content_hash)
             )
             return {
                 "status": STATUS_SUCCESS,
@@ -264,4 +207,8 @@ class IndexingService:
             return {"status": STATUS_ERROR, "message": str(exc)}
 
 
-__all__ = ["IndexingService", "load_pipeline_dependencies"]
+__all__ = [
+    "IndexingService",
+    "load_pipeline_dependencies",
+    "normalize_upload_mode",
+]

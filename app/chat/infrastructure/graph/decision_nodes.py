@@ -102,15 +102,21 @@ def resolve_execution_plan(
     return "AGENT_REACT"
 
 
-def _normalize_mode(raw: object) -> RetrievalMode:
+def _normalize_retrieval_mode(raw: object) -> RetrievalMode:
+    """归一化**检索**模式（single / parallel / sequential）。
+
+    注意与 `indexing_service.normalize_upload_mode` 区分：那个是文档上传模式
+    （create / replace），两者语义完全不同。此前二者都叫 `_normalize_mode`，
+    跨文件搜索时极易看串。
+    """
     if raw in ("single", "parallel", "sequential"):
-        return raw  # type: ignore[return-value]
+        return raw  # pyright: ignore[reportReturnType]
     return "single"
 
 
 def _normalize_complexity(raw: object) -> RetrievalComplexity:
     if raw in ("simple", "multi_hop"):
-        return raw  # type: ignore[return-value]
+        return raw  # pyright: ignore[reportReturnType]
     return "simple"
 
 SCOPE_DESCRIPTION = """
@@ -230,7 +236,7 @@ async def retrieval_plan_route(
         question=wrapped_question,
     )
 
-    mode = _normalize_mode(getattr(output, "mode", "single"))
+    mode = _normalize_retrieval_mode(getattr(output, "mode", "single"))
     complexity = _normalize_complexity(getattr(output, "complexity", "simple"))
     need_graph = bool(getattr(output, "need_graph", False))
     need_rag = bool(getattr(output, "need_rag", False))
@@ -259,17 +265,17 @@ def retrieval_plan_edge(state: AgentState) -> RetrievalEdgeName:
 
     resolved = raw.get("resolved_plan")
     if isinstance(resolved, str) and resolved in _RETRIEVAL_EDGE_MAP:
-        return _RETRIEVAL_EDGE_MAP[resolved]  # type: ignore[index]
+        return _RETRIEVAL_EDGE_MAP[resolved]  # pyright: ignore[reportArgumentType]
 
     # 兼容：旧状态仅有 plan 字段，或 resolved 丢失时按能力重算
-    legacy = raw.get("plan")  # type: ignore[typeddict-item]
+    legacy = raw.get("plan")  # pyright: ignore[reportGeneralTypeIssues]
     if isinstance(legacy, str) and legacy in _RETRIEVAL_EDGE_MAP:
-        return _RETRIEVAL_EDGE_MAP[legacy]  # type: ignore[index]
+        return _RETRIEVAL_EDGE_MAP[legacy]  # pyright: ignore[reportArgumentType]
 
     recomputed = resolve_execution_plan(
         need_graph=bool(raw.get("need_graph")),
         need_rag=bool(raw.get("need_rag")),
-        mode=_normalize_mode(raw.get("mode")),
+        mode=_normalize_retrieval_mode(raw.get("mode")),
         complexity=_normalize_complexity(raw.get("complexity")),
     )
     return _RETRIEVAL_EDGE_MAP[recomputed]
