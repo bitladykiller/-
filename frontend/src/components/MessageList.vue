@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from "vue";
 import type { ChatMessage } from "@/api/types";
-import { formatMessageHtml } from "@/utils/format";
+import { formatClock, formatMessageHtml } from "@/utils/format";
 
 const props = defineProps<{
   messages: ChatMessage[];
@@ -24,8 +24,8 @@ watch(
 <template>
   <div ref="root" class="messages">
     <div v-for="m in messages" :key="m.id" class="row" :class="m.role">
-      <div class="avatar" aria-hidden="true">
-        {{ m.role === "user" ? "You" : m.role === "system" ? "Note" : "AG" }}
+      <div class="medal" aria-hidden="true">
+        <span>{{ m.role === "user" ? "YOU" : m.role === "system" ? "✧" : "AG" }}</span>
       </div>
       <div class="body">
         <div
@@ -33,6 +33,9 @@ watch(
           :class="{ streaming: m.streaming, system: m.role === 'system' }"
           v-html="formatMessageHtml(m.content || (m.streaming ? '…' : ''))"
         />
+        <div v-if="m.role !== 'system'" class="stamp">
+          {{ formatClock(m.createdAt) }}
+        </div>
       </div>
     </div>
   </div>
@@ -42,17 +45,17 @@ watch(
 .messages {
   flex: 1;
   overflow: auto;
-  padding: 28px 28px 16px;
+  padding: 30px 30px 16px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 20px;
 }
 
 .row {
   display: flex;
-  gap: 12px;
-  max-width: min(760px, 100%);
-  animation: in 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  gap: 14px;
+  max-width: min(780px, 100%);
+  animation: rise-in 0.4s var(--ease) both;
 }
 
 .row.user {
@@ -65,99 +68,153 @@ watch(
   align-self: flex-start;
 }
 
-.avatar {
+/* ---------- 菱形纹章头像 ---------- */
+.medal {
   flex-shrink: 0;
-  width: 38px;
-  height: 38px;
-  border-radius: 12px;
+  width: 36px;
+  height: 36px;
+  margin: 4px 6px 0;
   display: grid;
   place-items: center;
-  font-family: var(--mono);
-  font-size: 0.62rem;
-  letter-spacing: 0.04em;
+  transform: rotate(45deg);
+  border-radius: 9px;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.03);
-  color: var(--cream-dim);
+  background: rgba(216, 178, 106, 0.04);
 }
 
-.row.user .avatar {
-  color: #1a1208;
-  background: linear-gradient(145deg, #e8a054, #c9843d);
+.medal span {
+  transform: rotate(-45deg);
+  font-family: var(--mono);
+  font-size: 0.5rem;
+  letter-spacing: 0.08em;
+  color: var(--ivory-faint);
+}
+
+.row.user .medal {
   border-color: transparent;
+  background: linear-gradient(135deg, var(--gold-deep), var(--gold) 55%, var(--gold-bright));
+  box-shadow: 0 0 18px rgba(216, 178, 106, 0.3);
 }
 
-.row.assistant .avatar {
-  color: var(--mint);
-  border-color: rgba(125, 206, 160, 0.3);
+.row.user .medal span {
+  color: #241705;
+  font-weight: 700;
+}
+
+.row.assistant .medal {
+  border-color: rgba(142, 201, 168, 0.4);
+  background: rgba(142, 201, 168, 0.06);
+  box-shadow: 0 0 14px rgba(142, 201, 168, 0.14);
+}
+
+.row.assistant .medal span {
+  color: var(--jade);
+}
+
+/* ---------- 气泡 ---------- */
+.body {
+  min-width: 0;
 }
 
 .bubble {
-  padding: 12px 15px;
+  position: relative;
+  padding: 13px 16px;
   border-radius: 16px;
-  line-height: 1.6;
-  font-size: 0.95rem;
+  line-height: 1.68;
+  font-size: 0.94rem;
   word-break: break-word;
 }
 
+/* 角落宝石钉 */
+.bubble::before {
+  content: "";
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  transform: rotate(45deg);
+}
+
 .row.user .bubble {
-  background: linear-gradient(145deg, #2a241c, #1e1a14);
-  border: 1px solid rgba(232, 160, 84, 0.28);
-  border-bottom-right-radius: 6px;
-  color: var(--cream);
+  background: linear-gradient(150deg, #262012, #1a160c);
+  border: 1px solid rgba(216, 178, 106, 0.32);
+  border-top-right-radius: 5px;
+  color: var(--ivory);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.3);
+}
+
+.row.user .bubble::before {
+  top: -3.5px;
+  right: 16px;
+  background: var(--gold);
+  box-shadow: 0 0 8px var(--gold-glow);
 }
 
 .row.assistant .bubble {
-  background: rgba(255, 255, 255, 0.03);
+  background: linear-gradient(180deg, var(--lacquer-3), var(--lacquer));
   border: 1px solid var(--line);
-  border-bottom-left-radius: 6px;
+  border-bottom-left-radius: 5px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.row.assistant .bubble::before {
+  bottom: -3.5px;
+  left: 16px;
+  background: var(--jade);
+  box-shadow: 0 0 8px rgba(142, 201, 168, 0.5);
 }
 
 .bubble.system {
-  font-size: 0.85rem;
-  color: var(--cream-dim);
-  border-style: dashed;
-  opacity: 0.9;
+  font-size: 0.84rem;
+  color: var(--ivory-dim);
+  background: transparent;
+  border: 1px dashed var(--line-strong);
+  box-shadow: none;
 }
 
+.bubble.system::before {
+  display: none;
+}
+
+/* 流式生成的鎏金光标 */
 .bubble.streaming::after {
   content: "";
   display: inline-block;
   width: 7px;
   height: 1.05em;
-  margin-left: 4px;
+  margin-left: 5px;
   vertical-align: text-bottom;
-  background: var(--ember);
+  background: linear-gradient(180deg, var(--gold-bright), var(--gold-deep));
   border-radius: 1px;
-  animation: blink 0.9s steps(1) infinite;
+  box-shadow: 0 0 8px var(--gold-glow);
+  animation: caret-blink 0.9s steps(1) infinite;
 }
 
+/* 时刻铭牌 */
+.stamp {
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  color: var(--ivory-faint);
+}
+
+.row.user .stamp {
+  text-align: right;
+}
+
+/* 富文本细节 */
 .bubble :deep(code) {
   font-family: var(--mono);
-  font-size: 0.86em;
-  padding: 0.1em 0.35em;
-  border-radius: 4px;
-  background: rgba(0, 0, 0, 0.35);
+  font-size: 0.84em;
+  padding: 0.12em 0.4em;
+  border-radius: 5px;
+  color: var(--gold-bright);
+  background: rgba(7, 11, 9, 0.55);
+  border: 1px solid var(--line-faint);
 }
 
 .bubble :deep(strong) {
   color: #fff;
   font-weight: 650;
-}
-
-@keyframes blink {
-  50% {
-    opacity: 0;
-  }
-}
-
-@keyframes in {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
 }
 </style>

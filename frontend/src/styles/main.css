@@ -1,23 +1,49 @@
-/* AssistGen Console — editorial industrial dark */
+/* ============================================================
+   AssistGen Console — 鎏金礼宾 · Art Deco Noir
+   墨玉漆面 × 香槟金镶线 × 扇形放射纹样 × 菱形宝石
+   ============================================================ */
+
 :root {
-  --ink: #0a0c0f;
-  --ink-2: #12151c;
-  --panel: #161a22;
-  --panel-2: #1c212c;
-  --line: rgba(232, 220, 196, 0.1);
-  --line-strong: rgba(232, 220, 196, 0.18);
-  --cream: #e8dcc4;
-  --cream-dim: rgba(232, 220, 196, 0.62);
-  --cream-faint: rgba(232, 220, 196, 0.38);
-  --ember: #e8a054;
-  --ember-soft: rgba(232, 160, 84, 0.16);
-  --mint: #7dcea0;
-  --rose: #e07a7a;
-  --serif: "Instrument Serif", Georgia, "Times New Roman", serif;
-  --sans: "Manrope", system-ui, sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, monospace;
-  --shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
-  --radius: 18px;
+  /* 底色：近黑墨玉绿 */
+  --noir: #070b09;
+  --noir-2: #0a0f0c;
+  --lacquer: #101711;
+  --lacquer-2: #151d16;
+  --lacquer-3: #1a231a;
+
+  /* 鎏金 */
+  --gold: #d8b26a;
+  --gold-bright: #edd49a;
+  --gold-deep: #a9803f;
+  --gold-soft: rgba(216, 178, 106, 0.13);
+  --gold-glow: rgba(216, 178, 106, 0.4);
+
+  /* 象牙文本 */
+  --ivory: #ede5cf;
+  --ivory-dim: rgba(237, 229, 207, 0.66);
+  --ivory-faint: rgba(237, 229, 207, 0.42);
+
+  /* 玉石辅色 */
+  --jade: #8ec9a8;
+  --jade-soft: rgba(142, 201, 168, 0.14);
+  --garnet: #d98a8a;
+  --garnet-soft: rgba(217, 138, 138, 0.14);
+
+  /* 鎏金镶线 */
+  --line: rgba(216, 178, 106, 0.14);
+  --line-strong: rgba(216, 178, 106, 0.32);
+  --line-faint: rgba(216, 178, 106, 0.07);
+
+  /* 字体 */
+  --serif: "Marcellus", "Noto Serif SC", "Songti SC", "STSong", Georgia, serif;
+  --sans: "Albert Sans", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --mono: "Fragment Mono", ui-monospace, "SF Mono", "Menlo", monospace;
+
+  --shadow: 0 30px 70px rgba(0, 0, 0, 0.55);
+  --shadow-soft: 0 14px 40px rgba(0, 0, 0, 0.38);
+  --radius: 14px;
+  --radius-lg: 20px;
+  --ease: cubic-bezier(0.22, 0.8, 0.3, 1);
 }
 
 *,
@@ -35,8 +61,8 @@ body,
 
 body {
   font-family: var(--sans);
-  color: var(--cream);
-  background: var(--ink);
+  color: var(--ivory);
+  background: var(--noir);
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
 }
@@ -49,27 +75,345 @@ textarea {
 }
 
 a {
-  color: var(--ember);
+  color: var(--gold);
 }
 
 ::selection {
-  background: rgba(232, 160, 84, 0.35);
+  background: rgba(216, 178, 106, 0.35);
   color: #fff;
 }
 
-/* grain */
+:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+/* ---------- 细腻胶片颗粒 ---------- */
 body::before {
   content: "";
   position: fixed;
   inset: 0;
   pointer-events: none;
   z-index: 100;
-  opacity: 0.045;
+  opacity: 0.05;
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
-/* scrollbars */
+/* ---------- 滚动条 ---------- */
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(232, 220, 196, 0.18) transparent;
+  scrollbar-color: rgba(216, 178, 106, 0.22) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(216, 178, 106, 0.2);
+  border-radius: 99px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(216, 178, 106, 0.34);
+}
+
+/* ============================================================
+   装饰工具类
+   ============================================================ */
+
+/* 眉题：鎏金小号字距标签 */
+.eyebrow {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+
+/* 漆面牌匾：所有面板的基础质感 */
+.plaque {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(160deg, rgba(216, 178, 106, 0.055), transparent 40%),
+    linear-gradient(180deg, var(--lacquer-2), var(--lacquer));
+  box-shadow: var(--shadow-soft), inset 0 1px 0 rgba(255, 255, 255, 0.045);
+}
+
+/* 四角鎏金包边（L 形护角） */
+.deco-corners {
+  position: relative;
+}
+
+.deco-corners::after {
+  content: "";
+  position: absolute;
+  inset: 7px;
+  pointer-events: none;
+  background-image:
+    linear-gradient(var(--line-strong), var(--line-strong)),
+    linear-gradient(var(--line-strong), var(--line-strong)),
+    linear-gradient(var(--line-strong), var(--line-strong)),
+    linear-gradient(var(--line-strong), var(--line-strong)),
+    linear-gradient(var(--line-strong), var(--line-strong)),
+    linear-gradient(var(--line-strong), var(--line-strong)),
+    linear-gradient(var(--line-strong), var(--line-strong)),
+    linear-gradient(var(--line-strong), var(--line-strong));
+  background-position:
+    0 0, 0 0,
+    100% 0, 100% 0,
+    0 100%, 0 100%,
+    100% 100%, 100% 100%;
+  background-size:
+    16px 1px, 1px 16px,
+    16px 1px, 1px 16px,
+    16px 1px, 1px 16px,
+    16px 1px, 1px 16px;
+  background-repeat: no-repeat;
+}
+
+/* 鎏金分隔线：两侧渐隐 + 中央菱形 */
+.deco-rule {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  color: var(--gold);
+}
+
+.deco-rule::before,
+.deco-rule::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+}
+
+.deco-rule::before {
+  background: linear-gradient(90deg, transparent, var(--line-strong));
+}
+
+.deco-rule::after {
+  background: linear-gradient(90deg, var(--line-strong), transparent);
+}
+
+.deco-diamond {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  transform: rotate(45deg);
+  background: var(--gold);
+  box-shadow: 0 0 10px var(--gold-glow);
+}
+
+/* 状态宝石：菱形切割 */
+.gem {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  transform: rotate(45deg);
+  background: var(--gold-deep);
+}
+
+.gem.ok {
+  background: var(--jade);
+  box-shadow: 0 0 12px rgba(142, 201, 168, 0.65);
+  animation: gem-pulse 2.4s ease-in-out infinite;
+}
+
+.gem.bad {
+  background: var(--garnet);
+  box-shadow: 0 0 12px rgba(217, 138, 138, 0.55);
+}
+
+/* 鎏金主按钮：渐层金 + 悬停扫光 */
+.gold-btn {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 12px;
+  padding: 12px 18px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  color: #241705;
+  background: linear-gradient(135deg, var(--gold-deep), var(--gold) 48%, var(--gold-bright));
+  box-shadow: 0 12px 32px rgba(216, 178, 106, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  transition: transform 0.18s var(--ease), filter 0.18s ease, box-shadow 0.18s ease;
+}
+
+.gold-btn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, 0.38) 50%, transparent 70%);
+  transform: translateX(-130%);
+}
+
+.gold-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
+  box-shadow: 0 16px 38px rgba(216, 178, 106, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+.gold-btn:hover:not(:disabled)::after {
+  transform: translateX(130%);
+  transition: transform 0.65s ease;
+}
+
+.gold-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 鎏金描线按钮 */
+.ghost-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  background: rgba(216, 178, 106, 0.03);
+  border-radius: 11px;
+  padding: 9px 13px;
+  font-size: 0.84rem;
+  color: var(--ivory-dim);
+  cursor: pointer;
+  transition: border-color 0.16s ease, color 0.16s ease, background 0.16s ease, transform 0.16s var(--ease);
+}
+
+.ghost-btn:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  color: var(--ivory);
+  background: var(--gold-soft);
+  transform: translateY(-1px);
+}
+
+.ghost-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ghost-btn.danger {
+  color: var(--garnet);
+  border-color: rgba(217, 138, 138, 0.3);
+}
+
+.ghost-btn.danger:hover:not(:disabled) {
+  border-color: rgba(217, 138, 138, 0.55);
+  background: var(--garnet-soft);
+  color: #f0b9b9;
+}
+
+/* 扇形转针：流式生成指示 */
+.fan-spinner {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  border-radius: 50%;
+  background: repeating-conic-gradient(currentColor 0deg 16deg, transparent 16deg 45deg);
+  -webkit-mask: radial-gradient(circle, transparent 34%, #000 36%);
+  mask: radial-gradient(circle, transparent 34%, #000 36%);
+  animation: fan-spin 1s linear infinite;
+}
+
+/* 入场动效：配合 --d 自定义延迟做逐层揭幕 */
+.reveal {
+  animation: rise-in 0.6s var(--ease) both;
+  animation-delay: var(--d, 0s);
+}
+
+/* ============================================================
+   关键帧
+   ============================================================ */
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes fan-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes gem-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 6px rgba(142, 201, 168, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 16px rgba(142, 201, 168, 0.75);
+  }
+}
+
+@keyframes ray-breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes aurora-drift {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    transform: translate3d(-4vw, 3vh, 0) scale(1.08);
+  }
+}
+
+@keyframes shimmer-sweep {
+  from {
+    background-position: -200% 0;
+  }
+  to {
+    background-position: 200% 0;
+  }
+}
+
+/* ---------- 降级：尊重系统减弱动效 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

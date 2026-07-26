@@ -165,13 +165,14 @@ function statusLabel(s: string) {
 
 <template>
   <div v-if="open" class="mask" @click.self="open = false">
-    <div class="sheet" role="dialog" aria-label="知识文档">
+    <div class="sheet plaque deco-corners" role="dialog" aria-label="知识文档">
+      <div class="sheet-rays" aria-hidden="true" />
       <header>
         <div>
-          <p class="kicker">Knowledge ingest</p>
+          <p class="eyebrow">◆ Knowledge Ingest</p>
           <h2>知识文档</h2>
         </div>
-        <button type="button" class="x" @click="open = false">×</button>
+        <button type="button" class="x" aria-label="关闭" @click="open = false">×</button>
       </header>
 
       <div class="tabs">
@@ -207,15 +208,16 @@ function statusLabel(s: string) {
             accept=".md,.markdown,.pdf,.docx"
             @change="onPick"
           />
+          <span class="zone-mark" aria-hidden="true"><i>↑</i></span>
           <span class="zone-title">拖入文件或点击选择</span>
           <span v-if="file" class="zone-file">{{ file.name }}</span>
         </label>
 
         <footer>
-          <button type="button" class="ghost" @click="open = false">取消</button>
+          <button type="button" class="ghost-btn" @click="open = false">取消</button>
           <button
             type="button"
-            class="go"
+            class="gold-btn"
             :disabled="!file || busy"
             @click="submitCreate"
           >
@@ -230,12 +232,19 @@ function statusLabel(s: string) {
           <code>doc_id</code> 做 replace（软删旧向量 + 写新 version）。
         </p>
         <div class="toolbar">
-          <button type="button" class="ghost sm" :disabled="loadingDocs" @click="refreshDocs">
+          <button
+            type="button"
+            class="ghost-btn sm"
+            :disabled="loadingDocs"
+            @click="refreshDocs"
+          >
             {{ loadingDocs ? "刷新中…" : "刷新列表" }}
           </button>
         </div>
 
-        <div v-if="!docs.length && !loadingDocs" class="empty">暂无文档，请先上传。</div>
+        <div v-if="!docs.length && !loadingDocs" class="empty">
+          <span aria-hidden="true">✧</span> 暂无文档，请先上传。
+        </div>
         <ul v-else class="doc-list">
           <li v-for="d in docs" :key="d.doc_id" class="doc">
             <div class="doc-main">
@@ -244,7 +253,9 @@ function statusLabel(s: string) {
                 <span class="mono">{{ d.doc_id }}</span>
                 <span>· v{{ d.version }}</span>
                 <span>· {{ d.chunk_count }} chunks</span>
-                <span class="st" :data-s="d.status">{{ statusLabel(d.status) }}</span>
+                <span class="st" :data-s="d.status">
+                  <i class="st-gem" aria-hidden="true" />{{ statusLabel(d.status) }}
+                </span>
               </div>
               <div v-if="d.error_message" class="doc-err">{{ d.error_message }}</div>
             </div>
@@ -261,7 +272,7 @@ function statusLabel(s: string) {
               </label>
               <button
                 type="button"
-                class="go sm"
+                class="gold-btn sm"
                 :disabled="busy || replaceDocId !== d.doc_id || !replaceFile"
                 @click="submitReplace(d.doc_id)"
               >
@@ -279,7 +290,9 @@ function statusLabel(s: string) {
       </template>
 
       <div v-if="busy || label" class="prog">
-        <div class="bar"><i :style="{ width: pct + '%' }" /></div>
+        <div class="bar" :class="{ live: busy }">
+          <i :style="{ width: pct + '%' }" />
+        </div>
         <span>{{ label }}</span>
       </div>
       <p v-if="err" class="err">{{ err }}</p>
@@ -292,119 +305,169 @@ function statusLabel(s: string) {
   position: fixed;
   inset: 0;
   z-index: 40;
-  background: rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(8px);
+  background: radial-gradient(120% 120% at 50% 30%, rgba(7, 11, 9, 0.5), rgba(0, 0, 0, 0.72));
+  backdrop-filter: blur(9px);
   display: grid;
   place-items: center;
   padding: 20px;
+  animation: fade-in 0.2s ease both;
 }
 
 .sheet {
-  width: min(560px, 100%);
-  max-height: min(86vh, 720px);
+  position: relative;
+  width: min(580px, 100%);
+  max-height: min(86vh, 740px);
   overflow: auto;
-  background: var(--panel-2);
-  border: 1px solid var(--line-strong);
-  border-radius: 20px;
-  padding: 22px;
-  box-shadow: var(--shadow);
-  animation: up 0.28s ease both;
+  padding: 26px 24px 24px;
+  animation: rise-in 0.32s var(--ease) both;
+}
+
+/* 穹顶放射纹 */
+.sheet-rays {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 460px;
+  height: 150px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  background: repeating-conic-gradient(
+    from -90deg at 50% 0%,
+    rgba(216, 178, 106, 0.22) 0deg 0.9deg,
+    transparent 0.9deg 7deg
+  );
+  -webkit-mask-image: radial-gradient(120% 100% at 50% 0%, #000 10%, transparent 62%);
+  mask-image: radial-gradient(120% 100% at 50% 0%, #000 10%, transparent 62%);
 }
 
 header {
+  position: relative;
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
 }
 
-.kicker {
-  margin: 0 0 4px;
-  font-size: 0.7rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--ember);
-}
-
 h2 {
-  margin: 0;
+  margin: 6px 0 0;
   font-family: var(--serif);
-  font-size: 1.55rem;
-  font-weight: 400;
-  letter-spacing: -0.02em;
+  font-size: 1.6rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
 }
 
 .x {
-  border: 0;
+  border: 1px solid transparent;
   background: transparent;
-  font-size: 1.4rem;
+  font-size: 1.35rem;
   cursor: pointer;
-  color: var(--cream-dim);
+  color: var(--ivory-dim);
   line-height: 1;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  transition: border-color 0.15s ease, color 0.15s ease;
 }
 
+.x:hover {
+  color: var(--ivory);
+  border-color: var(--line);
+}
+
+/* ---------- 鎏金分段切换 ---------- */
 .tabs {
+  position: relative;
   display: flex;
-  gap: 8px;
-  margin: 16px 0 12px;
+  gap: 6px;
+  margin: 18px 0 14px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: rgba(7, 11, 9, 0.5);
 }
 
 .tabs button {
   flex: 1;
-  border-radius: 10px;
-  border: 1px solid var(--line);
+  border-radius: 9px;
+  border: 1px solid transparent;
   background: transparent;
-  color: var(--cream-dim);
+  color: var(--ivory-dim);
   padding: 9px 10px;
   cursor: pointer;
-  font-size: 0.88rem;
+  font-size: 0.86rem;
+  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease;
 }
 
 .tabs button.on {
-  background: var(--ember-soft);
-  border-color: rgba(232, 160, 84, 0.45);
-  color: var(--cream);
+  background: linear-gradient(160deg, var(--gold-soft), rgba(216, 178, 106, 0.05));
+  border-color: var(--line-strong);
+  color: var(--gold-bright);
   font-weight: 600;
 }
 
 .desc {
   margin: 0 0 14px;
-  color: var(--cream-dim);
-  font-size: 0.88rem;
-  line-height: 1.55;
+  color: var(--ivory-dim);
+  font-size: 0.86rem;
+  line-height: 1.6;
 }
 
 .desc code,
 .mono {
   font-family: var(--mono);
-  font-size: 0.8em;
-  color: var(--cream);
+  font-size: 0.82em;
+  color: var(--gold-bright);
 }
 
+/* ---------- 典藏投递口 ---------- */
 .zone {
   display: grid;
   place-items: center;
-  gap: 8px;
-  min-height: 140px;
-  border-radius: 14px;
+  gap: 10px;
+  min-height: 156px;
+  padding: 20px;
+  border-radius: var(--radius);
   border: 1.5px dashed var(--line-strong);
-  background: rgba(0, 0, 0, 0.2);
+  background:
+    radial-gradient(80% 90% at 50% 0%, rgba(216, 178, 106, 0.05), transparent 70%),
+    rgba(7, 11, 9, 0.4);
   cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease;
 }
 
 .zone:hover {
-  border-color: rgba(232, 160, 84, 0.5);
-  background: var(--ember-soft);
+  border-color: rgba(216, 178, 106, 0.6);
+  background:
+    radial-gradient(80% 90% at 50% 0%, rgba(216, 178, 106, 0.1), transparent 70%),
+    rgba(7, 11, 9, 0.4);
+}
+
+.zone-mark {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  transform: rotate(45deg);
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: var(--gold-soft);
+}
+
+.zone-mark i {
+  transform: rotate(-45deg);
+  font-style: normal;
+  color: var(--gold-bright);
+  font-size: 0.95rem;
 }
 
 .zone-title {
-  color: var(--cream-dim);
+  color: var(--ivory-dim);
 }
 
 .zone-file {
   font-family: var(--mono);
-  font-size: 0.8rem;
-  color: var(--ember);
+  font-size: 0.78rem;
+  color: var(--gold);
   word-break: break-all;
   padding: 0 12px;
   text-align: center;
@@ -417,12 +480,17 @@ h2 {
 }
 
 .empty {
-  padding: 28px 12px;
+  padding: 30px 12px;
   text-align: center;
-  color: var(--cream-dim);
+  color: var(--ivory-dim);
   font-size: 0.9rem;
 }
 
+.empty span {
+  color: var(--gold);
+}
+
+/* ---------- 典藏名录 ---------- */
 .doc-list {
   list-style: none;
   margin: 0;
@@ -433,48 +501,81 @@ h2 {
 
 .doc {
   border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 12px;
-  background: rgba(0, 0, 0, 0.18);
+  border-radius: var(--radius);
+  padding: 13px;
+  background: rgba(7, 11, 9, 0.4);
   display: grid;
   gap: 10px;
+  transition: border-color 0.16s ease, background 0.16s ease;
+}
+
+.doc:hover {
+  border-color: var(--line-strong);
+  background: rgba(216, 178, 106, 0.04);
 }
 
 .doc-title {
   font-weight: 600;
-  margin-bottom: 4px;
+  margin-bottom: 5px;
 }
 
 .doc-meta {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px 10px;
-  font-size: 0.78rem;
-  color: var(--cream-dim);
+  font-size: 0.76rem;
+  color: var(--ivory-dim);
 }
 
 .st {
-  padding: 1px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--line-faint);
+  background: rgba(216, 178, 106, 0.05);
+}
+
+.st-gem {
+  width: 6px;
+  height: 6px;
+  transform: rotate(45deg);
+  background: var(--gold-deep);
 }
 
 .st[data-s="ready"] {
-  color: #7dcea0;
+  color: var(--jade);
+}
+
+.st[data-s="ready"] .st-gem {
+  background: var(--jade);
+  box-shadow: 0 0 6px rgba(142, 201, 168, 0.6);
 }
 
 .st[data-s="failed"] {
-  color: var(--rose);
+  color: var(--garnet);
+}
+
+.st[data-s="failed"] .st-gem {
+  background: var(--garnet);
 }
 
 .st[data-s="indexing"],
 .st[data-s="pending"] {
-  color: var(--ember);
+  color: var(--gold);
+}
+
+.st[data-s="indexing"] .st-gem,
+.st[data-s="pending"] .st-gem {
+  background: var(--gold);
+  animation: gem-pulse 1.6s ease-in-out infinite;
 }
 
 .doc-err {
   margin-top: 6px;
-  color: var(--rose);
+  color: var(--garnet);
   font-size: 0.8rem;
 }
 
@@ -490,35 +591,57 @@ h2 {
   border-radius: 10px;
   padding: 8px 12px;
   cursor: pointer;
-  font-size: 0.82rem;
-  color: var(--cream-dim);
+  font-size: 0.8rem;
+  color: var(--ivory-dim);
+  transition: border-color 0.15s ease, color 0.15s ease;
 }
 
+.pick:hover {
+  border-color: var(--line-strong);
+  color: var(--ivory);
+}
+
+/* ---------- 进度鎏金带 ---------- */
 .prog {
-  margin-top: 14px;
+  margin-top: 16px;
   display: grid;
   gap: 8px;
-  font-size: 0.82rem;
-  color: var(--cream-dim);
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  color: var(--ivory-dim);
 }
 
 .bar {
   height: 6px;
   border-radius: 99px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(216, 178, 106, 0.08);
+  border: 1px solid var(--line-faint);
   overflow: hidden;
 }
 
 .bar i {
   display: block;
   height: 100%;
-  background: linear-gradient(90deg, #c9843d, #e8a054, #7dcea0);
+  background: linear-gradient(90deg, var(--gold-deep), var(--gold), var(--gold-bright));
   transition: width 0.25s ease;
 }
 
+.bar.live i {
+  background: linear-gradient(
+    90deg,
+    var(--gold-deep) 0%,
+    var(--gold) 25%,
+    var(--gold-bright) 50%,
+    var(--gold) 75%,
+    var(--gold-deep) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer-sweep 1.6s linear infinite;
+}
+
 .err {
-  color: var(--rose);
-  font-size: 0.85rem;
+  color: var(--garnet);
+  font-size: 0.84rem;
   margin: 10px 0 0;
 }
 
@@ -529,43 +652,10 @@ footer {
   margin-top: 18px;
 }
 
-.ghost,
-.go {
-  border-radius: 11px;
-  padding: 10px 14px;
-  cursor: pointer;
-  border: 1px solid var(--line);
-  background: transparent;
-  color: inherit;
-}
-
-.ghost.sm,
-.go.sm {
+.ghost-btn.sm,
+.gold-btn.sm {
   padding: 8px 12px;
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   border-radius: 10px;
-}
-
-.go {
-  background: linear-gradient(135deg, #c9843d, #e8a054);
-  color: #1a1208;
-  border: none;
-  font-weight: 700;
-}
-
-.go:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-@keyframes up {
-  from {
-    opacity: 0;
-    transform: translateY(12px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
 }
 </style>
