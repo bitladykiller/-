@@ -65,6 +65,15 @@ class UserDocumentRepository:
         )
         return list(result.scalars().all())
 
+    async def delete_owned(self, user_id: int, doc_id: str) -> UserDocument | None:
+        """删除指定用户名下的文档元信息行，返回被删行；归属不符返回 None。"""
+        row = await self.get_owned(user_id, doc_id)
+        if row is None:
+            return None
+        await self._session.delete(row)
+        await self._session.commit()
+        return row
+
     async def mark_indexing(
         self,
         row: UserDocument,

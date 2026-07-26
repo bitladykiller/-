@@ -390,3 +390,86 @@ async def test_should_compress_delegates_to_runtime_settings() -> None:
 
     assert stm.should_compress(total_turns=100, last_compressed_turn=0, message_count=0) is True
     assert stm.should_compress(total_turns=1, last_compressed_turn=1, message_count=0) is False
+
+
+# ---------------------------------------------------------------------- #
+# 二进制安全回归：STM 消息是 MsgPack/Zstd 字节，客户端绝不能 decode_responses
+# ---------------------------------------------------------------------- #
+
+
+def test_create_stm_redis_client_is_binary_safe(monkeypatch) -> None:
+    """STM 客户端必须 decode_responses=False。
+
+    压缩消息不是合法 UTF-8：decode_responses=True 的客户端写入正常，
+    但 zrevrange 读取时对成员做严格 UTF-8 解码直接抛 UnicodeDecodeError，
+    被上层降级吞掉后表现为"短期记忆永远读到空"——真实踩过的静默故障。
+    """
+    import redis.asyncio as aioredis
+    from app.knowledge.infrastructure.stm.redis_short_term_memory import (
+        create_stm_redis_client,
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_from_url(url: str, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(aioredis.Redis, "from_url", staticmethod(fake_from_url), raising=False)
+    monkeypatch.setattr(
+        "app.knowledge.infrastructure.stm.redis_short_term_memory.redis.from_url",
+        fake_from_url,
+    )
+
+    create_stm_redis_client("redis://example:6379/0")
+
+    assert captured["url"] == "redis://example:6379/0"
+    assert captured["decode_responses"] is False
+
+
+def test_compressed_message_is_not_valid_utf8() -> None:
+    """钉死前提：压缩消息确实不是 UTF-8，decode_responses 客户端必然读崩。"""
+    import pytest as _pytest
+
+    blob = compress_message(_message("m1"))
+
+    assert isinstance(blob, bytes)
+    with _pytest.raises(UnicodeDecodeError):
+        blob.decode("utf-8")
+
+
+async def test_append_and_read_round_trip_with_binary_client() -> None:
+    """端到端回归：二进制客户端下写入的消息必须能原样读回。"""
+
+    class BinaryRedis(FullRedis):
+        """模拟 decode_responses=False：zrevrange 原样返回 bytes 成员。"""
+
+        async def zadd(self, key: str, mapping) -> int:
+            self.zsets.setdefault(key, [])
+            # 新消息排前面，模拟 zrevrange 的时间倒序
+            for member in mapping:
+                self.zsets[key].insert(0, member)
+            return len(mapping)
+
+        def pipeline(self, transaction: bool = True):
+            outer = self
+
+            class PassthroughPipe(FakePipeline):
+                async def execute(self) -> list:
+                    for name, args in self.commands:
+                        if name == "zadd":
+                            await outer.zadd(*args)
+                    return []
+
+            return PassthroughPipe(outer)
+
+    redis = BinaryRedis()
+    stm = _stm(redis)
+    original = _message("m1")
+
+    await stm.append_message("t", "u", "s", original)
+    restored = await stm.get_recent_messages("t", "u", "s")
+
+    assert [m.message_id for m in restored] == ["m1"]
+    assert restored[0].content == original.content

@@ -42,6 +42,23 @@ SummaryCompressor: TypeAlias = Callable[[str, list[MessageRecord]], Awaitable[st
 RedisModel = TypeVar("RedisModel", bound=BaseModel)
 
 
+def create_stm_redis_client(redis_url: str) -> redis.Redis:
+    """创建 STM 专用的**二进制安全** Redis 客户端。
+
+    ⚠️ 必须 `decode_responses=False`，这是硬约束不是偏好：
+
+    STM 消息经 `compress_message` 压缩成二进制 MsgPack/Zstd（首字节 `\\x00`-`\\x03`），
+    不是合法 UTF-8。若客户端开启 `decode_responses=True`，写入没问题（bytes 原样落库），
+    但 `zrevrange` 读取时 redis-py 会对每个成员做**严格 UTF-8 解码**，直接抛
+    `UnicodeDecodeError`——再被上层降级逻辑吞掉，表现为"短期记忆写得进、读不出，
+    每轮对话都拿到空的最近消息"。这是项目真实踩过的静默故障。
+
+    本模块的读路径（`decode_model` / `decode_messages`）全部原生支持 bytes；
+    画像缓存复用此客户端时存的是 JSON 文本，`json.loads` 同样接受 bytes。
+    """
+    return redis.from_url(redis_url, decode_responses=False)
+
+
 class SessionKeys(TypedDict):
     """单个 session 会使用到的全部 Redis key。"""
 

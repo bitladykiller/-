@@ -99,7 +99,10 @@ def configure_cors(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allow_origins,
-        allow_credentials=True,
+        # WHY 不开 allow_credentials：本服务不使用 cookie/凭据；
+        # 且 CORS 规范禁止「通配符 origin + credentials」组合，浏览器会直接拒绝。
+        # 之前两者同时开启，给人"支持凭据"的错觉，实际永远不会生效。
+        allow_credentials=False,
         allow_methods=allow_methods,
         allow_headers=allow_headers,
         # 前端 fetch 需读取 SSE 响应头中的会话 id

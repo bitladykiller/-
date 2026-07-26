@@ -11,7 +11,7 @@ from __future__ import annotations
 from app.api.common import MessageResponse, build_message_response, run_api_action
 from app.chat.application.conversation_service import ConversationSummary, conversation_service
 from app.shared.core.logger import get_logger
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
@@ -38,6 +38,7 @@ class CreateConversationRequest(BaseModel):
 class UpdateConversationNameRequest(BaseModel):
     """修改会话名称请求体。"""
 
+    user_id: int
     name: str
 
 
@@ -67,8 +68,14 @@ async def get_user_conversations(user_id: int) -> list[ConversationSummary]:
 
 
 @router.delete("/conversations/{conversation_id}")
-async def delete_conversation(conversation_id: int) -> MessageResponse:
-    """删除指定会话及其关联记忆。
+async def delete_conversation(
+    conversation_id: int,
+    user_id: int = Query(..., description="会话归属用户，必须与创建时一致"),
+) -> MessageResponse:
+    """删除指定用户名下的会话及其关联记忆。
+
+    归属校验：conversation 必须属于 user_id，否则 404
+    （删除会联动清空该会话的 STM/LTM 记忆，绝不允许按 id 裸删）。
 
     会清理：
     - MySQL 会话元信息
@@ -78,9 +85,10 @@ async def delete_conversation(conversation_id: int) -> MessageResponse:
     """
     await run_api_action(
         "delete_conversation",
-        conversation_service.delete_conversation(conversation_id),
+        conversation_service.delete_conversation(conversation_id, user_id),
         logger=logger,
         conversation_id=conversation_id,
+        user_id=user_id,
     )
     return build_message_response(DELETE_SUCCESS_MESSAGE)
 
@@ -90,12 +98,17 @@ async def update_conversation_name(
     conversation_id: int,
     request: UpdateConversationNameRequest,
 ) -> MessageResponse:
-    """更新指定会话标题。"""
+    """更新指定用户名下的会话标题（归属不符返回 404）。"""
     await run_api_action(
         "update_conversation_name",
-        conversation_service.update_conversation_name(conversation_id, request.name),
+        conversation_service.update_conversation_name(
+            conversation_id,
+            request.user_id,
+            request.name,
+        ),
         logger=logger,
         conversation_id=conversation_id,
+        user_id=request.user_id,
         name=request.name,
     )
     return build_message_response(UPDATE_NAME_SUCCESS_MESSAGE)

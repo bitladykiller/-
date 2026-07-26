@@ -82,7 +82,7 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   async function removeConversation(id: number) {
-    await deleteConversation(id);
+    await deleteConversation(id, userId.value);
     if (conversationId.value === id) newChat();
     await refreshConversations();
   }
@@ -96,7 +96,7 @@ export const useChatStore = defineStore("chat", () => {
       firstQuery.trim().slice(0, 28) +
       (firstQuery.trim().length > 28 ? "…" : "");
     try {
-      await renameConversation(conversation_id, title || "新对话");
+      await renameConversation(conversation_id, userId.value, title || "新对话");
     } catch {
       /* 列表可能暂时不显示未改名会话 */
     }

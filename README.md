@@ -92,13 +92,14 @@ flowchart TB
 - 混合检索（向量 + BM25 + RRF 融合）；BM25 由 **Milvus 服务端 Function** 计算，查询侧传原文
 - **文档动态更新（策略 2）**：`is_deleted` + `version`；`mode=replace` + 稳定 `doc_id` 时软删旧 chunk 再写新版；检索默认排除软删
 - **replace 幂等**：新文件 `content_hash` 与 MySQL 一致则 **跳过 reindex**（不建任务、不软删）
-- **MySQL `user_documents`**：绑定 `doc_id` 与文件名/版本/状态；API `GET /api/documents/user/{user_id}`；前端「我的文档 / 更新」固定该行 `doc_id`
+- **MySQL `user_documents`**：绑定 `doc_id` 与文件名/版本/状态；API `GET/DELETE /api/documents/user/{user_id}[/{doc_id}]`；前端「我的文档 / 更新」固定该行 `doc_id`
+- **知识库为全局共享**：检索面向所有用户；`user_id` 只决定谁能替换/删除该文档（上传管理归属）。上传即全员生效，传错请用 DELETE 撤下
 - **RAG 书面化改写**：进入文档检索前把口语问句改成书面检索问句（默认开、超时回退；不做 HYDE/退步）
 
-### 6. 会话管理
+### 6. 会话管理（带归属校验）
 - MySQL `conversations` 表只存会话元信息（标题、时间、类型）
 - **消息不存 MySQL**，只保留在 Redis STM（ZSET 滑动窗口，24h TTL）
-- 会话创建 / 列表 / 删除 / 改名
+- 会话创建 / 列表 / 删除 / 改名；**删除与改名必须携带 user_id 做归属校验**（不符返回 404），防止按 id 误删他人会话与记忆
 - **删除会话会联动清理记忆**：
   - MySQL：删除 `conversations` 元信息，并兼容清理历史 `messages` 表数据
   - Redis STM：删除该 `session_id` 下 messages/summary/meta/lock

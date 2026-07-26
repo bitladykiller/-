@@ -117,7 +117,7 @@ def test_delete_conversation_succeeds(monkeypatch) -> None:
     )
 
     service = ConversationService()
-    result = _run(service.delete_conversation(1))
+    result = _run(service.delete_conversation(1, user_id=7))
     assert result is None
     assert cleared == [("7", "1")]
 
@@ -131,5 +131,5 @@ def test_update_conversation_name_succeeds(monkeypatch) -> None:
     )
 
     service = ConversationService()
-    result = _run(service.update_conversation_name(1, "new name"))
+    result = _run(service.update_conversation_name(1, 7, "new name"))
     assert result is None

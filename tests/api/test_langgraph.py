@@ -59,3 +59,42 @@ def test_langgraph_query_builds_streaming_response(monkeypatch) -> None:
         )
 
     asyncio.run(scenario())
+
+
+def test_langgraph_query_emits_error_event_on_mid_stream_failure(monkeypatch) -> None:
+    """流中途异常必须转成 event: error 帧。
+
+    回归背景：外层 try/except 只覆盖流创建；StreamingResponse 开始后
+    generator 抛错，客户端只看到连接静默断掉，无法区分"生成完了"和"炸了"。
+    """
+
+    async def broken_graph_stream():
+        yield FakeChunk("前半段"), {}
+        raise RuntimeError("llm exploded")
+
+    async def scenario() -> None:
+        monkeypatch.setattr(
+            langgraph_api,
+            "stream_agent_query",
+            lambda **_kwargs: broken_graph_stream(),
+        )
+
+        response = await langgraph_api.langgraph_query(
+            query="任意问题",
+            user_id=3,
+            conversation_id="thread-x",
+        )
+        body = await _collect_response_body(response)
+
+        # 已生成内容照常发出；随后是命名 error 事件而不是静默断流
+        assert 'data: "前半段"\n\n' in body
+        assert "event: error\n" in body
+        assert "生成过程中出现异常" in body
+
+    asyncio.run(scenario())
+
+
+def test_format_sse_error_frame_shape() -> None:
+    frame = langgraph_api.format_sse_error("出错了")
+
+    assert frame == 'event: error\ndata: "出错了"\n\n'

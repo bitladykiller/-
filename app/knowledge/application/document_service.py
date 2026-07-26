@@ -18,6 +18,8 @@ from app.knowledge.infrastructure.repository.user_document_repository import (
     UserDocumentRepository,
 )
 from app.shared.core.database import AsyncSessionLocal
+from app.shared.core.degradation import log_degradation
+from app.shared.core.errors import ResourceNotFoundError
 from app.shared.core.logger import get_logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,6 +48,47 @@ class DocumentService:
             repo = UserDocumentRepository(db)
             row = await repo.get_owned(user_id, safe)
             return repo.to_summary(row) if row else None
+
+    async def delete_document(self, user_id: int, doc_id: str) -> dict[str, Any]:
+        """删除文档：MySQL 删元信息行 + Milvus 软删全部 chunk。
+
+        WHY 顺序是"先 MySQL 后 Milvus"：
+        元信息行是归属与展示的权威来源，先删它，用户列表立即看不到；
+        chunk 软删失败时文档虽仍可被检索到，但已无法通过界面管理——
+        这种残留由检索侧的 is_deleted 过滤 + 定期硬清理兜底，不阻塞删除操作。
+
+        Returns:
+            {"doc_id": ..., "soft_deleted_chunks": n}
+
+        Raises:
+            ResourceNotFoundError: 文档不存在或不属于该用户（API 层映射 404）。
+        """
+        safe = validate_doc_id(doc_id)
+        async with self._session_factory() as db:
+            repo = UserDocumentRepository(db)
+            row = await repo.delete_owned(user_id, safe)
+        if row is None:
+            raise ResourceNotFoundError(f"文档不存在或不属于当前用户: {safe}")
+
+        soft_deleted = 0
+        try:
+            from app.knowledge.infrastructure.doc_parser.retrieval.hybrid_search import (
+                get_shared_searcher,
+            )
+
+            result = await get_shared_searcher().soft_delete_document(safe)
+            soft_deleted = int(result.get("soft_deleted") or 0)
+        except Exception as exc:
+            # 软删 chunk 失败不回滚元信息删除；chunk 残留由 is_deleted 过滤兜底
+            log_degradation(logger, "document.delete_chunks", exc, doc_id=safe)
+
+        logger.info(
+            "文档已删除 | user=%s doc_id=%s soft_deleted_chunks=%s",
+            user_id,
+            safe,
+            soft_deleted,
+        )
+        return {"doc_id": safe, "soft_deleted_chunks": soft_deleted}
 
     async def prepare_create(
         self,

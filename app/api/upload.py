@@ -30,7 +30,9 @@ logger = get_logger(__name__)
 
 router = APIRouter(tags=["upload"])
 
-UPLOAD_DIR = Path("uploads")
+# resolve() 固化为绝对路径：落盘位置不随进程 CWD 漂移。
+# Docker 下由 UPLOAD_DIR 环境变量对齐到持久卷挂载点（见 .env.docker）。
+UPLOAD_DIR = Path(settings.app_config.upload.upload_dir).resolve()
 MAX_UPLOAD_SIZE_MB = settings.app_config.upload.max_upload_size_mb
 MAX_UPLOAD_SIZE_BYTES = settings.app_config.upload.max_upload_size_bytes
 FILE_SIZE_EXCEEDED_DETAIL = f"文件大小超过限制 ({MAX_UPLOAD_SIZE_MB}MB)"

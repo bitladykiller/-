@@ -31,6 +31,23 @@ _SSE_MEDIA_TYPE = "text/event-stream"
 _CONVERSATION_ID_HEADER = "X-Conversation-ID"
 _RESEARCH_PLAN_TAG = "research_plan"
 _SSE_DATA_PREFIX = "data: "
+_SSE_ERROR_EVENT = "event: error\n"
+_STREAM_ERROR_MESSAGE = "生成过程中出现异常，请重试。"
+
+
+def format_sse_data(payload: object) -> str:
+    """把内容编码为一条 SSE data 帧。"""
+    return f"{_SSE_DATA_PREFIX}{json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def format_sse_error(message: str) -> str:
+    """把错误编码为命名 error 事件。
+
+    WHY 需要显式错误帧：StreamingResponse 一旦开始，HTTP 状态码已经发出（200），
+    流中途的异常无法再变成 4xx/5xx——不发这一帧，客户端只会看到连接
+    无声断掉，无从区分"生成完了"和"后端炸了"。
+    """
+    return f"{_SSE_ERROR_EVENT}{_SSE_DATA_PREFIX}{json.dumps(message, ensure_ascii=False)}\n\n"
 
 
 def _chunk_tags(metadata: Mapping[str, Any]) -> list[str]:
@@ -84,12 +101,18 @@ async def langgraph_query(
         )
 
         async def response_stream():
-            async for chunk, metadata in graph_stream:
-                meta = metadata if isinstance(metadata, Mapping) else {}
-                if not _should_emit_sse_chunk(chunk, meta):
-                    continue
-                content = getattr(chunk, "content", None)
-                yield f"{_SSE_DATA_PREFIX}{json.dumps(content, ensure_ascii=False)}\n\n"
+            # 外层 try/except 只保护"流创建之前"；流一旦开始，
+            # 异常必须在这里捕获并转成 error 事件，否则客户端只看到静默断流
+            try:
+                async for chunk, metadata in graph_stream:
+                    meta = metadata if isinstance(metadata, Mapping) else {}
+                    if not _should_emit_sse_chunk(chunk, meta):
+                        continue
+                    content = getattr(chunk, "content", None)
+                    yield format_sse_data(content)
+            except Exception:
+                logger.exception("[api] SSE 流中途异常 | thread_id=%s", thread_id)
+                yield format_sse_error(_STREAM_ERROR_MESSAGE)
 
         response = StreamingResponse(response_stream(), media_type=_SSE_MEDIA_TYPE)
         response.headers[_CONVERSATION_ID_HEADER] = thread_id

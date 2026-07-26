@@ -5,6 +5,58 @@
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v3.34.0] - 2026-07-26
+
+第二轮设计审查的产出：2 个部署级静默故障 + API 完整性补全。
+
+### 修复（静默故障）
+- **STM 短期记忆写得进、读不出**：消息经 `compress_message` 压缩成二进制
+  MsgPack/Zstd（非法 UTF-8），而 STM Redis 客户端开着 `decode_responses=True`——
+  `zrevrange` 读取时严格 UTF-8 解码抛 `UnicodeDecodeError`，被降级逻辑吞掉，
+  表现为**每轮对话拿到的最近消息恒为空**。新增 `create_stm_redis_client()`
+  二进制安全工厂（`decode_responses=False`），读路径本就原生支持 bytes。
+- **上传文件写在持久卷外面**：`UPLOAD_DIR` 曾是相对路径，随 CWD 落到
+  `/app/uploads`（容器可写层），而卷挂在 `/app/app/uploads` —— 容器重建即丢失
+  全部上传原文件（Milvus 索引与 MySQL 元数据却还在）。改为环境变量
+  `UPLOAD_DIR` 可配 + 启动时 resolve 为绝对路径；`.env.docker` 已对齐卷挂载点。
+
+### 安全 / API 完整性
+- **会话删除/改名补归属校验（修 IDOR）**：`DELETE /api/conversations/{id}`
+  必须带 `user_id`（query），`PUT .../name` 请求体加 `user_id`；
+  不存在与不属于当前用户统一返回 404（防资源 ID 枚举）。
+  删除会联动清空该会话 STM/LTM 记忆，此前任何人可按 id 裸删。
+- **新增 `DELETE /api/documents/user/{user_id}/{doc_id}`**：删除知识文档
+  （MySQL 删元信息行 + Milvus 软删该 doc_id 全部 chunk）。此前只有上传/替换、
+  没有删除入口，传错的文档会永远留在检索库里污染答案。
+- **404 语义修复**：新增 `app/shared/core/errors.ResourceNotFoundError`，
+  `run_api_action` 统一映射 404。此前 Repository 抛裸 ValueError 被翻成 500，
+  前端无法区分"资源没了"和"服务器坏了"。
+
+### 体验
+- **记忆写入移出 SSE 关键路径**：`after_response` 改为 fire-and-forget 后台任务
+  （带引用跟踪 + `flush_pending_memory_writes()`）。此前触发压缩的轮次，
+  用户看完答案后连接还要挂着等"摘要 LLM + 抽取 LLM"数秒才关闭。
+- **SSE 流中途异常不再静默断流**：generator 内捕获异常并发出
+  `event: error` 命名事件；前端解析器同步升级（保留已生成内容 + 展示错误）。
+
+### 部署与工程卫生
+- Dockerfile 基础镜像 `python:3.12-slim` → **`python:3.10-slim`**，
+  与本地/CI 测试解释器对齐（此前生产跑在从未测过的版本上）。
+- **依赖单一来源**：pyproject `dependencies` 改为 dynamic，指向
+  `requirements.txt`（Docker 与 `pip install -e .` 共用一份，消除已发生的漂移）。
+- CORS 移除无效的 `allow_credentials=True`（规范禁止与通配符 origin 组合）。
+- 版本号补齐至 3.34.0。
+
+### 语义澄清
+- **知识库是全局共享的**：`user_documents` 的 user_id 只用于**上传管理归属**
+  （谁能替换/删除），检索面向所有用户（Milvus chunk 无 user 维度）。
+  文档与 README 已明确此定位；如需用户私有文档域，见 05 文档中的演进说明。
+
+### API 变更（破坏性）
+- `DELETE /api/conversations/{id}` 新增必填 query `user_id`
+- `PUT /api/conversations/{id}/name` 请求体新增必填 `user_id`
+- 会话/文档"不存在或不属于当前用户"由 500 → **404**
+
 ## [v3.33.0] - 2026-07-26
 
 本次以「性能 / 可读性 / 架构」为目标做专项治理，过程中发现并修复了 3 个静默故障。

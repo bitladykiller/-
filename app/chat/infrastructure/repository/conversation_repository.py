@@ -13,10 +13,13 @@
 from __future__ import annotations
 
 from app.chat.infrastructure.models.conversation import Conversation, DialogueType
+from app.shared.core.errors import ResourceNotFoundError
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 _DEFAULT_CONVERSATION_TITLE = "新会话"
+# 统一文案：不区分"不存在"与"不属于该用户"，避免资源 ID 被枚举探测
+_NOT_FOUND_MESSAGE = "会话不存在或不属于当前用户"
 # 历史初始化脚本中的 messages 表；主路径消息在 Redis STM，这里做兼容清理
 _DELETE_MYSQL_MESSAGES_SQL = text(
     "DELETE FROM messages WHERE conversation_id = :conversation_id"
@@ -74,14 +77,26 @@ class ConversationRepository:
             for conversation in conversations
         ]
 
-    async def delete(self, conversation_id: int) -> Conversation:
-        """删除指定会话及其 MySQL messages 兼容数据，返回被删会话。
+    async def get_owned(self, conversation_id: int, user_id: int) -> Conversation | None:
+        """按主键查询会话并校验归属。"""
+        result = await self._session.execute(
+            select(Conversation).where(
+                Conversation.id == conversation_id,
+                Conversation.user_id == user_id,
+            )
+        )
+        return result.scalar_one_or_none()
 
-        不存在时抛出 ValueError。
+    async def delete(self, conversation_id: int, user_id: int) -> Conversation:
+        """删除指定用户名下的会话及其 MySQL messages 兼容数据，返回被删会话。
+
+        WHY 必须带 user_id：删除会联动清空该会话的 STM/LTM 记忆。
+        无归属校验时任何调用方可以按 id 删任意人的会话与记忆（IDOR）。
+        不存在或不属于该用户时抛 ResourceNotFoundError（API 层映射 404）。
         """
-        conversation = await self.get_by_id(conversation_id)
+        conversation = await self.get_owned(conversation_id, user_id)
         if conversation is None:
-            raise ValueError(f"Conversation {conversation_id} not found")
+            raise ResourceNotFoundError(_NOT_FOUND_MESSAGE)
 
         # 兼容历史 messages 表；表不存在时忽略
         try:
@@ -92,22 +107,22 @@ class ConversationRepository:
         except Exception:
             await self._session.rollback()
             # 重新加载会话，避免事务失效后对象状态异常
-            conversation = await self.get_by_id(conversation_id)
+            conversation = await self.get_owned(conversation_id, user_id)
             if conversation is None:
-                raise ValueError(f"Conversation {conversation_id} not found") from None
+                raise ResourceNotFoundError(_NOT_FOUND_MESSAGE) from None
 
         await self._session.delete(conversation)
         await self._session.commit()
         return conversation
 
-    async def rename(self, conversation_id: int, name: str) -> None:
-        """重命名会话，不存在时抛出 ValueError。"""
-        result = await self._session.execute(
-            select(Conversation).where(Conversation.id == conversation_id)
-        )
-        conversation = result.scalar_one_or_none()
+    async def rename(self, conversation_id: int, user_id: int, name: str) -> None:
+        """重命名指定用户名下的会话。
+
+        不存在或不属于该用户时抛 ResourceNotFoundError（API 层映射 404）。
+        """
+        conversation = await self.get_owned(conversation_id, user_id)
         if conversation is None:
-            raise ValueError(f"Conversation {conversation_id} not found")
+            raise ResourceNotFoundError(_NOT_FOUND_MESSAGE)
         conversation.title = name
         await self._session.commit()
 

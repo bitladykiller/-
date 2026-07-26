@@ -188,8 +188,8 @@ sequenceDiagram
     participant STM as Redis STM
     participant LTM as Milvus LTM
 
-    Client->>API: DELETE /api/conversations/{conversation_id}
-    API->>Service: delete_conversation(conversation_id)
+    Client->>API: DELETE /api/conversations/{conversation_id}?user_id={user_id}
+    API->>Service: delete_conversation(conversation_id, user_id)
     Service->>Repo: delete_by_id(conversation_id)
     Repo->>MySQL: DELETE FROM conversations WHERE id = conversation_id
     MySQL-->>Repo: Affected Rows = 1
@@ -208,7 +208,9 @@ sequenceDiagram
 
 | 项 | 说明 |
 |---|---|
+| 必填参数 | query `user_id` —— **归属校验**（v3.34.0 起）：会话必须属于该用户，否则 404。删除会联动清空该会话 STM/LTM 记忆，绝不允许按 id 裸删他人会话 |
 | 成功响应 | `{"message": "会话已删除"}` |
+| 不存在/非本人 | **404** `会话不存在或不属于当前用户`（统一文案防 id 枚举；此前误报 500） |
 | 调用链 | API → `ConversationService.delete_conversation` → Repository 删 MySQL → 清理 Redis STM / Milvus LTM |
 | 清理范围 | 1) MySQL `conversations` 元信息<br>2) MySQL 历史 `messages` 表（若存在，兼容清理）<br>3) Redis STM：`messages/summary/meta/lock`（按 tenant/user/session）<br>4) Milvus LTM：`session_id` 匹配的长期记忆软删除（`is_deleted=true`） |
 | 失败策略 | MySQL 删除成功后，记忆清理失败只记日志、不回滚会话删除，避免前端反复 500 |
@@ -220,12 +222,14 @@ sequenceDiagram
 PUT /api/conversations/{conversation_id}/name
 Content-Type: application/json
 
-{"name": "新标题"}
+{"user_id": 1, "name": "新标题"}
 ```
 
 | 项 | 说明 |
 |---|---|
+| 必填字段 | `user_id` —— 归属校验（v3.34.0 起），不符返回 404 |
 | 成功响应 | `{"message": "会话名称已更新"}` |
+| 不存在/非本人 | **404**（此前误报 500） |
 
 ### 4.5 错误行为
 
@@ -474,12 +478,13 @@ langgraph_query
 | GET | `/health` | 同步 | 无 |
 | POST | `/api/conversations` | 同步 | MySQL |
 | GET | `/api/conversations/user/{id}` | 同步 | MySQL |
-| DELETE | `/api/conversations/{id}` | 同步 | MySQL + Redis STM + Milvus LTM |
-| PUT | `/api/conversations/{id}/name` | 同步 | MySQL |
+| DELETE | `/api/conversations/{id}?user_id=` | 同步 | MySQL + Redis STM + Milvus LTM（归属校验） |
+| PUT | `/api/conversations/{id}/name` | 同步 | MySQL（body 带 user_id 归属校验） |
 | POST | `/api/upload` | 异步任务 | Redis + 后台索引 |
 | GET | `/api/upload/status/{task_id}` | 同步读 Redis | Redis |
 | GET | `/api/documents/user/{id}` | 同步 | MySQL `user_documents` |
 | GET | `/api/documents/user/{id}/{doc_id}` | 同步 | MySQL `user_documents` |
+| DELETE | `/api/documents/user/{id}/{doc_id}` | 同步 | MySQL 删行 + Milvus 软删 chunk（归属校验） |
 | POST | `/api/langgraph/query` | SSE 长连接 | LangGraph 全栈 |
 
 ---
@@ -670,6 +675,7 @@ curl -N -X POST http://localhost:8000/api/langgraph/query \
 | status 一直 pending | process_file 卡住 / submit 时异常被吞 |
 | status 变 interrupted | 执行该任务的进程已重启，任务不会续跑，需重新提交 |
 | SSE 无输出 | 全是 tool/research_plan 被过滤；看后端日志 |
+| SSE 收到 `event: error` | 流中途后端异常（v3.34.0 起不再静默断流）；已生成内容有效，整条重试即可 |
 
 
 
@@ -679,6 +685,7 @@ curl -N -X POST http://localhost:8000/api/langgraph/query \
 |---|---|---|
 | GET | `/api/documents/user/{user_id}` | 列表：doc_id / title / version / status / chunk_count |
 | GET | `/api/documents/user/{user_id}/{doc_id}` | 单条元信息 |
+| DELETE | `/api/documents/user/{user_id}/{doc_id}` | 删除文档（MySQL 删行 + Milvus 软删该 doc_id 全部 chunk；归属不符 404） |
 | POST | `/api/upload` Form: `file,user_id,mode=create\|replace,doc_id?` | create 写 MySQL pending；replace 必须已有 doc_id 且归属校验 |
 | GET | `/api/upload/status/{task_id}` | 任务结果含 doc_id / version / chunks |
 

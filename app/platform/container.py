@@ -265,12 +265,14 @@ def _create_memory_middleware() -> Any:
 
     使用统一的 create_llm_for_role 工厂函数。
     """
-    import redis.asyncio as redis
     from app.chat.infrastructure.modeling.models import create_llm_for_role
     from app.knowledge.infrastructure.ltm.simple_long_term_memory import SimpleLongTermMemory
     from app.knowledge.infrastructure.orchestration.memory_extractor import MemoryExtractor
     from app.knowledge.infrastructure.orchestration.memory_middleware import MemoryMiddleware
-    from app.knowledge.infrastructure.stm.redis_short_term_memory import RedisShortTermMemory
+    from app.knowledge.infrastructure.stm.redis_short_term_memory import (
+        RedisShortTermMemory,
+        create_stm_redis_client,
+    )
     from app.shared.core.config import settings
     from app.shared.core.embeddings import get_embedding_model
     from pymilvus import MilvusClient
@@ -281,9 +283,10 @@ def _create_memory_middleware() -> Any:
     memory_extractor_llm = create_llm_for_role("memory_extractor")
 
     return MemoryMiddleware(
-        redis_stm=RedisShortTermMemory(
-            redis.from_url(settings.REDIS_URL, decode_responses=True)
-        ),
+        # STM 存的是二进制压缩消息，必须用二进制安全客户端；
+        # 用带 decode_responses=True 的客户端会导致消息读取时 UTF-8 解码失败，
+        # 短期记忆整体静默失效（详见 create_stm_redis_client 的说明）
+        redis_stm=RedisShortTermMemory(create_stm_redis_client(settings.REDIS_URL)),
         milvus_ltm=SimpleLongTermMemory(
             milvus_client=MilvusClient(uri=settings.MILVUS_URL),
             embedding_model=embedding_model,

@@ -55,21 +55,27 @@ export async function createConversation(
 
 export async function renameConversation(
   id: number,
+  userId: number,
   name: string,
 ): Promise<MessageResponse> {
   const res = await fetch(`${BASE}/api/conversations/${id}/name`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ user_id: userId, name }),
   });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
 }
 
-export async function deleteConversation(id: number): Promise<MessageResponse> {
-  const res = await fetch(`${BASE}/api/conversations/${id}`, {
-    method: "DELETE",
-  });
+/** 删除会话需带归属 user_id：后端会校验，防止按 id 误删他人会话与记忆 */
+export async function deleteConversation(
+  id: number,
+  userId: number,
+): Promise<MessageResponse> {
+  const res = await fetch(
+    `${BASE}/api/conversations/${id}?user_id=${encodeURIComponent(userId)}`,
+    { method: "DELETE" },
+  );
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
 }
@@ -88,6 +94,19 @@ export async function getDocument(
 ): Promise<UserDocumentSummary> {
   const res = await fetch(
     `${BASE}/api/documents/user/${userId}/${encodeURIComponent(docId)}`,
+  );
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+/** 删除知识文档：MySQL 元信息删行 + Milvus 软删该 doc_id 全部 chunk */
+export async function deleteDocument(
+  userId: number,
+  docId: string,
+): Promise<MessageResponse & { doc_id: string; soft_deleted_chunks: number }> {
+  const res = await fetch(
+    `${BASE}/api/documents/user/${userId}/${encodeURIComponent(docId)}`,
+    { method: "DELETE" },
   );
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
@@ -118,20 +137,31 @@ export async function getUploadStatus(
   return res.json();
 }
 
-function parseSseBuffer(buffer: string): { events: string[]; rest: string } {
-  const events: string[] = [];
+type SseEvent = { type: "chunk" | "error"; text: string };
+
+function parseSseBuffer(buffer: string): { events: SseEvent[]; rest: string } {
+  const events: SseEvent[] = [];
   const parts = buffer.split("\n\n");
   const rest = parts.pop() ?? "";
   for (const block of parts) {
+    // 后端用命名事件表达流中途错误：event: error + data: "说明"
+    let eventType: SseEvent["type"] = "chunk";
     for (const line of block.split("\n")) {
+      if (line.startsWith("event:")) {
+        if (line.slice(6).trim() === "error") eventType = "error";
+        continue;
+      }
       if (!line.startsWith("data:")) continue;
       const raw = line.slice(5).trim();
       if (!raw) continue;
       try {
         const parsed = JSON.parse(raw);
-        events.push(typeof parsed === "string" ? parsed : String(parsed));
+        events.push({
+          type: eventType,
+          text: typeof parsed === "string" ? parsed : String(parsed),
+        });
       } catch {
-        events.push(raw);
+        events.push({ type: eventType, text: raw });
       }
     }
   }
@@ -178,24 +208,29 @@ export async function streamAgentQuery(
   let buffer = "";
   let full = "";
 
+  const consume = (events: SseEvent[]) => {
+    for (const piece of events) {
+      if (piece.type === "error") {
+        // 流中途后端异常：已生成的内容保留，错误交给上层展示
+        throw new Error(piece.text || "生成过程中出现异常");
+      }
+      full += piece.text;
+      handlers.onChunk(full);
+    }
+  };
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const { events, rest } = parseSseBuffer(buffer);
     buffer = rest;
-    for (const piece of events) {
-      full += piece;
-      handlers.onChunk(full);
-    }
+    consume(events);
   }
 
   if (buffer.trim()) {
     const { events } = parseSseBuffer(`${buffer}\n\n`);
-    for (const piece of events) {
-      full += piece;
-      handlers.onChunk(full);
-    }
+    consume(events);
   }
 
   return full;

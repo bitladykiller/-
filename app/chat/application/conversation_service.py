@@ -22,6 +22,7 @@ from app.chat.infrastructure.repository.conversation_repository import (
     ConversationRepository,
 )
 from app.shared.core.database import AsyncSessionLocal
+from app.shared.core.errors import ResourceNotFoundError
 from app.shared.core.logger import format_log_context, get_logger
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing_extensions import TypedDict
@@ -59,6 +60,9 @@ async def run_db_operation(
     try:
         async with session_factory() as db:
             return await operation(db, *operation_args)
+    except ResourceNotFoundError:
+        # 业务语义的"不存在"：正常控制流，API 层映射 404，不按错误刷堆栈
+        raise
     except Exception as exc:
         logger.error(
             f"{action_name} 异常 | {format_log_context(**context)} | {exc}",
@@ -95,8 +99,10 @@ class ConversationService:
             user_id=user_id,
         )
 
-    async def delete_conversation(self, conversation_id: int) -> None:
-        """删除会话，并清理关联记忆。
+    async def delete_conversation(self, conversation_id: int, user_id: int) -> None:
+        """删除指定用户名下的会话，并清理关联记忆。
+
+        归属校验在 Repository 完成：不存在或不属于该用户 → ResourceNotFoundError。
 
         清理范围：
         1. MySQL conversations 元信息
@@ -110,23 +116,32 @@ class ConversationService:
             "delete_conversation",
             _delete_conversation,
             conversation_id,
+            user_id,
             conversation_id=conversation_id,
+            user_id=user_id,
         )
         await _clear_conversation_memories(
             user_id=str(deleted.user_id),
             session_id=str(conversation_id),
         )
 
-    async def update_conversation_name(self, conversation_id: int, name: str) -> None:
-        """更新会话标题。"""
+    async def update_conversation_name(
+        self,
+        conversation_id: int,
+        user_id: int,
+        name: str,
+    ) -> None:
+        """更新指定用户名下的会话标题。"""
         await run_db_operation(
             self._session_factory,
             logger,
             "update_conversation_name",
             _update_conversation_name,
             conversation_id,
+            user_id,
             name,
             conversation_id=conversation_id,
+            user_id=user_id,
             name=name,
         )
 
@@ -162,20 +177,21 @@ async def _get_user_conversations(
     ]
 
 
-async def _delete_conversation(db: AsyncSession, conversation_id: int):
+async def _delete_conversation(db: AsyncSession, conversation_id: int, user_id: int):
     """删除会话元信息及 MySQL 兼容消息，返回被删会话。"""
     repo = ConversationRepository(db)
-    return await repo.delete(conversation_id)
+    return await repo.delete(conversation_id, user_id)
 
 
 async def _update_conversation_name(
     db: AsyncSession,
     conversation_id: int,
+    user_id: int,
     name: str,
 ) -> None:
     """更新会话标题。"""
     repo = ConversationRepository(db)
-    await repo.rename(conversation_id, name)
+    await repo.rename(conversation_id, user_id, name)
 
 
 async def _clear_conversation_memories(*, user_id: str, session_id: str) -> None:

@@ -48,3 +48,24 @@ async def get_user_document(user_id: int, doc_id: str) -> dict[str, Any]:
         user_id=user_id,
         doc_id=doc_id,
     )
+
+
+@router.delete("/documents/user/{user_id}/{doc_id}")
+async def delete_user_document(user_id: int, doc_id: str) -> dict[str, Any]:
+    """删除指定用户名下的知识文档。
+
+    - MySQL：删除 user_documents 元信息行（列表立即不可见）
+    - Milvus：软删除该 doc_id 全部 chunk（检索立即排除）
+    - 归属不符或不存在 → 404
+
+    WHY 需要这个接口：上传/替换早已存在，但没有删除入口 ——
+    传错的文档会永远留在检索库里污染答案。
+    """
+    result = await run_api_action(
+        "delete_user_document",
+        document_service.delete_document(user_id, doc_id),
+        logger=logger,
+        user_id=user_id,
+        doc_id=doc_id,
+    )
+    return {**result, "message": "文档已删除"}

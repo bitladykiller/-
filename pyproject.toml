@@ -1,32 +1,15 @@
 [project]
 name = "deepseek-agent"
-version = "3.21.0"
+version = "3.34.0"
 description = "基于大语言模型的智能客服系统"
 authors = [{name = "Your Name", email = "your.email@example.com"}]
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
-
-dependencies = [
-    "fastapi>=0.104.0",
-    "uvicorn[standard]>=0.24.0",
-    "sqlalchemy[asyncio]>=2.0.0",
-    "aiomysql>=0.2.0",
-    "redis>=5.0.0",
-    "pymilvus>=2.3.0",
-    "neo4j>=5.14.0",
-    "langchain>=0.1.0",
-    "langgraph>=0.0.20",
-    "openai>=1.6.0",
-    "pydantic>=2.0.0",
-    "pydantic-settings>=2.0.0",
-    "python-multipart>=0.0.6",
-    "aiofiles>=23.0.0",
-    "httpx>=0.25.0",
-    "msgpack>=1.0.7",
-    "pyzstd>=0.15.0",
-    "PyYAML>=6.0.0",
-]
+# 运行依赖唯一来源是 requirements.txt（Docker 与 pip install -e . 共用）。
+# 之前这里维护第二份清单，已与 requirements.txt 漂移（例如缺 langchain-deepseek）——
+# 两份清单意味着"本地装的"和"容器装的"可以悄悄不一致。
+dynamic = ["dependencies"]
 
 [project.optional-dependencies]
 dev = [
@@ -41,6 +24,9 @@ dev = [
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
 
 [tool.setuptools.packages.find]
 where = ["."]

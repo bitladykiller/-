@@ -41,11 +41,25 @@ class ReactConfig:
 # 文档上传配置
 # ====================================================================
 
+def _default_upload_dir() -> str:
+    """上传目录，可用环境变量 UPLOAD_DIR 覆盖。
+
+    WHY 必须可配置：这里曾经硬编码相对路径 "uploads"，落盘位置随进程 CWD 漂移。
+    Docker 下 start.sh 在 /app 启动 → 文件写进 /app/uploads（容器可写层），
+    而持久卷挂在 /app/app/uploads —— 容器一重建，上传的原始文件全部丢失，
+    Milvus 索引和 MySQL 元数据却还在。`.env.docker` 已把本变量对齐到卷挂载点。
+    """
+    import os
+
+    return os.getenv("UPLOAD_DIR", "uploads")
+
+
 @dataclass(frozen=True)
 class UploadConfig:
     """文档上传的运行时配置。"""
 
     max_upload_size_mb: int = 50
+    upload_dir: str = field(default_factory=_default_upload_dir)
     max_upload_size_bytes: int = field(init=False)
 
     def __post_init__(self) -> None:

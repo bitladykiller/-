@@ -229,7 +229,13 @@ def test_after_response_writes_latest_user_and_final_assistant_message(monkeypat
         lambda config: ("tenant-1", "user-2", "thread-3"),
     )
 
-    result = _run(lg_nodes.after_response(state, config={}))
+    async def _scenario():
+        result = await lg_nodes.after_response(state, config={})
+        # 写入已改为后台任务，flush 等它完成后再断言
+        await lg_nodes.flush_pending_memory_writes()
+        return result
+
+    result = _run(_scenario())
 
     assert result == {}
     assert middleware.calls == [
@@ -256,12 +262,63 @@ def test_after_response_skips_when_missing_complete_message_pair(monkeypatch) ->
         lambda config: ("tenant-1", "user-2", "thread-3"),
     )
 
-    result = _run(
-        lg_nodes.after_response(
+    async def _scenario():
+        outcome = await lg_nodes.after_response(
             AgentState(messages=[HumanMessage(content="只有用户消息")]),
             config={},
         )
+        await lg_nodes.flush_pending_memory_writes()
+        return outcome
+
+    result = _run(
+        _scenario()
     )
 
     assert result == {}
     assert middleware.calls == []
+
+
+def test_after_response_does_not_block_on_slow_memory_write(monkeypatch) -> None:
+    """记忆写入必须是后台任务：节点返回不等 after_agent 完成。
+
+    回归背景：after_response 曾同步 await 记忆写入，压缩轮次的
+    摘要/抽取 LLM 调用（数秒）会把 SSE 连接一直挂到写完才关闭。
+    """
+
+    class SlowMiddleware:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.finished = False
+
+        async def after_agent(self, **kwargs) -> None:
+            self.started.set()
+            await self.release.wait()
+            self.finished = True
+
+    middleware = SlowMiddleware()
+
+    async def fake_get_memory_middleware():
+        return middleware
+
+    monkeypatch.setattr(lg_nodes, "_get_memory_middleware", fake_get_memory_middleware)
+    monkeypatch.setattr(
+        lg_nodes,
+        "configurable_scope",
+        lambda config: ("tenant-1", "user-2", "thread-3"),
+    )
+
+    async def _scenario() -> None:
+        state = AgentState(
+            messages=[HumanMessage(content="问题"), AIMessage(content="答案")]
+        )
+        # 节点必须在写入仍被阻塞时就返回（1 秒内），否则说明退回了同步等待
+        await asyncio.wait_for(lg_nodes.after_response(state, config={}), timeout=1)
+        assert middleware.finished is False
+
+        # 放行后台任务并确认它真的完成了
+        middleware.release.set()
+        await lg_nodes.flush_pending_memory_writes()
+        assert middleware.finished is True
+
+    _run(_scenario())

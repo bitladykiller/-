@@ -314,3 +314,30 @@ def test_get_upload_status_or_raise_returns_status_and_raises_404(
 
     assert exc.value.status_code == 404
     assert exc.value.detail == "任务不存在: task-missing"
+
+
+def test_upload_dir_follows_config_and_is_absolute(monkeypatch) -> None:
+    """上传目录必须可配置且为绝对路径。
+
+    回归背景：曾硬编码相对路径 "uploads"，Docker 下随 CWD 落到 /app/uploads，
+    与持久卷挂载点 /app/app/uploads 错位，容器重建即丢失全部上传文件。
+    """
+
+    from app.shared.core import app_config as app_config_module
+
+    monkeypatch.setenv("UPLOAD_DIR", "/tmp/kefu-uploads-test")
+    rebuilt = app_config_module.UploadConfig()
+
+    assert rebuilt.upload_dir == "/tmp/kefu-uploads-test"
+
+    # 模块级 UPLOAD_DIR 是启动时解析的绝对路径
+    import app.api.upload as upload_module
+
+    assert upload_module.UPLOAD_DIR.is_absolute()
+
+
+def test_upload_dir_defaults_to_uploads_without_env(monkeypatch) -> None:
+    monkeypatch.delenv("UPLOAD_DIR", raising=False)
+    from app.shared.core.app_config import UploadConfig
+
+    assert UploadConfig().upload_dir == "uploads"

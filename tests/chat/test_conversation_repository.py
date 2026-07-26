@@ -11,6 +11,7 @@ from app.chat.infrastructure.models.conversation import DialogueType
 from app.chat.infrastructure.repository.conversation_repository import (
     ConversationRepository,
 )
+from app.shared.core.errors import ResourceNotFoundError
 
 
 class FakeConversation:
@@ -155,7 +156,7 @@ def test_delete_removes_and_commits() -> None:
     ])
     repo = ConversationRepository(session)
 
-    deleted = _run(repo.delete(conversation_id=10))
+    deleted = _run(repo.delete(conversation_id=10, user_id=5))
 
     assert deleted is conv
     assert session.committed is True
@@ -163,15 +164,34 @@ def test_delete_removes_and_commits() -> None:
     assert len(session.executed) >= 2
 
 
-def test_delete_raises_value_error_when_not_found() -> None:
+def test_delete_raises_not_found_when_missing() -> None:
     session = FakeSession()
     session.set_execute_results([
         FakeResult(scalar_one_or_none_data=None),
     ])
     repo = ConversationRepository(session)
 
-    with pytest.raises(ValueError, match="Conversation 999 not found"):
-        _run(repo.delete(conversation_id=999))
+    with pytest.raises(ResourceNotFoundError, match="不存在或不属于"):
+        _run(repo.delete(conversation_id=999, user_id=5))
+
+
+def test_delete_rejects_other_users_conversation() -> None:
+    """IDOR 回归：会话存在但属于别人 → 同样按不存在处理，绝不删除。
+
+    删除会联动清空该会话的 STM/LTM 记忆，归属校验是硬约束。
+    """
+    session = FakeSession()
+    # get_owned 按 (id, user_id) 过滤 → 归属不符时查询结果就是空
+    session.set_execute_results([
+        FakeResult(scalar_one_or_none_data=None),
+    ])
+    repo = ConversationRepository(session)
+
+    with pytest.raises(ResourceNotFoundError):
+        _run(repo.delete(conversation_id=10, user_id=999))
+
+    assert session.deleted == []
+    assert session.committed is False
 
 
 def test_rename_updates_title_and_commits() -> None:
@@ -182,18 +202,18 @@ def test_rename_updates_title_and_commits() -> None:
     ])
     repo = ConversationRepository(session)
 
-    _run(repo.rename(conversation_id=5, name="新标题"))
+    _run(repo.rename(conversation_id=5, user_id=3, name="新标题"))
 
     assert conv.title == "新标题"
     assert session.committed is True
 
 
-def test_rename_raises_value_error_when_not_found() -> None:
+def test_rename_raises_not_found_when_missing() -> None:
     session = FakeSession()
     session.set_execute_results([
         FakeResult(scalar_one_or_none_data=None),
     ])
     repo = ConversationRepository(session)
 
-    with pytest.raises(ValueError, match="Conversation 888 not found"):
-        _run(repo.rename(conversation_id=888, name="新标题"))
+    with pytest.raises(ResourceNotFoundError, match="不存在或不属于"):
+        _run(repo.rename(conversation_id=888, user_id=3, name="新标题"))
