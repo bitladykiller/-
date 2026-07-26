@@ -203,7 +203,7 @@ sequenceDiagram
 
 1. 当前没有完整 JWT 鉴权。
 2. `user_id` 主要由调用方传入，安全模型偏演示 / 内部系统。
-3. `task_queue` 还是进程内 asyncio 任务，不是独立 worker 集群。
+3. `background_tasks` 是进程内 asyncio 任务，不是独立 worker 集群；重启后遗留任务会被标记为 interrupted，不会自动续跑。
 4. `/health` 只能说明 HTTP 进程活着，不等于所有依赖都健康。
 5. 生产级审计、限流、细粒度权限控制还不完整。
 

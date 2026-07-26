@@ -5,6 +5,83 @@
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v3.33.0] - 2026-07-26
+
+本次以「性能 / 可读性 / 架构」为目标做专项治理，过程中发现并修复了 3 个静默故障。
+
+### 修复（静默故障，无报错但功能失效）
+- **BM25 稀疏检索基本失效**：客户端用 `abs(hash(token)) % 2**24` 自行计算 token id。
+  一来 Python 字符串 hash 默认按进程随机化（同一个词每次启动 id 都不同），
+  二来 doc 侧 `sparse_vector` 由 Milvus 服务端 BM25 `Function` 用自己的词表生成，
+  客户端无从得知其编号。两边落在不同 id 空间 → 稀疏分支几乎召不回，
+  RRF 静默退化为纯向量检索。**改为把原始查询文本交给 Milvus**，由同一个 Function 编码。
+- **长期记忆整条链路失效**：`ltm.search / deduplication / update_on_hit` 三个配置是
+  `frozen dataclass`，代码却按 dict 下标取值，每次调用抛 `TypeError` 后被宽泛
+  `except Exception` 吞掉 —— 表现为 LTM 永远检索不到、也永远写不进去。
+  改为属性访问；原先的 `# type: ignore` 恰好压制了 mypy 对此的正确报错。
+- **Docker 下 RAG 连不上 Milvus**：`RetrievalConfig` 硬编码 `localhost:19530`，
+  而 `.env.docker` 是 `MILVUS_HOST=milvus`。LTM 走 `settings.MILVUS_URL` 连得上，
+  RAG 走本类默认值连的是容器自己的 localhost。连接参数改为默认取自 `settings`。
+
+### 性能
+- **修复事件循环阻塞**：pymilvus 与 LangChain Embeddings 均为同步 SDK，此前在
+  `async def` 内直接调用（全项目 0 处 `to_thread`），一次 LTM 检索会卡住整个进程的
+  所有并发请求。新增 `app/shared/core/async_bridge.py`，所有数据面调用改走线程池。
+- **文档索引批量化**：`insert_chunks` 由逐 chunk `embed_query` 改为批量
+  `embed_documents`，N 次模型前向 / HTTP 往返降为 1 次。
+- **记忆读取并发化**：`before_agent` 的 STM / 画像 / LTM 三路互不依赖，改 `asyncio.gather`，
+  耗时由三者之和降为三者最大值；`compress_session_memory` 四路状态读取同样并发。
+- **Redis 往返合并**：`append_message` 由 4 次往返合并为 1 次 pipeline；
+  压缩重写窗口由 4N 次降为 1 次（保留 5 条即 21 → 1）；新增 `append_messages` 批量接口。
+- **热对象复用**：`HybridSearcher` 与 embedding 模型改为进程内共享单例
+  （此前每上传一个文档就新建 Milvus 连接并重新加载模型权重）。
+- LTM 命中统计由逐条 upsert 改批量；`after_agent` 复用 meta 省一次往返。
+
+### 架构与可读性
+- 新增 `app/shared/core/degradation.py` 统一降级日志约定：外部依赖故障记 `warning`
+  不打堆栈；其余一律 `logger.exception` 带完整堆栈。此前 75 处 `except Exception`
+  把「外部抖动」和「代码缺陷」归为一类，22 处静默返回空值。
+- 新增 `app/shared/core/embeddings.py` 作为 embedding 唯一构造入口，消除
+  LTM 读 `settings` / RAG 读 `os.getenv` 的双真相来源。
+- `simple_long_term_memory.py` 去掉「把 logger、写入函数等恒定依赖当参数层层下传」的
+  伪注入（11 参数签名、6 处 type ignore、参数名遮蔽模块函数），收敛为类方法。
+- `AppContainer` 新增 `KnowledgeGraphComponents`，`retriever_runtime` 不再读写容器
+  下划线私有字段；检索器注册表初始化收进锁内，消除并发竞态。
+- **`app/shared/task_queue.py` 更名 `background_tasks.py`**：它不是分布式队列，
+  任务协程跑在进程内存里。新增 `worker_id` 与 `reconcile_orphaned_tasks()`，
+  启动时把上一代进程遗留的 pending/running 收敛为 `interrupted`
+  （新增该状态），避免前端永远轮询一个不会完成的任务。
+- 删除 `IndexingService` 中为测试替身而存在的签名嗅探；上传模式校验收敛为
+  `normalize_upload_mode` 单一实现；`decision_nodes._normalize_mode` 更名
+  `_normalize_retrieval_mode`（与上传模式区分，此前同名不同义）。
+- 删除仅测试引用的 `close_task_manager`；`main.py` `__all__` 从 12 个内部装配函数
+  收敛为 `app` / `create_app`。
+
+### 新增配置
+- `RetrievalConfig.bm25_drop_ratio`（默认 `0.2`）：BM25 检索丢弃低权重项的比例
+- `RetrievalConfig.milvus_host / milvus_port` 默认值改为取自 `settings`
+
+### 破坏性变更
+- `app.shared.task_queue` → `app.shared.background_tasks`
+- `ltm_collection` 的 `insert_records / upsert_records / search_records` 改为协程
+- `MilvusStore.get_max_version / soft_delete_by_doc_id / hard_purge_soft_deleted`
+  与 `HybridSearcher.hard_purge_soft_deleted` 改为协程
+- `MilvusHybridSearchCore.encode_query_sparse` 删除，由 `build_sparse_request` 取代
+- `MemoryMiddleware._warn_once` → `_degrade_once`（签名带异常对象）
+
+### 质量
+- 测试 236 → 322，改动模块覆盖率均 ≥ 82%
+  （`async_bridge` / `degradation` / `embeddings` / `hybrid_search` 达 100%）
+- mypy 从改动前基线 8 个错误降为 **0**
+- 并发与批量的断言均已验证可捕获退化实现（改回串行 / 逐条会 fail）
+
+### 涉及文件
+- 新增：`app/shared/core/async_bridge.py`、`degradation.py`、`embeddings.py`
+- 重命名：`app/shared/task_queue.py` → `app/shared/background_tasks.py`
+- 主要改动：`app/shared/retrieval/milvus_hybrid_core.py`、
+  `app/knowledge/infrastructure/{ltm,stm,orchestration,doc_parser/retrieval}/*`、
+  `app/platform/container.py`、`app/chat/infrastructure/retrievers/retriever_runtime.py`
+
 ## [v3.32.0] - 2026-07-21
 ### 新增
 - **RAG 书面化查询改写**（仅文档检索支路）

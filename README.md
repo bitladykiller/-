@@ -36,7 +36,7 @@ flowchart TB
             Exec --> After["after_response\n(记忆同步/画像刷新)"]
         end
 
-        TQ["共享任务队列 (Task Queue)"]
+        TQ["进程内后台任务 (background_tasks)\nRedis 仅存状态，非分布式队列"]
     end
 
     subgraph Infrastructure["基础设施 (Infra)"]
@@ -89,7 +89,7 @@ flowchart TB
 ### 5. RAG 文档检索
 - 支持 **Markdown（.md / .markdown）/ PDF / Word（.docx）** 上传 + 内置文档解析管道
 - PDF 与 DOCX 先转为 Markdown，原生 Markdown 直接清洗分块后入库
-- 混合检索（向量 + BM25 + RRF 融合）
+- 混合检索（向量 + BM25 + RRF 融合）；BM25 由 **Milvus 服务端 Function** 计算，查询侧传原文
 - **文档动态更新（策略 2）**：`is_deleted` + `version`；`mode=replace` + 稳定 `doc_id` 时软删旧 chunk 再写新版；检索默认排除软删
 - **replace 幂等**：新文件 `content_hash` 与 MySQL 一致则 **跳过 reindex**（不建任务、不软删）
 - **MySQL `user_documents`**：绑定 `doc_id` 与文件名/版本/状态；API `GET /api/documents/user/{user_id}`；前端「我的文档 / 更新」固定该行 `doc_id`
@@ -103,6 +103,60 @@ flowchart TB
   - MySQL：删除 `conversations` 元信息，并兼容清理历史 `messages` 表数据
   - Redis STM：删除该 `session_id` 下 messages/summary/meta/lock
   - Milvus LTM：软删除带 `session_id` 的长期记忆（`is_deleted=true`）
+
+## 性能与工程约定
+
+这几条是踩过坑之后固化下来的硬约定，改动相关代码前请先读。
+
+### 1. 同步 SDK 一律走线程池，禁止在协程里直接调用
+
+`pymilvus.MilvusClient` 和 LangChain 的 `Embeddings` **都是同步接口**。
+在 `async def` 里直接调用它们，协程不会让出控制权——单进程 FastAPI 下，
+一次 LTM 检索（embedding 推理 + Milvus 往返）会把**当前进程的所有并发请求**
+一起卡住，包括健康检查和 SSE 心跳。
+
+```python
+from app.shared.core.async_bridge import run_blocking
+
+vector = await run_blocking(self.embedding_model.embed_query, text)   # ✅
+vector = self.embedding_model.embed_query(text)                       # ❌ 阻塞事件循环
+```
+
+### 2. 批量优先：embedding 与 Redis 往返
+
+- 索引文档用 `embed_documents` 批量编码，不要逐 chunk `embed_query`
+- 多条 Redis 命令用 `pipeline` 合并；写一轮对话用 `append_messages` 而非两次 `append_message`
+- 多路无依赖的 IO 用 `asyncio.gather`（如 `before_agent` 的 STM / 画像 / LTM 三路）
+
+### 3. BM25 稀疏检索：查询侧传原始文本
+
+collection 上声明了服务端 BM25 `Function`，doc 侧 token id 由 **Milvus 自己的词表**生成。
+查询侧必须同样把原文交给 Milvus，**不要在客户端分词或自己算 token id**——
+客户端算出来的 id 和服务端对不上，稀疏分支会静默失效、RRF 退化成纯向量检索。
+
+### 4. 降级要分级：外部故障 ≠ 代码缺陷
+
+统一走 `app.shared.core.degradation.log_degradation`：
+
+| 异常类别 | 日志级别 | 堆栈 |
+|---|---|---|
+| Redis 错误 / 超时 / 连接失败 / OSError | `warning` | 否 |
+| 其余全部（TypeError、AttributeError…） | `error`（`logger.exception`） | **是** |
+
+不要写裸的 `except Exception: return []`——那会让「代码写错了」和「网络抖了一下」
+在日志里长得一模一样。本项目曾因此让长期记忆整条链路静默失效很久。
+
+### 5. 后台任务不是分布式队列
+
+`app/shared/background_tasks.py` 的任务协程跑在**当前进程内存**里，Redis 只存状态。
+进程重启即丢失、不自动续跑、多副本不分担、无重试。重启后遗留任务会被标记为
+`interrupted`。需要真正的队列语义请换 Redis Stream / ARQ / Celery。
+
+### 6. 配置单一来源
+
+embedding 模型统一由 `app.shared.core.embeddings.get_embedding_model()` 构造，
+Milvus 连接参数统一取自 `settings`。**不要在模块里直接 `os.getenv` 另建一份默认值**——
+LTM 与 RAG 必须使用同一个 embedding 模型，否则两边向量落在不同语义空间。
 
 ## 技术栈
 
@@ -200,6 +254,9 @@ deepseek_agent/
 │   ├── knowledge/               # 记忆 / 文档解析 / 索引（同上骨架）
 │   ├── user/                    # 用户与画像（同上骨架）
 │   ├── shared/                  # 唯一全局共享内核
+│   │   ├── core/                #   配置 / 日志 / DB / async_bridge / degradation / embeddings
+│   │   ├── retrieval/           #   Milvus 混合检索公共核
+│   │   └── background_tasks.py  #   进程内后台任务 + Redis 状态上报
 │   ├── platform/                # 应用容器
 │   └── scripts/                 # Compose 内部脚本
 ├── configs/                     # Docker 初始化配置
@@ -221,17 +278,15 @@ deepseek_agent/
 ## 相关文档
 
 - [docs/全流程文档索引.md](docs/全流程文档索引.md) — **全流程详细文档索引（推荐，模块 00–10）**
-- [docs/配置参数与数据字段全览.md](docs/配置参数与数据字段全览.md) — **环境变量 / AppConfig / STM·LTM / MySQL·Redis·Milvus 字段（调参必看）**
+- [docs/modules/07-配置参数与数据字段全览.md](docs/modules/07-配置参数与数据字段全览.md) — **环境变量 / AppConfig / STM·LTM / MySQL·Redis·Milvus 字段（调参必看）**
 - [specs/2026-07-21-config-and-storage-fields.md](specs/2026-07-21-config-and-storage-fields.md) — 配置与存储字段摘要（可提交）
 - [docs/modules/00-全流程图集.md](docs/modules/00-全流程图集.md) — **Mermaid 全流程图集（强烈推荐）**
 - [specs/2026-07-20-domain-skeleton-align-design.md](specs/2026-07-20-domain-skeleton-align-design.md) — 域骨架对齐设计
 - [CHANGELOG.md](CHANGELOG.md) — 版本更新日志
 - [app/README.md](app/README.md) — 当前主代码树说明
 - [app/chat/README.md](app/chat/README.md) / [app/knowledge/README.md](app/knowledge/README.md) / [app/user/README.md](app/user/README.md) / [app/shared/README.md](app/shared/README.md)
-- [docs/架构概览.md](docs/架构概览.md) — 当前架构和目录边界
-- [docs/迁移指南.md](docs/迁移指南.md) — 新旧导入路径和迁移策略
-- [docs/部署说明.md](docs/部署说明.md) — Docker Compose 部署方式
-- [docs/开发规范.md](docs/开发规范.md) — 开发规范
+- [docs/modules/01-系统总览.md](docs/modules/01-系统总览.md) — 当前架构和目录边界
+- [docs/AI应用后端实习面试手册.md](docs/AI应用后端实习面试手册.md) — 面试向的系统讲解
 - [app/scripts/README.md](app/scripts/README.md) — 应用内维护脚本说明
 - [app/shared/core/README.md](app/shared/core/README.md) — 共享基础设施说明
 - [app/shared/security/README.md](app/shared/security/README.md) — Prompt 防护说明

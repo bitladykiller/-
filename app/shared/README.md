@@ -2,10 +2,10 @@
 
 ## 职责
 
-- `core/`：配置、数据库、日志、JSON 工具
+- `core/`：配置、数据库、日志、JSON 工具、异步桥接（`async_bridge`）、降级日志约定（`degradation`）、embedding 工厂（`embeddings`）
 - `security/`：Prompt 防护
 - `retrieval/`：Milvus 混合检索公共核
-- `task_queue.py`：后台任务队列
+- `background_tasks.py`：进程内后台任务 + Redis 状态上报（非分布式队列）
 
 ## 规则
 

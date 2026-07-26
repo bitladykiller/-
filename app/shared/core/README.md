@@ -17,6 +17,21 @@
   - 负责全局日志初始化入口和幂等状态。
   - 业务模块只应消费 `get_logger()` / `format_log_context()`，不要各自重复拼接日志样板。
   - 当前日志格式、root logger handler 策略和上下文字段拼装已经收口到主模块内部。
+- `async_bridge.py`
+  - 把第三方**同步 SDK**（pymilvus、LangChain Embeddings）的阻塞调用挪出事件循环。
+  - 唯一入口 `run_blocking(func, *args, **kwargs)`，内部走 `asyncio.to_thread`。
+  - **凡是在 `async def` 里调用同步客户端，一律经过这里**：直接调会卡住整个进程的
+    所有并发请求（协程不让出控制权），而不只是当前这一个请求。
+- `degradation.py`
+  - 统一降级日志约定：区分「外部依赖抖动」和「我们自己写错了」。
+  - 外部故障（Redis/超时/连接/OSError）记 `warning` 不打堆栈；
+    其余一律 `logger.exception` 带完整堆栈，让代码缺陷可发现、可告警。
+  - 替代散落各处的 `except Exception: return []` —— 那个模式曾让
+    LTM 整条链路静默失效很久。
+- `embeddings.py`
+  - 全应用 **唯一** 的 embedding 构造入口，依 `settings` 选择 Ollama / HuggingFace。
+  - 进程内共享实例：LTM 与 RAG **必须**用同一个模型，否则向量落在不同语义空间；
+    HuggingFace 路径的模型权重也没必要在内存里存两份。
 
 ## 当前边界
 

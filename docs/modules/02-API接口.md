@@ -64,7 +64,7 @@ app/
 | `chat/application/conversation_service.py` | conversations 路由 |
 | `chat/application/agent_query_service.py` | langgraph 路由 |
 | `knowledge/application/indexing_service.py` | upload 提交的后台任务 |
-| `shared/task_queue.py` | upload 提交/查状态 |
+| `shared/background_tasks.py` | upload 提交/查状态 |
 
 ---
 
@@ -354,7 +354,7 @@ GET /api/upload/status/{task_id}
 |---|---|
 | 存储 | Redis key 前缀 `task:doc_parse:`（可配） |
 | 不存在 | HTTP 404 `任务不存在: {task_id}` |
-| 状态枚举 | pending / running / **completed** / failed（见 `TaskStatus`，非 success） |
+| 状态枚举 | pending / running / **completed** / failed / **interrupted**（见 `TaskStatus`，非 success） |
 | TTL | 默认 24h |
 
 ### 5.3 上传与索引的边界
@@ -572,9 +572,13 @@ langgraph_query
 
 ### Q5. task 一直 pending 最可能？
 
-1. app 进程重启，asyncio 任务丢了但 Redis 仍 pending  
-2. process_file 卡在 Docling/Milvus  
-3. 未真正 submit（异常被吞）— 看 app 日志  
+1. process_file 卡在 Docling/Milvus  
+2. 未真正 submit（异常被吞）— 看 app 日志  
+
+> 「进程重启把 asyncio 任务丢了，但 Redis 仍停在 pending/running」这一条自
+> v3.33.0 起已被覆盖：任务状态带 `worker_id`，新进程启动时会把上一代 worker
+> 遗留的 pending/running 记录改成 **`interrupted`** 并附带原因。
+> 看到 `interrupted` 即表示任务已随进程消失、需要重新提交（不会自动续跑）。
 
 ### Q6. 无鉴权如何答辩？
 
@@ -631,7 +635,7 @@ curl -s -X POST http://localhost:8000/api/upload \
 # 返回 task_id, path, ...
 
 curl -s http://localhost:8000/api/upload/status/<task_id>
-# status: pending|running|completed|failed
+# status: pending|running|completed|failed|interrupted
 ```
 
 ## E4. SSE 问答
@@ -663,7 +667,8 @@ curl -N -X POST http://localhost:8000/api/langgraph/query \
 | 列表看不到刚建会话 | 标题仍是「新会话」，被 list 过滤 |
 | 记忆串台 | conversation_id 与 X-Conversation-ID 不一致 |
 | 上传 400 | 扩展名或魔数 |
-| status 一直 pending | 进程重启丢任务 / worker 挂 |
+| status 一直 pending | process_file 卡住 / submit 时异常被吞 |
+| status 变 interrupted | 执行该任务的进程已重启，任务不会续跑，需重新提交 |
 | SSE 无输出 | 全是 tool/research_plan 被过滤；看后端日志 |
 
 
