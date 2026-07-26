@@ -14,6 +14,7 @@ from typing import Any
 from app.knowledge.infrastructure.doc_parser.retrieval.config import RetrievalConfig
 from app.knowledge.infrastructure.doc_parser.retrieval.milvus_store import MilvusStore
 from app.knowledge.infrastructure.doc_parser.retrieval.rrf import Reranker
+from app.shared.core.async_bridge import run_blocking
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +131,10 @@ class HybridSearcher:
         )
 
         if self.reranker and self.reranker.available:
-            fused = self.reranker.rerank(
+            # CrossEncoder 是同步 CPU 推理（首次还会加载模型权重）——
+            # 必须下线程池，否则每次精排都会阻塞事件循环数百毫秒
+            fused = await run_blocking(
+                self.reranker.rerank,
                 query,
                 fused,
                 top_k=self.config.rerank_top_k,

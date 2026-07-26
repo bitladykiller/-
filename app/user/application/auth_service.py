@@ -152,6 +152,7 @@ class AuthService:
         """注册新用户；用户名占用抛 RegistrationError。"""
         from app.user.infrastructure.models.user import User
         from sqlalchemy import select
+        from sqlalchemy.exc import IntegrityError
 
         validate_registration(username, password)
         name = username.strip()
@@ -167,7 +168,14 @@ class AuthService:
                 password_hash=hash_password(password),
             )
             db.add(user)
-            await db.commit()
+            try:
+                await db.commit()
+            except IntegrityError as exc:
+                # 并发竞态兜底：两个同名注册同时穿过上面的查重后，
+                # 后提交者会撞唯一键。真正的裁判是数据库约束，
+                # 查重只是提前给出友好文案的快捷路径。
+                await db.rollback()
+                raise RegistrationError("用户名已被占用") from exc
             await db.refresh(user)
             logger.info("新用户注册 | user_id=%s username=%s", user.id, name)
             return AuthenticatedUser(id=user.id, username=user.username)

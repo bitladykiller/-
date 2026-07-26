@@ -306,3 +306,66 @@ def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
             "query_descriptions": {"query_a": "desc"},
         },
     }
+
+
+def test_retriever_construction_runs_off_event_loop(monkeypatch) -> None:
+    """首次注册的重构造（Neo4j 连接/模板 embedding/权重加载）必须在线程池。
+
+    回归背景：曾在协程内直接构造——首个提问用户会把所有并发请求一起卡住。
+    """
+    import threading
+
+    from app.platform.container import KnowledgeGraphComponents
+
+    loop_thread_holder: dict[str, int | None] = {"loop": None}
+    ctor_threads: dict[str, int | None] = {}
+    registry = retriever_contracts.RetrieverRegistry()
+    fake_graph = object()
+
+    async def fake_get_container():
+        class FakeContainer:
+            retriever_registry = registry
+            retriever_registry_lock = asyncio.Lock()
+            kg_components = KnowledgeGraphComponents()
+            neo4j_graph = fake_graph
+            neo4j_last_health_check_ts = 0.0
+
+        return FakeContainer()
+
+    from app.platform import container as cont_mod
+
+    monkeypatch.setattr(cont_mod, "get_container", fake_get_container)
+
+    def probe_neo4j(_container):
+        ctor_threads["neo4j"] = threading.current_thread().ident
+        return fake_graph
+
+    def probe_t2c(_container, _graph):
+        ctor_threads["t2c"] = threading.current_thread().ident
+        return object()
+
+    class ProbeRag(FakeRetriever):
+        def __init__(self) -> None:
+            ctor_threads["rag"] = threading.current_thread().ident
+            super().__init__({"records": []})
+
+    monkeypatch.setattr(retriever_runtime, "_get_neo4j_graph", probe_neo4j)
+    monkeypatch.setattr(retriever_runtime, "_ensure_text2cypher_agent", probe_t2c)
+    monkeypatch.setattr(retriever_implementations, "MilvusDocRetriever", ProbeRag)
+
+    class PassKg(FakeRetriever):
+        def __init__(self, _agent) -> None:
+            super().__init__({"records": []})
+
+    monkeypatch.setattr(retriever_implementations, "KnowledgeGraphRetriever", PassKg)
+
+    async def scenario():
+        loop_thread_holder["loop"] = threading.current_thread().ident
+        await retriever_runtime.get_retriever(retriever_contracts.RAG_RETRIEVER_NAME)
+
+    _run(scenario())
+
+    loop_thread = loop_thread_holder["loop"]
+    for name in ("neo4j", "t2c", "rag"):
+        assert ctor_threads.get(name) is not None, f"{name} 构造未发生"
+        assert ctor_threads[name] != loop_thread, f"{name} 构造仍在事件循环线程"

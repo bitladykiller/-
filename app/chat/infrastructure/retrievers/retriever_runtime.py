@@ -19,6 +19,7 @@ from app.chat.infrastructure.retrievers.retriever_contracts import (
     KG_RETRIEVER_NAME,
     RAG_RETRIEVER_NAME,
 )
+from app.shared.core.async_bridge import run_blocking
 
 
 async def get_retriever(name: str) -> Any:
@@ -38,9 +39,9 @@ async def get_retriever(name: str) -> Any:
     async with container.retriever_registry_lock:
         registry = _ensure_registry(container)
         if KG_RETRIEVER_NAME not in registry:
-            _register_kg_retriever(container, registry)
+            await _register_kg_retriever(container, registry)
         if RAG_RETRIEVER_NAME not in registry:
-            _register_rag_retriever(registry)
+            await _register_rag_retriever(registry)
 
     return registry.get(name)
 
@@ -64,12 +65,16 @@ def _ensure_registry(container: Any) -> Any:
     return container.retriever_registry
 
 
-def _register_kg_retriever(container: Any, registry: Any) -> None:
+async def _register_kg_retriever(container: Any, registry: Any) -> None:
     """构造并注册 KG 检索器；Neo4j 不可用时静默跳过。
 
     跳过而不是抛错：图谱是增强能力，缺失时 RAG 链路仍应可用。
+
+    WHY 构造走线程池：首次注册要做 Neo4jGraph 连接 + schema 拉取 +
+    预定义模板 embedding（同步 HTTP）+ 子图编译——全是同步重活。
+    首个 KG 请求触发时若直接在协程里跑，会把**所有并发用户**一起卡住。
     """
-    neo4j_graph = _get_neo4j_graph(container)
+    neo4j_graph = await run_blocking(_get_neo4j_graph, container)
     if neo4j_graph is None:
         return
 
@@ -77,7 +82,7 @@ def _register_kg_retriever(container: Any, registry: Any) -> None:
         KnowledgeGraphRetriever,
     )
 
-    agent = _ensure_text2cypher_agent(container, neo4j_graph)
+    agent = await run_blocking(_ensure_text2cypher_agent, container, neo4j_graph)
     registry.register(KG_RETRIEVER_NAME, KnowledgeGraphRetriever(agent))
 
 
@@ -115,13 +120,19 @@ def _ensure_text2cypher_agent(container: Any, neo4j_graph: Any) -> Any:
     return components.text2cypher_agent
 
 
-def _register_rag_retriever(registry: Any) -> None:
-    """构造并注册 RAG 文档检索器。"""
+async def _register_rag_retriever(registry: Any) -> None:
+    """构造并注册 RAG 文档检索器。
+
+    WHY 构造走线程池：首次会触发共享 HybridSearcher 的建立——
+    Milvus 连接、collection 探测、embedding 模型加载（HuggingFace 路径
+    要载入约 2GB 权重），全是同步重活，不能在事件循环里裸跑。
+    """
     from app.chat.infrastructure.retrievers.retriever_implementations import (
         MilvusDocRetriever,
     )
 
-    registry.register(RAG_RETRIEVER_NAME, MilvusDocRetriever())
+    retriever = await run_blocking(MilvusDocRetriever)
+    registry.register(RAG_RETRIEVER_NAME, retriever)
 
 
 __all__ = ["get_retriever"]

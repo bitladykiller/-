@@ -29,6 +29,7 @@ from app.chat.infrastructure.kg.validation.validators import (
     validate_cypher_query_with_schema,
     validate_no_writes_in_cypher_query,
 )
+from app.shared.core.async_bridge import run_blocking
 from app.shared.core.logger import get_logger
 from langchain_core.language_models import BaseChatModel
 from langchain_core.output_parsers import StrOutputParser
@@ -191,7 +192,9 @@ def create_text2cypher_agent(
         async def predefined_match(state: CypherState) -> dict[str, object]:
             task = state.get("task", "")
             normalized_task = str(task[0] if isinstance(task, list) else task)
-            matches = matcher.match_query(normalized_task, top_k=1)
+            # 语义匹配内部走同步 HTTP（Ollama embedding）——必须下线程池，
+            # 否则每次 KG 查询都会把事件循环卡住至多 10s（requests 超时）
+            matches = await run_blocking(matcher.match_query, normalized_task, top_k=1)
             if not matches or matches[0]["similarity"] <= 0.6:
                 return {
                     "steps": ["predefined_match"],
@@ -200,12 +203,14 @@ def create_text2cypher_agent(
 
             best_match = matches[0]
             try:
-                params = matcher.extract_parameters(
+                params = await run_blocking(
+                    matcher.extract_parameters,
                     normalized_task,
                     best_match["query_name"],
                     llm=llm,
                 )
-                records = graph.query(
+                records = await run_blocking(
+                    graph.query,
                     best_match["cypher"],
                     params={key: str(value) for key, value in params.items()},
                 )
@@ -229,7 +234,8 @@ def create_text2cypher_agent(
 
     async def execute_cypher(state: CypherState) -> dict[str, list[CypherOutputState] | list[str]]:
         """执行 Cypher 查询并回填统一输出结构。"""
-        records = graph.query(state.get("statement", ""))
+        # Neo4j 同步驱动：查询 RTT 下线程池，不阻塞其它并发请求
+        records = await run_blocking(graph.query, state.get("statement", ""))
         steps = list(state.get("steps", []))
         steps.append("execute_cypher")
         output_state = CypherOutputState(
@@ -271,16 +277,21 @@ def create_text2cypher_agent(
         errors: list[str] = []
         mapping_errors: list[str] = []
 
-        syntax_error = validate_cypher_query_syntax(
-            graph=graph, cypher_statement=state.get("statement", "")
+        # EXPLAIN 是一次真实 Neo4j 往返
+        syntax_error = await run_blocking(
+            validate_cypher_query_syntax,
+            graph=graph,
+            cypher_statement=state.get("statement", ""),
         )
         errors.extend(syntax_error)
 
         write_errors = validate_no_writes_in_cypher_query(state.get("statement", ""))
         errors.extend(write_errors)
 
-        corrected_cypher = correct_cypher_query_relationship_direction(
-            graph=graph, cypher_statement=state.get("statement", "")
+        corrected_cypher = await run_blocking(
+            correct_cypher_query_relationship_direction,
+            graph=graph,
+            cypher_statement=state.get("statement", ""),
         )
 
         if llm is not None and llm_cypher_validation:
@@ -297,8 +308,10 @@ def create_text2cypher_agent(
             mapping_errors.extend(llm_errors.get("mapping_errors", []))
 
         if not llm_cypher_validation:
-            cypher_errors = validate_cypher_query_with_schema(
-                graph=graph, cypher_statement=state.get("statement", "")
+            cypher_errors = await run_blocking(
+                validate_cypher_query_with_schema,
+                graph=graph,
+                cypher_statement=state.get("statement", ""),
             )
             errors.extend(cypher_errors)
 

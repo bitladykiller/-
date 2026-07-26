@@ -150,9 +150,34 @@ class AppContainer:
     # ---- 生命周期管理 ----
 
     async def warm_up(self) -> None:
-        """预热懒加载资源，减少首请求初始化延迟。"""
+        """预热懒加载资源，减少首请求初始化延迟。
+
+        除记忆中间件外，尽力预建检索器（共享 HybridSearcher、KG 子图）：
+        这些冷构造包含 Milvus/Neo4j 连接、embedding 权重加载、模板
+        embedding——不预热的话由首个提问用户买单。
+        预热失败只降级记录（依赖未就绪时服务仍要能起，检索会在
+        首次使用时再次尝试懒初始化）。
+        """
         if self.memory_middleware is None:
             await self._init_memory_middleware()
+        await self._warm_retrievers()
+
+    async def _warm_retrievers(self) -> None:
+        """尽力预建 RAG / KG 检索器（失败不阻断启动）。"""
+        from app.chat.infrastructure.retrievers.retriever_contracts import (
+            RAG_RETRIEVER_NAME,
+        )
+        from app.shared.core.degradation import log_degradation
+
+        try:
+            from app.chat.infrastructure.retrievers.retriever_runtime import (
+                get_retriever,
+            )
+
+            await get_retriever(RAG_RETRIEVER_NAME)
+            logger.info("检索器预热完成")
+        except Exception as exc:
+            log_degradation(logger, "container.warm_retrievers", exc)
 
     def start_background_jobs(self) -> None:
         """启动进程内后台任务（事件消费 + LTM 定时硬清理）。"""

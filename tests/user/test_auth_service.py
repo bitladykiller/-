@@ -70,3 +70,46 @@ def test_registration_validation_rules() -> None:
         validate_registration("alice", "123")
     # 合规参数不抛
     validate_registration("alice", "password1")
+
+
+async def test_register_race_maps_integrity_error_to_registration_error() -> None:
+    """并发同名注册竞态：唯一键冲突必须转 RegistrationError（400），不是 500。
+
+    查重 SELECT 只是友好文案的快捷路径；真正的裁判是数据库唯一约束。
+    """
+    from app.user.application.auth_service import AuthService
+    from sqlalchemy.exc import IntegrityError
+
+    class RaceSession:
+        def __init__(self) -> None:
+            self.rolled_back = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def execute(self, _stmt):
+            class _R:
+                def scalar_one_or_none(self):
+                    return None  # 查重时对方还没提交
+
+            return _R()
+
+        def add(self, _obj) -> None:
+            pass
+
+        async def commit(self):
+            raise IntegrityError("dup", None, Exception("Duplicate entry"))
+
+        async def rollback(self):
+            self.rolled_back = True
+
+    session = RaceSession()
+    service = AuthService(session_factory=lambda: session)
+
+    with pytest.raises(RegistrationError, match="占用"):
+        await service.register("alice", "password1")
+
+    assert session.rolled_back is True

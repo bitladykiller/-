@@ -190,3 +190,32 @@ def test_retrieval_config_reads_settings_by_default() -> None:
 def test_retrieval_config_rejects_invalid_drop_ratio() -> None:
     with pytest.raises(ValueError, match="bm25_drop_ratio"):
         RetrievalConfig(bm25_drop_ratio=1.0)
+
+
+async def test_rerank_runs_off_event_loop_thread(monkeypatch) -> None:
+    """精排是同步 CPU 推理，必须在线程池执行。
+
+    回归背景：`self.reranker.rerank(...)` 曾直接跑在异步 search 里——
+    每次精排阻塞事件循环数百毫秒，首次还叠加模型权重加载。
+    """
+    import threading
+
+    rerank_threads: list[int | None] = []
+
+    class ThreadProbeReranker:
+        available = True
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def rerank(self, query, results, *, top_k, text_field):
+            rerank_threads.append(threading.current_thread().ident)
+            return results
+
+    monkeypatch.setattr(hybrid_module, "Reranker", ThreadProbeReranker)
+    searcher = HybridSearcher(RetrievalConfig(enable_rerank=True, rrf_final_top_k=3))
+    searcher.milvus.hybrid_results = [{"chunk_id": "a"}]
+
+    await searcher.search("查询")
+
+    assert rerank_threads and rerank_threads[0] != threading.current_thread().ident

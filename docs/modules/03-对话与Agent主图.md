@@ -1267,8 +1267,11 @@ register/get/`__contains__`；常量 KG_RETRIEVER_NAME/RAG_RETRIEVER_NAME。
 **retriever_runtime.py**：
 - 📌 `get_retriever(name)`：锁外快判 `_registry_ready`（两检索器齐）直
   返；否则 🔒 registry_lock 内 `_ensure_registry`（⚠️ 曾锁外创建，
-  并发双建互覆盖）→`_register_kg_retriever`（Neo4j 缺→静默跳过，RAG
-  仍可用）→`_register_rag_retriever`
+  并发双建互覆盖）→`await _register_kg_retriever`（Neo4j 缺→静默跳过，
+  RAG 仍可用）→`await _register_rag_retriever`。⚠️ v3.35.2：两个注册器
+  的重构造（Neo4j 连接/模板 embedding/子图编译/Milvus 连接/权重加载）
+  经 `run_blocking` 下线程池，且容器 `warm_up` 启动期预建——冷构造
+  不再由首个提问用户买单
 - `_ensure_text2cypher_agent(container, graph)`：kg_components 缓存
   NorthwindCypherRetriever + create_text2cypher_agent（⚠️ 曾直接读写
   容器下划线私有字段）
@@ -1299,7 +1302,10 @@ structured_invoke=None)`——`asyncio.wait_for(timeout=3s)` 包 LLM 结构化
   （规则法参数抽取）/`parse_json_response`/`cosine_similarity_score`/
   `_VectorQueryMatcher`（match_query 语义匹配模板 top_k；
   extract_parameters 规则→可选 LLM 兜底）/`create_vector_query_matcher`
-- **text2cypher_workflow.py**：`create_text2cypher_agent(llm, graph,
+- **text2cypher_workflow.py**（⚠️ v3.35.2：节点内全部同步 RTT——模板
+  语义匹配的 requests embedding、graph.query、EXPLAIN 校验、方向纠正、
+  schema 校验——均经 `run_blocking` 下线程池，此前每次 KG 查询阻塞
+  全部并发请求）：`create_text2cypher_agent(llm, graph,
   cypher_example_retriever, llm_cypher_validation=True, max_attempts=3,
   attempt_cypher_execution_on_final_attempt=False,
   predefined_cypher_dict=None, query_descriptions=None) -> CompiledStateGraph`

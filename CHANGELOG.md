@@ -5,6 +5,35 @@
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v3.35.2] - 2026-07-26
+
+第五轮审查：清剿残余的事件循环阻塞热点 + 注册竞态。
+
+### 性能（事件循环阻塞，v3.33 专项的收尾）
+- **Text2Cypher 三个异步节点内 6 处同步阻塞**：`predefined_match` 的
+  语义匹配（同步 requests 调 Ollama embedding，超时可达 10s）、参数提取、
+  模板执行 `graph.query`；`execute_cypher` 的查询 RTT；`validate_cypher`
+  的 EXPLAIN 语法校验 / 方向纠正 / schema 校验——全部改经 `run_blocking`
+  线程池。此前**每次 KG 查询都会把全部并发请求卡住**。
+- **Reranker 精排下线程池**：CrossEncoder 同步 CPU 推理（首次含权重加载）
+  曾直接跑在异步 `HybridSearcher.search` 里，每次精排阻塞数百毫秒。
+- **首次请求冷构造下线程池**：`get_retriever` 首次注册链
+  （Neo4jGraph 连接、27 模板 embedding、子图编译、Milvus 连接、
+  embedding 权重加载）曾在协程内同步执行——首个提问用户会拖住所有人。
+  两个注册器改 async + `run_blocking`。
+- **启动预热检索器**：`AppContainer.warm_up` 新增 `_warm_retrievers`
+  （尽力预建共享 HybridSearcher / KG 子图，失败降级记录不阻断启动）——
+  冷构造成本从"首个用户买单"移到启动期。
+
+### 修复
+- **注册并发竞态**：两个同名注册同时穿过查重 SELECT 后，后提交者撞
+  唯一键抛 IntegrityError 被翻成 500。现 rollback 后转
+  RegistrationError（400「用户名已被占用」）——查重只是友好文案的
+  快捷路径，真正的裁判是数据库唯一约束。
+
+### 质量
+- 测试 382 → 385：rerank 线程断言、三处冷构造线程断言、注册竞态回归。
+
 ## [v3.35.1] - 2026-07-26
 
 第四轮审查：1 个静默连接故障 + 若干 v3.35 接缝修正。
