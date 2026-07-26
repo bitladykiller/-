@@ -697,7 +697,30 @@ execute_react(state, config):
 | `rag_search(query)` | `rag.search(query)` → JSON records |
 
 
+## 7.5 节点计时与请求追踪（v3.35）
+
+所有节点在 builder 注册时经 `timed_node` 包装
+（`app/chat/infrastructure/graph/timing.py`）：
+
+```text
+2026-.. | INFO | a1b2c3d4e5f6 | app.chat.graph.timing | node=analyze_and_route_query elapsed=812.4ms
+2026-.. | INFO | a1b2c3d4e5f6 | app.chat.graph.timing | node=execute_rag_only elapsed=2310.7ms
+```
+
+第三列是 `X-Request-ID`（中间件写入 contextvars，日志 Filter 自动注入）——
+一次请求经过哪些节点、各花多久，按 request_id 过滤即得完整画像，
+不必再对相邻日志时间戳做减法。
+
 ## 8. 记忆在主图中的挂载点
+
+> **v3.35 变更**：`after_response` 不再直接（也不再 fire-and-forget）执行
+> 记忆写入，而是**发布 `turn_completed` 事件**到 Redis Streams；
+> 消费者做"MySQL 历史落库 + after_agent 记忆链"。收益：崩溃可重放、
+> 失败有重试与死信、SSE 关键路径零等待。事件基础设施不可用时回退为
+> 进程内后台协程（`flush_pending_memory_writes()` 供测试等待）。
+> 全景见 [00-全流程图集.md](00-全流程图集.md) §24-25、[04](04-记忆系统.md) §2.5。
+
+### 原第 8 节内容
 
 文件：`graph/memory_context.py`、`lifecycle_nodes.py`
 

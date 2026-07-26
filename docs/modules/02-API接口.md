@@ -1,201 +1,290 @@
-# 02 · API 层全解析
+# 02 · API 层全解析（v3.35 对齐版）
 
-> **流程图**：[00-全流程图集.md](00-全流程图集.md) §4 会话时序、§5 SSE 问答、§15 上传索引。
+> **流程图**：[00-全流程图集.md](00-全流程图集.md) §4 会话时序、§5 SSE 问答、§15 上传索引、§31+ 鉴权/事件管线。
+> **本文对齐代码版本**：v3.35.1。所有路径、参数、错误文案均与 `app/api/` 源码逐一核对。
 
+## 0.1 学习导航
 
-> ## ⚠️ v3.35.0 起：全站鉴权与路径变更
->
-> 除 `/health*` 与 `/api/auth/*` 外，**所有接口需要 `Authorization: Bearer <token>`**；
-> 身份由令牌推导，任何位置不再接受自报 `user_id`。下文历史章节中带 user_id 的
-> 路径/参数均已按下表迁移（详见 CHANGELOG v3.35.0）：
->
-> | 旧 | 新 |
-> |---|---|
-> | `POST /api/auth/login` `{username,password}` → token | （新增；注册 `/api/auth/register`，演示账号 demo_user / demo1234） |
-> | `GET /api/conversations/user/{uid}` | `GET /api/conversations` |
-> | `DELETE /api/conversations/{id}?user_id=` | `DELETE /api/conversations/{id}` |
-> | `PUT .../name` body`{user_id,name}` | body`{name}` |
-> | （无） | `GET /api/conversations/{id}/messages` 持久化历史 |
-> | `GET/DELETE /api/documents/user/{uid}[/{doc}]` | `GET /api/documents`、`GET/DELETE /api/documents/{doc}` |
-> | `POST /api/upload` form `user_id` | 身份取自令牌；新增可选 `visibility=global\|private` |
-> | `POST /api/langgraph/query` form `user_id`、任意字符串会话 | 身份取自令牌；`conversation_id` 为 int 且校验归属，缺省自动建会话 |
-> | （无） | `GET /health/deep` 逐依赖探测；所有响应带 `X-Request-ID` |
-> | 429 | SSE 并发超限（默认每用户 3 路） |
+**这一章你将学会：**
+1. 一个"身份由令牌推导"的 API 层是怎么组织的（对比"自报 user_id"的旧世界）
+2. 四类接口契约：鉴权 / 会话+历史 / 文档上传管理 / SSE 流式问答
+3. 三个横切机制：统一错误映射（404/500）、并发限流（429）、请求追踪（X-Request-ID）
+4. 长耗时任务如何经 Redis Streams 异步化且崩溃可续跑
 
-## 0. API 总览（图）
+**前置**：无。这是读整套文档的最佳入口——每个接口背后指向哪个域，本文都给了跳转。
+
+---
+
+## 0.2 API 总览（图）
 
 ```mermaid
 flowchart TB
-    C[客户端] --> H[GET /health]
-    C --> A1[POST /api/conversations]
-    C --> A2[GET /api/conversations/user/id]
-    C --> A3[DELETE /api/conversations/id]
-    C --> A4[PUT /api/conversations/id/name]
-    C --> U1[POST /api/upload]
-    C --> U2[GET /api/upload/status/task_id]
-    C --> D1[GET /api/documents/user/id]
-    C --> D2[GET /api/documents/user/id/doc_id]
-    C --> L1[POST /api/langgraph/query SSE]
+    C[客户端] --> H["GET /health（浅探针）"]
+    C --> HD["GET /health/deep（逐依赖探测）"]
+
+    subgraph Open["开放端点（无需令牌）"]
+        AU1[POST /api/auth/register]
+        AU2[POST /api/auth/login]
+    end
+    C --> AU1 & AU2
+    AU1 & AU2 -->|签发 JWT| TK[(Bearer Token)]
+
+    subgraph Protected["受保护端点（Authorization: Bearer）"]
+        AU3[GET /api/auth/me]
+        A1[POST /api/conversations]
+        A2[GET /api/conversations]
+        A5[GET /api/conversations/id/messages]
+        A3[DELETE /api/conversations/id]
+        A4[PUT /api/conversations/id/name]
+        U1[POST /api/upload]
+        U2[GET /api/upload/status/task_id]
+        D1[GET /api/documents]
+        D2["GET/DELETE /api/documents/doc_id"]
+        L1[POST /api/langgraph/query SSE]
+    end
+    TK -.->|get_current_user 依赖| Protected
 
     A1 & A2 & A3 & A4 --> CS[ConversationService → MySQL]
+    A5 --> MR[MessageRepository → MySQL messages]
     U1 --> META[DocumentService → user_documents]
-    U1 --> TQ[TaskQueue → document_indexing_job]
-    U2 --> TQ
+    U1 -->|publish| EV[["Redis Streams<br/>document_index_requested"]]
+    U2 --> TS[(Redis 任务状态)]
     D1 & D2 --> META
-    L1 --> AQS[agent_query_service → LangGraph]
+    L1 -->|限流+会话解析| AQS[agent_query_service → LangGraph]
+    AQS -->|回合结束 publish| EV2[["turn_completed"]]
 ```
+
+---
 
 ## 1. 定位与完整模块地图
 
-`app/api/` **只做协议层**：解析 HTTP → 调 application → 转换响应/SSE → 错误包装。  
+`app/api/` **只做协议层**：解析 HTTP → 验证身份 → 调 application → 转换响应/SSE → 错误映射。
 **禁止**：写 SQL、直接调 graph infrastructure、实现检索算法。
 
-在 `main.py`：`app.include_router(api_router, prefix="/api")`；另有 `GET /health`（不在 `/api` 下）。
+在 `main.py`：`app.include_router(api_router, prefix="/api")`；另有 `GET /health`、`GET /health/deep`（不在 `/api` 下）。
 
 ### 1.1 树状图
 
 ```text
 app/
-├── main.py                 # 工厂 /health / CORS / lifespan
+├── main.py                 # 工厂 / health / CORS / lifespan / X-Request-ID 中间件
 └── api/
-    ├── __init__.py         # api_router 聚合子路由
-    ├── common.py           # run_api_action / MessageResponse
-    ├── conversations.py    # 会话 CRUD HTTP
-    ├── upload.py           # 上传 + 任务状态（create/replace + MySQL 元数据）
-    ├── documents.py        # 用户文档列表/详情
-    └── langgraph.py        # SSE 问答
+    ├── __init__.py         # api_router 聚合五个子路由
+    ├── common.py           # run_api_action（错误映射 404/500）/ MessageResponse
+    ├── deps.py             # get_current_user：Bearer → AuthenticatedUser（唯一身份来源）
+    ├── auth.py             # 注册 / 登录 / 当前用户
+    ├── conversations.py    # 会话 CRUD + 历史消息
+    ├── upload.py           # 上传（→ 事件流索引）+ 任务状态
+    ├── documents.py        # 我的文档 列表/详情/删除
+    └── langgraph.py        # SSE 问答（限流 + 会话解析 + error 事件）
 ```
 
 ### 1.2 逐文件职责
 
 | 文件 | 用处 |
 |---|---|
-| `app/api/__init__.py` | 创建 `api_router`，`include_router` 三个子路由 |
-| `app/api/common.py` | `run_api_action`、`build_message_response`、`MessageResponse`、500 文案常量 |
-| `app/api/conversations.py` | `POST/GET/DELETE/PUT` 会话接口 → `conversation_service` |
-| `app/api/upload.py` | `validate_upload` / `read_upload_content` / `_store_upload` / `upload_file` / `get_upload_status` |
-| `app/api/langgraph.py` | `langgraph_query` Form+SSE，调 `stream_agent_query`，设 `X-Conversation-ID` |
-| `app/main.py` | 应用工厂、CORS、health、挂载 api、lifespan 启停 `AppContainer` |
+| `app/api/deps.py` | `get_current_user`：验证 JWT → `AuthenticatedUser(id, username)`，并把 user_id 写入 contextvars（供日志/检索分域） |
+| `app/api/auth.py` | `POST /auth/register`、`POST /auth/login`、`GET /auth/me` |
+| `app/api/common.py` | `run_api_action`：HTTPException 透传 / `ResourceNotFoundError`→404 / 其余→500 |
+| `app/api/conversations.py` | 会话五端点 → `conversation_service`（全部按令牌身份做归属） |
+| `app/api/upload.py` | 校验/落盘/MySQL 元数据/hash 短路 → **发布索引事件**（失败回退进程内任务） |
+| `app/api/documents.py` | `GET /documents`、`GET/DELETE /documents/{doc_id}` |
+| `app/api/langgraph.py` | 限流 → 会话解析 → `graph.astream` → SSE（含 `event: error`、usage 日志） |
+| `app/main.py` | 应用工厂、CORS、health（浅/深）、X-Request-ID 中间件、lifespan 启停 `AppContainer` |
 
-**直接依赖的 application（不在 api 包内但必知）：**
+**直接依赖的 application / platform（不在 api 包内但必知）：**
 
 | 文件 | 被谁调用 |
 |---|---|
-| `chat/application/conversation_service.py` | conversations 路由 |
+| `user/application/auth_service.py` | auth 路由 + deps（令牌签发/验证/bcrypt） |
+| `chat/application/conversation_service.py` | conversations、langgraph（ensure_conversation） |
 | `chat/application/agent_query_service.py` | langgraph 路由 |
-| `knowledge/application/indexing_service.py` | upload 提交的后台任务 |
-| `shared/background_tasks.py` | upload 提交/查状态 |
+| `knowledge/application/document_service.py` | upload / documents 路由 |
+| `platform/events.py` + `shared/streams.py` | upload 发布索引事件；SSE 回合结束发布记忆事件 |
+| `shared/background_tasks.py` | 任务状态读写（stream 与回退路径共用协议） |
+| `shared/core/rate_limit.py` | langgraph 的每用户并发限流 |
 
 ---
 
 ## 2. 公共工具与关键函数
 
-### 2.1 `run_api_action`
-
-**文件：** `app/api/common.py`
-
-**作用：** 统一执行 API 异步动作；业务 `HTTPException` 原样抛出；其它异常记日志并转 **HTTP 500**。
-
-**签名：**
+### 2.1 `get_current_user`（`deps.py`）—— 一切受保护端点的入口
 
 ```python
-async def run_api_action(
-    action_name: str,
-    operation: Awaitable[ApiResult],
-    *,
-    logger: logging.Logger,
-    **context: object,
-) -> ApiResult
+CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
+
+@router.get("/conversations")
+async def get_my_conversations(current_user: CurrentUser) -> ...:
 ```
 
-| 参数 | 说明 |
+流程：`Authorization: Bearer <jwt>` → `verify_access_token`（签名/过期校验）→
+`AuthenticatedUser(id, username)` → `set_current_user_id(id)`（contextvars）。
+
+| 失败场景 | 响应 |
 |---|---|
-| `action_name` | 日志动作名，如 `"upload_file"`、`"delete_conversation"` |
-| `operation` | **已构造的协程对象**（`await operation`），不是函数引用 |
-| `logger` | 模块 logger |
-| `**context` | 写入 `format_log_context` 的键值（user_id、filename…） |
+| 缺少令牌 | 401 `缺少访问令牌，请先登录` |
+| 过期 | 401 `登录已过期，请重新登录` |
+| 签名不符/畸形 | 401 `无效的访问令牌` |
 
-| 返回 | 成功时 `operation` 的返回值 |
-|---|---|
-| 错误 | `HTTPException` 透传；其它 → 500，`detail="Internal server error"` |
+> **教学要点：为什么身份必须从令牌推导？**
+> v3.35 之前所有接口接受自报 `user_id`（前端 localStorage 一个数字），
+> 服务端全盘信任——归属校验只能防误操作，防不了改个数字冒充别人。
+> 令牌由服务端签名，客户端**无法伪造 user_id**；这是其余一切访问控制的前提。
+> 写入 contextvars 的副产品：日志与 RAG 分域过滤能拿到身份而无需层层传参。
 
-**常见坑：** 业务要 4xx 必须 `raise HTTPException`；`raise ValueError` 会被打成 500。
-
-### 2.2 `build_message_response`
+### 2.2 `run_api_action`（`common.py`）—— 统一错误映射
 
 ```python
-def build_message_response(message: str) -> MessageResponse  # {"message": str}
+async def run_api_action(action_name, operation, *, logger, **context) -> ApiResult
 ```
 
-删除/改名成功时的轻量响应。
+| 异常 | 映射 | 说明 |
+|---|---|---|
+| `HTTPException` | 原样透传 | handler 自己定的语义（400/401/429…） |
+| `ResourceNotFoundError` | **404** | 业务层"不存在/不属于你"，**不打堆栈**（正常控制流） |
+| 其余 `Exception` | 500 | `logger.error` 带上下文与堆栈 |
+
+**常见坑**：Service/Repo 层要表达"资源没了"请抛 `ResourceNotFoundError`
+（`app/shared/core/errors.py`），抛裸 `ValueError` 会被打成 500——
+这正是 v3.34 修掉的历史 bug。
 
 ### 2.3 上传私有 helper（`upload.py`）
 
-#### `validate_upload(file: UploadFile) -> None`
+| 函数 | 职责 |
+|---|---|
+| `validate_upload` | 扩展名 ∈ `{.pdf,.docx,.md,.markdown}` + content_type 存在，否则 400 |
+| `read_upload_content` | 读全文件；超限 400；pdf/docx 魔数校验（md 无魔数） |
+| `_store_upload` | 目录 `{UPLOAD_DIR}/{uuid5(user_id)}/{时间戳}/`；算 `content_hash` |
+| `_resolve_owner` | `visibility=global\|private` → chunk 的 owner 标识（global 值取自配置） |
+| `_submit_indexing` | **优先发布 Redis Streams 事件**（崩溃可续跑），失败回退进程内任务 |
 
-- 扩展名 ∈ `{.pdf,.docx,.md,.markdown}`（`supports_document_indexing`）
-- 必须有 `content_type`
-- 失败：`HTTP 400`
-
-#### `read_upload_content(file, *, max_upload_size_bytes, ...) -> bytes`
-
-- 读全文件；超限 → 400  
-- pdf/docx 做魔数前缀校验；**md 无魔数**  
-
-#### `_store_upload(file, user_id) -> StoredUploadFileInfo`
-
-- 目录 `uploads/{uuid5(user_id)}/{timestamp}/`  
-- 返回 path / size / original_name 等元信息  
-
-会话与上传接口普遍用 `run_api_action`；LangGraph SSE **自行 try/except**（流式场景不宜统一包装）。
+会话/上传/文档接口普遍用 `run_api_action`；SSE **自行 try/except**（见 §8.5）。
 
 ---
 
-## 3. 健康检查
+## 3. 健康检查（浅探针 + 深探针）
 
-| 项 | 值 |
-|---|---|
-| 方法/路径 | `GET /health` |
-| 实现 | `main.register_routes` 内联 |
-| 响应 | `{"status": "ok"}` |
-| 用途 | Compose healthcheck / 探活 |
+| 项 | `GET /health` | `GET /health/deep` |
+|---|---|---|
+| 用途 | 容器编排高频探活 | 运维排障：是哪个依赖挂了 |
+| 检查 | 仅进程/HTTP 栈存活 | MySQL(`SELECT 1`) / Redis(ping) / Milvus(list_collections) / Neo4j(可选) |
+| 单项超时 | — | 2s（`asyncio.wait_for`，深探针也不能被挂死的依赖拖住） |
+| 响应 | 恒 200 `{"status":"ok"}` | 全绿 200；任一核心依赖故障 **503** + 各组件明细 |
+| Neo4j 特殊 | — | 未配置返回 `disabled`，**不**影响整体 ok（可选增强） |
 
-**注意：** 健康检查**不**探测 MySQL/Redis/Milvus 是否可用，只表示进程与 HTTP 栈存活。
+```json
+// GET /health/deep 示例（Milvus 故障时，HTTP 503）
+{"status": "degraded", "components": {
+  "mysql": {"status": "ok"}, "redis": {"status": "ok"},
+  "milvus": {"status": "error", "detail": "timeout>2.0s"},
+  "neo4j": {"status": "disabled"}}}
+```
 
 ---
 
-## 4. 会话 API
+## 4. 鉴权 API
 
-文件：[`app/api/conversations.py`](../../app/api/conversations.py)  
-服务：`app.chat.application.conversation_service.conversation_service`
+文件：[`app/api/auth.py`](../../app/api/auth.py) ·
+服务：[`app/user/application/auth_service.py`](../../app/user/application/auth_service.py)
 
-### 4.1 创建会话
+### 4.1 三个端点
 
-```http
-POST /api/conversations
-Content-Type: application/json
+| 方法 | 路径 | 请求体 | 成功响应 |
+|---|---|---|---|
+| POST | `/api/auth/register` | `{"username","password"}` | `{access_token, token_type:"bearer", user_id, username}`（注册即登录） |
+| POST | `/api/auth/login` | 同上 | 同上 |
+| GET | `/api/auth/me` | —（带 Bearer） | `{user_id, username}`（前端启动探活令牌用） |
 
-{"user_id": 1}
+规则（与 `auth_service.py` 对齐）：
+
+- 用户名 2–50 字符；密码 ≥6 位；违规 → 400
+- 用户名占用 → 400 `用户名已被占用`
+- 登录失败 → 401 **统一文案**`用户名或密码错误`
+  （不区分"用户不存在/密码错"——区分会泄露注册状态，方便撞库）
+- 演示种子账号：`demo_user / demo1234`（生产部署删除）
+
+### 4.2 令牌生命周期（时序图）
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as 客户端
+    participant AU as auth.py
+    participant AS as AuthService
+    participant DB as MySQL users
+    participant DEP as deps.get_current_user
+    participant BIZ as 任意受保护端点
+
+    Note over U,DB: ── 登录换令牌 ──
+    U->>AU: POST /api/auth/login {username, password}
+    AU->>AS: authenticate()
+    AS->>DB: SELECT by username
+    AS->>AS: bcrypt.verify(password, password_hash)
+    AS->>DB: 更新 last_login
+    AS-->>AU: AuthenticatedUser(id, username)
+    AU->>AU: issue_access_token → JWT{sub, username, iat, exp}
+    AU-->>U: {access_token, user_id, username}
+
+    Note over U,BIZ: ── 之后每个请求 ──
+    U->>BIZ: Authorization: Bearer <jwt>
+    BIZ->>DEP: Depends(get_current_user)
+    DEP->>DEP: jwt.decode(SECRET_KEY, HS256)<br/>校验签名 + exp
+    DEP->>DEP: set_current_user_id(id) → contextvars
+    DEP-->>BIZ: AuthenticatedUser
+    BIZ-->>U: 业务响应
+
+    Note over U,DEP: 过期/伪造 → 401（前端清 token 回登录页）
 ```
 
-| 项 | 说明 |
-|---|---|
-| 成功响应 | `{"conversation_id": <int>}` |
-| 调用链 | API → `ConversationService.create_conversation` → `ConversationRepository.create` → MySQL |
-| 副作用 | 插入 `conversations` 行（默认标题等由 repository/model 决定） |
+### 4.3 密码与令牌的存储事实
 
-### 4.2 用户会话列表
+| 项 | 实现 | WHY |
+|---|---|---|
+| 口令哈希 | bcrypt（passlib，自带盐与成本因子） | 数据库泄露也无法还原明文 |
+| 令牌算法 | JWT HS256，密钥 `SECRET_KEY`（env） | 无状态验证，不查库 |
+| 有效期 | `ACCESS_TOKEN_TTL_SECONDS`（默认 24h） | 过期强制重登 |
+| 客户端存放 | `localStorage["ag_token"]` | 无 cookie ⇒ CORS 不需要 credentials |
 
-```http
-GET /api/conversations/user/{user_id}
-```
+> **教学要点：为什么 `/auth/me` 值得存在？**
+> 前端启动时本地可能有一个"看起来还在"的 token。与其等第一个业务请求 401
+> 才发现过期，不如启动先打一次 `/auth/me`——有效则直进工作台并拿到最新
+> username，无效则落登录门。一次廉价请求换启动路径的确定性。
 
-| 项 | 说明 |
-|---|---|
-| 成功响应 | `ConversationSummary[]`：`id/title/created_at/status/dialogue_type` |
-| 过滤逻辑 | 由 repository 决定（例如过滤默认标题会话） |
+---
 
-### 4.3 删除会话
+## 5. 会话 API（含历史消息）
+
+文件：[`app/api/conversations.py`](../../app/api/conversations.py)
+（身份一律来自 `CurrentUser`，路径/请求体没有任何 user_id）
+
+### 5.1 端点速览
+
+| 方法 | 路径 | 请求 | 成功响应 |
+|---|---|---|---|
+| POST | `/api/conversations` | 空 body | `{"conversation_id": 12}` |
+| GET | `/api/conversations` | — | `[{id,title,created_at,status,dialogue_type}]`（**过滤默认标题「新会话」**） |
+| GET | `/api/conversations/{id}/messages` | — | `[{role,content,created_at}]` 时间正序 |
+| PUT | `/api/conversations/{id}/name` | `{"name": "..."}` | `{"message":"会话名称已更新"}` |
+| DELETE | `/api/conversations/{id}` | — | `{"message":"会话已删除"}` |
+
+所有按 id 操作：不存在**或不属于当前用户** → 404 `会话不存在或不属于当前用户`
+（统一文案，防止用 404/403 差异枚举他人会话 id）。
+
+### 5.2 历史消息端点：双轨中的"给人看"那一轨
+
+`GET /{id}/messages` 读的是 **MySQL `messages` 表**（append-only，由
+`turn_completed` 事件消费者写入），与 Redis STM 完全独立：
+
+| | MySQL messages | Redis STM |
+|---|---|---|
+| 读者 | **人**（前端历史、审计） | **模型**（P0 上下文） |
+| 生命周期 | 永久（随会话删除级联） | 16 条窗口 + 24h TTL |
+| 本端点 | ✅ 读这里 | ❌ 不暴露 |
+
+> 产品意义：v3.35 之前消息只在 STM，切回昨天的会话一片空白
+> （"隔天失忆"）。现在会话列表承诺的历史真的能兑现。
+
+### 5.3 删除会话：一次删除，四处清理（时序图）
 
 ```mermaid
 sequenceDiagram
@@ -204,509 +293,399 @@ sequenceDiagram
     participant API as conversations.py
     participant Service as ConversationService
     participant Repo as ConversationRepository
-    participant MySQL as MySQL Database
+    participant MySQL as MySQL
     participant STM as Redis STM
     participant LTM as Milvus LTM
 
-    Client->>API: DELETE /api/conversations/{conversation_id}?user_id={user_id}
-    API->>Service: delete_conversation(conversation_id, user_id)
-    Service->>Repo: delete_by_id(conversation_id)
-    Repo->>MySQL: DELETE FROM conversations WHERE id = conversation_id
-    MySQL-->>Repo: Affected Rows = 1
-    
-    par 深度清理关联记忆数据
-        Service->>STM: clear_session_memory(session_id)
-        STM-->>Service: 已删除 messages/summary/meta/lock
-    and
-        Service->>LTM: soft_delete_session_memories(session_id)
-        LTM-->>Service: 更新 is_deleted=true
+    Client->>API: DELETE /api/conversations/12 (Bearer)
+    API->>Service: delete_conversation(12, current_user.id)
+    Service->>Repo: delete(12, user_id)
+    Repo->>MySQL: SELECT ... WHERE id=12 AND user_id=?（归属校验）
+    alt 不存在或非本人
+        Repo-->>API: ResourceNotFoundError → 404
+    else 校验通过
+        Repo->>MySQL: DELETE messages / DELETE conversations
+        Service->>STM: clear_session（messages/summary/meta/lock）
+        Service->>LTM: soft_delete_session_memories（is_deleted=true）
+        Note over Service,LTM: 记忆清理失败只记日志，不回滚 MySQL——<br/>避免「库删了但接口 500」导致前端反复重试
+        Service-->>Client: {"message": "会话已删除"}
     end
-    
-    Service-->>API: MessageResponse("会话已删除")
-    API-->>Client: 200 OK {"message": "会话已删除"}
 ```
 
-| 项 | 说明 |
-|---|---|
-| 必填参数 | query `user_id` —— **归属校验**（v3.34.0 起）：会话必须属于该用户，否则 404。删除会联动清空该会话 STM/LTM 记忆，绝不允许按 id 裸删他人会话 |
-| 成功响应 | `{"message": "会话已删除"}` |
-| 不存在/非本人 | **404** `会话不存在或不属于当前用户`（统一文案防 id 枚举；此前误报 500） |
-| 调用链 | API → `ConversationService.delete_conversation` → Repository 删 MySQL → 清理 Redis STM / Milvus LTM |
-| 清理范围 | 1) MySQL `conversations` 元信息<br>2) MySQL 历史 `messages` 表（若存在，兼容清理）<br>3) Redis STM：`messages/summary/meta/lock`（按 tenant/user/session）<br>4) Milvus LTM：`session_id` 匹配的长期记忆软删除（`is_deleted=true`） |
-| 失败策略 | MySQL 删除成功后，记忆清理失败只记日志、不回滚会话删除，避免前端反复 500 |
-| 边界 | 历史未写入 `session_id` 的 LTM 记录不会被会话删除命中（防止误删跨会话记忆） |
-
-### 4.4 重命名会话
-
-```http
-PUT /api/conversations/{conversation_id}/name
-Content-Type: application/json
-
-{"user_id": 1, "name": "新标题"}
-```
-
-| 项 | 说明 |
-|---|---|
-| 必填字段 | `user_id` —— 归属校验（v3.34.0 起），不符返回 404 |
-| 成功响应 | `{"message": "会话名称已更新"}` |
-| 不存在/非本人 | **404**（此前误报 500） |
-
-### 4.5 错误行为
-
-- Service/DB 异常 → `run_api_action` 记录 error 日志并转 500（或透传已有 HTTPException）  
-- 无鉴权中间件：`user_id` 由调用方信任传入（当前版本安全模型）  
+**为什么删除必须做归属校验？** 删除联动清空该会话的 STM/LTM 记忆——
+按 id 裸删等于允许任何人清空他人记忆（v3.34 修复的 IDOR）。
 
 ---
 
-## 5. 文档上传 API
+## 6. 文档上传 API
 
 文件：[`app/api/upload.py`](../../app/api/upload.py)
 
-### 5.1 上传并异步索引
+### 6.1 上传并异步索引
 
 ```http
-POST /api/upload
+POST /api/upload            （Bearer）
 Content-Type: multipart/form-data
 
 file: <binary>
-user_id: <int>
 mode: create | replace          # 默认 create
 doc_id: <string, optional>      # replace 必填；create 可省略（服务端生成）
+visibility: global | private    # 默认 global；private 仅在分域开关开启后影响检索
 ```
 
-#### 处理步骤（非常重要，对齐 `app/api/upload.py`）
+### 6.2 处理流水线（对齐 v3.35 事件化路径）
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Client as 客户端 (Vue3/curl)
-    participant API as upload.py (POST /api/upload)
+    actor Client as 客户端
+    participant API as upload.py
     participant DocSvc as DocumentService (MySQL)
-    participant TaskQ as TaskQueue (Redis)
-    participant Indexer as IndexingService (Background)
-    participant Parser as doc_parser Pipeline
-    participant Milvus as Milvus Vector Store
+    participant EV as Redis Streams<br/>document_index_requested
+    participant W as 事件消费者<br/>(app 内嵌 或 独立 worker)
+    participant Indexer as IndexingService
+    participant Milvus as Milvus
 
-    Client->>API: POST /api/upload (file, user_id, mode, doc_id)
-    API->>API: 1. validate_upload (扩展名/魔数校验)
-    API->>API: 2. _store_upload (计算 content_hash & 落盘)
-    API->>DocSvc: 3. prepare_create / prepare_replace
-    
-    alt 内容未发生变化 (content_hash 一致)
-        DocSvc-->>API: unchanged=true (跳过 reindex)
-        API-->>Client: 返回 task_id="", skipped=true
-    else 需建索引 (新文件/变更文件)
-        DocSvc-->>API: mark indexing (MySQL user_documents)
-        API->>TaskQ: task_manager.submit(run_document_indexing_job)
-        TaskQ-->>API: 返回 12位 Hex task_id
-        API-->>Client: HTTP 200 (task_id, doc_id, filename)
-        
-        async Background Indexing
-        TaskQ->>Indexer: run_document_indexing_job(file_info)
-        Indexer->>Parser: parse_document(file_path)
-        Parser-->>Indexer: 返回分块数据 Chunks
-        Indexer->>Milvus: HybridSearcher.index / reindex (软删旧版+写新版)
-        Milvus-->>Indexer: 向量构建完成
-        Indexer->>DocSvc: apply_indexing_result(status=SUCCESS)
-        DocSvc->>DocSvc: 更新 MySQL user_documents 为 active
-        TaskQ->>TaskQ: 更新 TaskStatus 为 COMPLETED
+    Client->>API: POST /api/upload (Bearer, file, mode, ...)
+    API->>API: ① validate_upload（扩展名/魔数/大小）
+    API->>API: ② _store_upload（落盘 + sha256 content_hash）
+    API->>DocSvc: ③ prepare_create / prepare_replace（归属校验）
+
+    alt content_hash 与库中一致（replace 幂等）
+        DocSvc-->>API: unchanged=true
+        API-->>Client: task_id=""，skipped=true（不建任务不软删）
+    else 需要建索引
+        API->>API: ④ 写任务状态 PENDING（origin="stream"）
+        API->>EV: ⑤ publish {task_id, file_info}
+        API-->>Client: HTTP 200 {task_id, doc_id, ...}（立即返回）
+
+        Note over EV,W: —— 异步，进程崩溃后 XAUTOCLAIM 认领续跑 ——
+        EV->>W: 消费事件
+        W->>W: 状态 → RUNNING
+        W->>Indexer: process_file（解析→切分→embedding）
+        Indexer->>Milvus: index / reindex（软删旧版+写新 version，带 owner_id）
+        W->>DocSvc: apply_indexing_result（回写 version/chunks/status）
+        W->>W: 状态 → COMPLETED / FAILED
     end
 ```
 
-```text
-1. validate_upload
-   - 扩展名必须 .md / .markdown / .pdf / .docx
-   - content_type 必须存在
-2. _store_upload
-   - user_uuid = uuid5(NAMESPACE_DNS, f"user_{user_id}")
-   - 目录 uploads/{user_uuid}/{YYYYMMDD_HHMMSS}/
-   - 读文件全部内容到内存
-   - 大小 ≤ settings.app_config.upload.max_upload_size_mb（默认 50MB）
-   - 魔数校验：
-       .pdf  → 以 %PDF 开头
-       .docx → 以 PK\x03\x04 开头（zip）
-       .md / .markdown → 无魔数（纯文本，不校验签名）
-   - content_hash = sha256(content)
-   - 落盘 write_bytes
-3. _register_document_metadata → DocumentService
-   - create：prepare_create → MySQL user_documents pending + 分配/校验 doc_id
-   - replace：prepare_replace → 归属校验
-       · 若 content_hash 与库中一致 → unchanged=true，**不提交任务**
-       · 否则 mark indexing
-4. 若 unchanged：立即返回 task_id="" + skipped/unchanged + message（跳过 reindex）
-5. 否则 task_manager.submit(run_document_indexing_job, file_info)
-   - 后台：IndexingService.process_file → apply_indexing_result 回写 MySQL
-6. bind_task_id；返回 task_id + doc_id + 文件元信息
+> **教学要点：为什么状态里有 `origin="stream"`？**
+> 任务状态协议同时服务两条执行通道：事件流（首选）与进程内回退。
+> 启动时的孤儿回收会把"别的进程留下的 pending/running"标成
+> `interrupted`——但 stream 任务崩溃后会被自动认领**重跑**，标它是误报。
+> `origin` 字段就是让孤儿回收认得出"这条不用你管"。
+
+### 6.3 任务状态查询
+
+```http
+GET /api/upload/status/{task_id}     （Bearer）
 ```
 
-#### 成功响应字段（逻辑结构）
+| 状态 | 含义 | 前端动作 |
+|---|---|---|
+| pending / running | 排队 / 解析索引中 | 继续轮询 |
+| completed | 完成，`result` 含 doc_id/version/chunks | 停止轮询 |
+| failed | 业务失败，`error` 有原因 | 展示错误 |
+| interrupted | **回退通道**的任务随进程消失，不会续跑 | 提示重新上传 |
 
-| 字段 | 含义 |
-|---|---|
-| `filename` | 落盘文件名 |
-| `original_name` / `title` | 原始上传名 / 展示名 |
-| `size` | 字节数 |
-| `type` | content_type |
-| `path` | 相对路径 |
-| `user_id` / `user_uuid` | 用户标识 |
-| `upload_time` / `directory` | 时间戳目录 |
-| `doc_id` | 稳定文档 ID（与 Milvus chunk.doc_id / MySQL 对齐） |
-| `mode` / `content_hash` | 入库模式 / 内容哈希 |
-| `task_id` | 后台任务 ID（12 位 hex）；**unchanged 时为空串** |
-| `unchanged` / `skipped` | hash 一致跳过 reindex |
-| `message` | 轮询提示或「内容未变化…」 |
+存储：Redis `task:doc_parse:{task_id}`，TTL 24h；不存在 → 404。
 
-#### 常见 400
+### 6.4 常见 400
 
 | 条件 | detail |
 |---|---|
 | 扩展名不支持 | `不支持的文件类型: {ext}` |
 | 无 content_type | `无法识别文件类型` |
-| 超过大小 | `文件大小超过限制 ({N}MB)` |
-| 魔数不匹配 | `文件内容与扩展名不匹配: {ext}` |
+| 超过大小（默认 50MB） | `文件大小超过限制 ({N}MB)` |
+| 魔数不匹配 | `文件内容与扩展名不匹配: {ext}`（pdf=`%PDF`，docx=`PK\x03\x04`） |
 | mode 非法 | `mode 仅支持 create 或 replace` |
+| visibility 非法 | `visibility 仅支持 global 或 private` |
 | replace 无 doc_id | `replace 模式必须提供 doc_id…` |
-| replace 无归属/不存在 | DocumentService 抛出后转 400 |
-
-### 5.2 查询任务状态
-
-```http
-GET /api/upload/status/{task_id}
-```
-
-| 项 | 说明 |
-|---|---|
-| 存储 | Redis key 前缀 `task:doc_parse:`（可配） |
-| 不存在 | HTTP 404 `任务不存在: {task_id}` |
-| 状态枚举 | pending / running / **completed** / failed / **interrupted**（见 `TaskStatus`，非 success） |
-| TTL | 默认 24h |
-
-### 5.3 上传与索引的边界
-
-| 层 | 负责 |
-|---|---|
-| API (`upload.py`) | 校验、落盘、MySQL 元数据、hash 短路、提交任务 |
-| DocumentService | `user_documents` CRUD / 索引结果回写 |
-| TaskQueue | 状态机、后台 asyncio 任务 |
-| `run_document_indexing_job` | 调 IndexingService + apply_indexing_result |
-| IndexingService | parse_document + HybridSearcher.index/reindex |
-| doc_parser / MilvusStore | 切分；策略 2 软删 + version 写入 |
+| replace 非本人文档 | `文档不存在或不属于当前用户: {doc_id}` |
 
 ---
 
-## 6. LangGraph 问答 API（SSE）
+## 7. 文档管理 API
 
-文件：[`app/api/langgraph.py`](../../app/api/langgraph.py)  
-门面：[`app/chat/application/agent_query_service.py`](../../app/chat/application/agent_query_service.py)
+文件：[`app/api/documents.py`](../../app/api/documents.py)
 
-### 6.1 请求
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/documents` | 我的文档列表（doc_id/title/version/status/chunk_count） |
+| GET | `/api/documents/{doc_id}` | 单条元信息；非本人 404 |
+| DELETE | `/api/documents/{doc_id}` | MySQL 删行 + Milvus 软删该 doc_id 全部 chunk；返回 `soft_deleted_chunks` |
+
+> **语义提醒**：列表是"**上传管理**视角"（谁能替换/删除）。知识库检索默认
+> 全局共享——你上传的文档所有用户都检索得到，传错请立刻 DELETE 撤下
+> （软删后检索立即排除）。私有域见 05 文档 C6.5。
+
+---
+
+## 8. LangGraph 问答 API（SSE）
+
+文件：[`app/api/langgraph.py`](../../app/api/langgraph.py)
+
+### 8.1 请求
 
 ```http
-POST /api/langgraph/query
-Content-Type: application/x-www-form-urlencoded
+POST /api/langgraph/query        （Bearer）
+Content-Type: multipart/form-data
 
 query=<用户问题>
-user_id=<int>
-conversation_id=<可选字符串>
+conversation_id=<int, 可选>
 ```
 
 | 参数 | 必填 | 说明 |
 |---|---|---|
 | `query` | 是 | 用户自然语言 |
-| `user_id` | 是 | 写入 LangGraph configurable，供记忆使用 |
-| `conversation_id` | 否 | 缺省则 `uuid4()`；用作 `thread_id` |
+| `conversation_id` | 否 | **必须是自己的会话 id**（否则 404）；缺省服务端自动创建 |
 
-### 6.2 调用链
+### 8.2 全链路（时序图）
 
-```text
-langgraph_query
-  → thread_id = conversation_id or uuid4()
-  → stream_agent_query(query, user_id, thread_id)
-       → graph.astream(
-            InputState(messages=[HumanMessage(query)]),
-            stream_mode="messages",
-            config={configurable: {thread_id, user_id}}
-         )
-  → StreamingResponse 过滤 chunk：
-       跳过：无 content / 有 tool_calls / tags 含 research_plan
-       输出：data: <json.dumps(content)>\n\n
-  → 创建 StreamingResponse 时即设置响应头 X-Conversation-ID: thread_id（流开始即可读到）
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as 客户端
+    participant MW as X-Request-ID 中间件
+    participant EP as langgraph_query
+    participant RL as SseConcurrencyLimiter
+    participant CS as ConversationService
+    participant G as LangGraph 主图
+    participant EV as Redis Streams
+
+    U->>MW: POST（Bearer + query）
+    MW->>MW: 生成/透传 request_id → contextvars<br/>（此后全链路日志自动携带）
+    MW->>EP: 进入 handler（get_current_user 先验令牌）
+    EP->>RL: acquire(user_id)
+    alt 超过并发上限（默认 3 路）
+        RL-->>U: 429 并发对话数已达上限
+    else 有槽位
+        EP->>CS: ensure_conversation(user_id, conversation_id?)
+        alt 传了别人的会话 id
+            CS-->>U: 404（并释放槽位）
+        else OK / 自动创建
+            CS-->>EP: conversation_id（int）
+            EP->>G: astream(thread_id=str(id))
+            Note over EP,U: 响应头先行：X-Conversation-ID / X-Request-ID
+            loop 流式输出
+                G-->>EP: chunk（过滤 tool_calls / research_plan / 空串）
+                EP-->>U: data: "文本片段"
+            end
+            alt 流中途异常
+                EP-->>U: event: error + data: "生成过程中出现异常，请重试。"
+            end
+            G->>EV: after_response 发布 turn_completed（异步写扩散）
+            EP->>RL: release(user_id)（finally 保证）
+            EP->>EP: 记录 llm_usage（in/out/total tokens）
+        end
+    end
 ```
 
-### 6.3 响应
+### 8.3 响应
 
 | 项 | 值 |
 |---|---|
 | Content-Type | `text/event-stream` |
-| Header | `X-Conversation-ID` |
-| 事件体 | `data: "文本片段"\n\n`（JSON 字符串） |
-| 异常 | 500 + `INTERNAL_SERVER_ERROR_DETAIL`，并 `logger.exception` |
+| Header | `X-Conversation-ID`（续聊键）、`X-Request-ID`（排障键） |
+| 正常帧 | `data: "文本片段"\n\n`（JSON 字符串） |
+| 错误帧 | `event: error\ndata: "..."\n\n`（流开始后无法再改 HTTP 状态码） |
+| 流前失败 | 401（令牌）/ 404（会话归属）/ 429（并发）/ 500 |
 
-### 6.4 前端集成注意
-
-1. 应用 **Form**，不是 JSON body  
-2. 用上次返回的 `X-Conversation-ID` 作为下次 `conversation_id`，才能对齐记忆 session  
-3. SSE 中 tool 中间态被过滤，用户主要看到最终自然语言 token/片段  
-4. 主图内部记忆写回在 `after_response`，与 SSE 并行生命周期相关：流结束后图会跑完写回  
-
-### 6.5 `conversation_id`、`thread_id` 与前端状态的关系
-
-这个点很适合面试时主动讲，因为它体现了你是否真的看过调用链。
+### 8.4 会话标识（v3.35 唯一化后的简单世界）
 
 ```text
-前端 createConversation
-  → POST /api/conversations
-  ← {"conversation_id": 12}
-
-前端发送 SSE
-  → form.conversation_id = "12"
-  → API langgraph_query 把它当作 thread_id
-  → StreamingResponse Header: X-Conversation-ID = "12"
+thread_id ≡ str(conversation_id) ≡ STM/LTM 的 session_id
 ```
 
-当前前端 `frontend/src/stores/chat.ts` 的做法是：
+服务端是唯一的 id 来源：传 id 必须归属校验，不传就创建。
+从此不存在"uuid 孤儿线程的记忆无法被会话删除清理"的问题。
+前端唯一要做的：把响应头 `X-Conversation-ID` 存下来续聊。
 
-1. 先调 `POST /api/conversations` 拿到 MySQL `conversation_id`。
-2. 再把这个整数转成字符串，放进前端 `threadId`。
-3. SSE 问答时把这个字符串作为 `conversation_id` 传给 `/api/langgraph/query`。
-4. 后端缺省时会自己生成 `uuid4()`，但前端正常路径下通常直接复用已有会话 id。
+### 8.5 为什么 SSE 不用 `run_api_action`？
 
-**面试怎么讲：**
-
-1. MySQL 会话主键解决“列表、改名、删除、归属”。
-2. LangGraph `thread_id` 解决“记忆会话串联”。
-3. 当前前端为了简化状态管理，直接把 `conversation_id` 复用了为 `thread_id` 字符串。
-4. 这是一个契约选择，不是数据库主键和图执行键天然必须同构。
+流一旦开始，HTTP 200 已经发出——中途异常**无法**再变成 5xx。
+统一包装器只会在"流创建前"有用。所以 SSE 分两段处理：
+流前异常走正常 HTTP 状态码；流中异常在 generator 里捕获并发
+`event: error` 帧（否则客户端只看到连接静默断掉，无从区分
+"生成完了"和"后端炸了"）。
 
 ---
 
-## 7. 跨 API 的安全现状
+## 9. 跨 API 的安全机制（v3.35 现状）
 
 | 项 | 现状 |
 |---|---|
-| 用户鉴权 | **无** JWT/Session；调用方自报 user_id |
-| CORS | 默认 `*`（开发友好，生产需收紧） |
-| 上传 | 扩展名 + 魔数 + 大小限制 |
-| Prompt 注入 | 在 graph 决策节点用 `wrap_user_message` XML 转义，不在 API 层 |
+| 用户鉴权 | **JWT Bearer**（HS256 + bcrypt）；身份不可自报 |
+| 资源授权 | 会话/文档全部按令牌身份归属校验；不存在与非本人统一 404 防枚举 |
+| 限流 | SSE 每用户并发上限（默认 3，Redis 计数 + TTL 兜底；限流器故障放行） |
+| 上传 | 扩展名 + MIME + 大小 + 魔数 |
+| Prompt 注入 | graph 决策节点 `wrap_user_message`（XML+escape）+ Guardrails + Cypher 禁写 |
+| CORS | origins=`*`，**credentials=False**（无 cookie；规范禁止 `*`+credentials） |
+| 可追踪性 | `X-Request-ID` 贯穿全链路日志 |
+| 生产前仍需 | SECRET_KEY 换强随机值、删种子用户、CORS 白名单、HTTPS 终止 |
 
 ---
 
-## 8. 接口一览表
+## 10. 接口一览表
 
-| 方法 | 路径 | 同步/异步 | 下游 |
-|---|---|---|---|
-| GET | `/health` | 同步 | 无 |
-| POST | `/api/conversations` | 同步 | MySQL |
-| GET | `/api/conversations/user/{id}` | 同步 | MySQL |
-| DELETE | `/api/conversations/{id}?user_id=` | 同步 | MySQL + Redis STM + Milvus LTM（归属校验） |
-| PUT | `/api/conversations/{id}/name` | 同步 | MySQL（body 带 user_id 归属校验） |
-| POST | `/api/upload` | 异步任务 | Redis + 后台索引 |
-| GET | `/api/upload/status/{task_id}` | 同步读 Redis | Redis |
-| GET | `/api/documents/user/{id}` | 同步 | MySQL `user_documents` |
-| GET | `/api/documents/user/{id}/{doc_id}` | 同步 | MySQL `user_documents` |
-| DELETE | `/api/documents/user/{id}/{doc_id}` | 同步 | MySQL 删行 + Milvus 软删 chunk（归属校验） |
-| POST | `/api/langgraph/query` | SSE 长连接 | LangGraph 全栈 |
-
----
-
-## 9. 面试时怎么讲 API 层
-
-如果面试官问“你这个后端接口层做得有什么特点”，可以按下面顺序答：
-
-1. **分层清楚**：API 只做协议转换，不直接写 SQL，也不直接拼 Agent 节点逻辑。
-2. **契约稳定**：会话、上传、文档列表、SSE 问答四类接口边界清楚。
-3. **长耗时异步化**：上传先返回 `task_id`，后续轮询，不阻塞请求线程。
-4. **流式响应明确**：SSE 通过 `X-Conversation-ID` 把续聊 session 显式暴露给前端。
-5. **错误处理统一**：普通接口通过 `run_api_action` 做统一日志和 500 包装；SSE 单独处理异常。
-
-如果继续追问“你读代码后最关注哪个接口契约”，优先讲：
-
-1. `/api/langgraph/query` 的 Form + SSE + `X-Conversation-ID`
-2. `/api/upload` 的 `mode=create|replace` + `doc_id`
-3. `/api/documents/user/{user_id}` 文档列表如何支撑前端“我的文档 / 更新”
-
-### 9.1 面试式追问：API 层最容易被继续问什么
-
-**Q1. 为什么 SSE 问答不用普通 JSON 接口？**  
-答：因为模型输出天然是流式的，SSE 能更快把内容往前端推；同时 `X-Conversation-ID` 也能在响应头里立刻返回，方便续聊。
-
-**Q2. 为什么 `conversation_id` 要在问答接口里重复传？**  
-答：因为问答链路需要一个稳定的会话键去对齐 LangGraph `thread_id` 和记忆读取，如果不传就只能让后端临时生成，续聊会变得不稳定。
-
-**Q3. 为什么上传接口不直接返回“文档已可检索”？**  
-答：因为上传成功只代表文件已经校验、落盘并提交了后台任务，不代表解析、切分、向量化和索引写入都已经完成。
-
-**Q4. 为什么 `/health` 不能当成整套系统都健康？**  
-答：因为它只说明 HTTP 进程活着，不代表 MySQL、Redis、Milvus、Neo4j 都能正常工作。这是一个很典型的面试边界题。
-
-**Q5. 为什么普通接口和 SSE 的错误处理方式不同？**  
-答：普通接口适合统一包进 `run_api_action`，但 SSE 是长连接流式输出，异常处理和响应生成时机不一样，所以它单独做 try/except 更合理。
+| 方法 | 路径 | 鉴权 | 同步/异步 | 下游 |
+|---|---|---|---|---|
+| GET | `/health` | 无 | 同步 | 无 |
+| GET | `/health/deep` | 无 | 同步(2s/项) | MySQL+Redis+Milvus+Neo4j 探测 |
+| POST | `/api/auth/register` | 无 | 同步 | MySQL users |
+| POST | `/api/auth/login` | 无 | 同步 | MySQL users |
+| GET | `/api/auth/me` | Bearer | 同步 | 仅验令牌 |
+| POST | `/api/conversations` | Bearer | 同步 | MySQL |
+| GET | `/api/conversations` | Bearer | 同步 | MySQL |
+| GET | `/api/conversations/{id}/messages` | Bearer | 同步 | MySQL messages |
+| DELETE | `/api/conversations/{id}` | Bearer | 同步 | MySQL + Redis STM + Milvus LTM |
+| PUT | `/api/conversations/{id}/name` | Bearer | 同步 | MySQL |
+| POST | `/api/upload` | Bearer | **事件异步** | MySQL + Redis Streams → 索引 |
+| GET | `/api/upload/status/{task_id}` | Bearer | 同步 | Redis 任务状态 |
+| GET | `/api/documents` | Bearer | 同步 | MySQL user_documents |
+| GET | `/api/documents/{doc_id}` | Bearer | 同步 | MySQL user_documents |
+| DELETE | `/api/documents/{doc_id}` | Bearer | 同步 | MySQL 删行 + Milvus 软删 |
+| POST | `/api/langgraph/query` | Bearer | SSE 长连接 | 限流 + LangGraph 全栈 + 事件发布 |
 
 ---
 
-## 10. 安全边界（并入，不再单独成册）
+## 11. 面试时怎么讲 API 层
 
-### 10.1 已有防护
+1. **信任边界清晰**：身份只来自 JWT；`get_current_user` 是唯一入口，业务层拿到的 user_id 天然可信。
+2. **分层克制**：API 只做协议转换与错误映射；SQL、检索、图编排都不在这层。
+3. **错误语义分级**：401（身份）/ 404（归属，统一文案防枚举）/ 429（并发护栏）/ 500（真异常，带 request_id 可追）。
+4. **长耗时事件化**：上传立即返回 task_id，索引经 Redis Streams 执行——重启不丢任务，这比"进程内异步"高一个可靠性等级。
+5. **流式契约完整**：SSE 除了 data 帧还有 error 帧；响应头前置回传会话键与追踪键。
 
-```text
-上传：扩展名 + MIME + 大小 + 魔数
-问答：wrap_user_message(XML+escape) → Router/Guardrails → structured output
-图谱：Cypher 禁写硬拦截
-记忆：抽取阶段手机号脱敏、敏感 pattern 过滤
-```
+### 面试式追问
 
-### 10.2 明确未做
+**Q1. 为什么 SSE 问答不用普通 JSON 接口？**
+模型输出天然流式，SSE 首 token 更快；`X-Conversation-ID` 在响应头即刻可读，续聊不用等 body。
 
-| 项 | 现状 |
-|---|---|
-| 登录鉴权 | 无；user_id 调用方自报 |
-| 资源授权 | 无 conversation 级 ACL |
-| CORS | 默认 origins=`*` 且 **allow_credentials=True**（浏览器规范下 `*`+credentials 组合有隐患，生产必须改白名单） |
-| 限流 | 无 |
-| SSE 鉴权 | 无 |
+**Q2. 令牌过期用户正在流式对话会怎样？**
+验令牌发生在流开始前——流中不再验。已建立的流不受影响；下一次请求 401，前端清 token 回登录页。
 
-生产至少补：鉴权、CORS 白名单、上传/问答限流、改默认库密码。
+**Q3. 为什么 404 不区分"不存在"和"不是你的"？**
+区分就等于提供了"探测他人资源 id 是否存在"的 oracle。统一 404 让枚举无收益。
 
-### 10.3 静态资源与 OpenAPI
+**Q4. 上传接口返回成功，文档就能检索到了吗？**
+不能。返回只代表校验+落盘+事件已投递；解析/切分/向量化在消费者里异步进行，以 `status=completed` 为准。
 
-- 前端独立服务 `frontend`（:8080）；后端可选挂载 `STATIC_DIR`（默认不存在则跳过）  
-- Swagger：`/docs`；OpenAPI：`/openapi.json`  
-- SSE 在 Swagger 中体验有限，建议 curl/前端验证  
+**Q5. `/health` 全绿但用户报错，第一步看什么？**
+`/health/deep` 定位哪个依赖故障；再拿用户报错响应头里的 `X-Request-ID` 去日志串完整链路。
 
-
+**Q6. 限流器 Redis 挂了会拒绝所有请求吗？**
+不会，fail-open：护栏自身故障时放行并告警。护栏的可用性不能高于被保护的功能。
 
 ---
 
-## 面试深挖：API 层
+## 12. 下一步
 
-### Q1. 为什么 LangGraph 用 Form 不是 JSON？
-
-历史/前端 multipart 习惯；与 upload 一致用表单。不是技术限制，面试承认「契约选择」，OpenAPI 对 SSE+Form 体验一般。
-
-### Q2. run_api_action 解决什么？
-
-统一：执行协程 → 捕获异常 → 结构化日志（format_log_context）→ HTTPException 透传 / 其它转 500。避免每个 handler 复制 try/except。
-
-### Q3. 上传魔数校验防什么？
-
-只改扩展名的假文件（`.pdf` 实为 exe）。PDF 看 `%PDF`，DOCX 看 ZIP 头 `PK\x03\x04`。Markdown 为纯文本无稳定魔数，只做扩展名 + 大小限制。
-
-### Q4. 上传为何先落盘再异步？
-
-解析 PDF 可能数十秒；同步会卡住 HTTP worker。落盘后立即返回 task_id，解析失败文件仍可排障。
-
-### Q5. task 一直 pending 最可能？
-
-1. process_file 卡在 Docling/Milvus  
-2. 未真正 submit（异常被吞）— 看 app 日志  
-
-> 「进程重启把 asyncio 任务丢了，但 Redis 仍停在 pending/running」这一条自
-> v3.33.0 起已被覆盖：任务状态带 `worker_id`，新进程启动时会把上一代 worker
-> 遗留的 pending/running 记录改成 **`interrupted`** 并附带原因。
-> 看到 `interrupted` 即表示任务已随进程消失、需要重新提交（不会自动续跑）。
-
-### Q6. 无鉴权如何答辩？
-
-「当前是内部/演示架构，user_id 信任调用方；生产应 JWT，user_id 从 token 取，并做 conversation 归属校验。」诚实 + 改造路径。
-
-## 11. 下一步
-
-- Agent 内部节点与会话 Service 函数 → [03-对话与Agent主图.md](03-对话与Agent主图.md)  
-- 上传后索引 `process_file` / `parse_document` → [05-知识检索与文档解析.md](05-知识检索与文档解析.md)  
-- 记忆 `before_agent` / `after_agent` → [04-记忆系统.md](04-记忆系统.md)
-
+- 主图内部节点与会话 Service → [03-对话与Agent主图.md](03-对话与Agent主图.md)
+- 记忆读写与写扩散/读扩散 → [04-记忆系统.md](04-记忆系统.md) §2.5
+- 上传后的解析与索引 → [05-知识检索与文档解析.md](05-知识检索与文档解析.md)
+- 鉴权服务实现（bcrypt/JWT） → [06-用户与画像.md](06-用户与画像.md)
 
 ---
 
 ## 附录 · API 调用示例全集（联调/自测）
 
 > Base：`http://localhost:8000`。需栈已 `docker compose up`。
+> **先拿令牌，后面所有请求带 `-H "Authorization: Bearer $TOKEN"`。**
+
+## E0. 登录拿令牌
+
+```bash
+# 演示账号（或先 register）
+TOKEN=$(curl -s -X POST http://localhost:8000/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"demo_user","password":"demo1234"}' \
+  | python -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+
+curl -s http://localhost:8000/api/auth/me -H "Authorization: Bearer $TOKEN"
+# {"user_id": 3, "username": "demo_user"}
+```
 
 ## E1. 健康检查
 
 ```bash
-curl -s http://localhost:8000/health
-# {"status":"ok"}
+curl -s http://localhost:8000/health          # {"status":"ok"}
+curl -s http://localhost:8000/health/deep     # 各依赖明细；故障时 HTTP 503
 ```
 
 ## E2. 会话
 
 ```bash
-# 创建
+# 创建（空 body）
 curl -s -X POST http://localhost:8000/api/conversations \
-  -H 'Content-Type: application/json' \
-  -d '{"user_id":1}'
+  -H "Authorization: Bearer $TOKEN"
 # {"conversation_id": 12}
 
-# 列表（排除标题仍为「新会话」的）
-curl -s http://localhost:8000/api/conversations/user/1
+# 我的列表（排除标题仍为「新会话」的）
+curl -s http://localhost:8000/api/conversations -H "Authorization: Bearer $TOKEN"
+
+# 历史消息（MySQL 持久化，切回旧会话可见）
+curl -s http://localhost:8000/api/conversations/12/messages \
+  -H "Authorization: Bearer $TOKEN"
 
 # 改名
 curl -s -X PUT http://localhost:8000/api/conversations/12/name \
-  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"name":"保修咨询"}'
 
-# 删除（会清 STM/LTM）
-curl -s -X DELETE http://localhost:8000/api/conversations/12
+# 删除（清 MySQL/STM/LTM；非本人 404）
+curl -s -X DELETE http://localhost:8000/api/conversations/12 \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ## E3. 上传与轮询
 
 ```bash
-# PDF / DOCX / MD 均可
 curl -s -X POST http://localhost:8000/api/upload \
-  -F 'user_id=1' \
+  -H "Authorization: Bearer $TOKEN" \
   -F 'file=@./售后手册.pdf;type=application/pdf'
-# 返回 task_id, path, ...
+# {task_id, doc_id, ...}；重复上传同内容（replace）会 skipped=true
 
-curl -s http://localhost:8000/api/upload/status/<task_id>
+curl -s http://localhost:8000/api/upload/status/<task_id> \
+  -H "Authorization: Bearer $TOKEN"
 # status: pending|running|completed|failed|interrupted
+
+# 文档管理
+curl -s http://localhost:8000/api/documents -H "Authorization: Bearer $TOKEN"
+curl -s -X DELETE http://localhost:8000/api/documents/<doc_id> \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ## E4. SSE 问答
 
 ```bash
-# 新建 thread（不传 conversation_id）
+# 新会话（不传 conversation_id，服务端自动创建）
 curl -N -X POST http://localhost:8000/api/langgraph/query \
-  -F 'query=智能门锁保修多久' \
-  -F 'user_id=1' \
-  -D - -o /tmp/sse.txt
-# 响应头含 X-Conversation-ID
-# body: data: "..." 多行
+  -H "Authorization: Bearer $TOKEN" \
+  -F 'query=智能门锁保修多久' -D - -o /tmp/sse.txt
+# 响应头含 X-Conversation-ID 与 X-Request-ID
 
-# 续聊同一 session
+# 续聊同一会话
 curl -N -X POST http://localhost:8000/api/langgraph/query \
+  -H "Authorization: Bearer $TOKEN" \
   -F 'query=那电池怎么换' \
-  -F 'user_id=1' \
   -F 'conversation_id=<上一步的 X-Conversation-ID>'
 ```
 
 ## E5. OpenAPI
 
-浏览器：`http://localhost:8000/docs`
+浏览器：`http://localhost:8000/docs`（Authorize 按钮粘贴 token 即可试受保护接口）
 
 ## E6. 常见联调错误
 
 | 现象 | 原因 |
 |---|---|
-| 列表看不到刚建会话 | 标题仍是「新会话」，被 list 过滤 |
-| 记忆串台 | conversation_id 与 X-Conversation-ID 不一致 |
-| 上传 400 | 扩展名或魔数 |
-| status 一直 pending | process_file 卡住 / submit 时异常被吞 |
-| status 变 interrupted | 执行该任务的进程已重启，任务不会续跑，需重新提交 |
-| SSE 无输出 | 全是 tool/research_plan 被过滤；看后端日志 |
-| SSE 收到 `event: error` | 流中途后端异常（v3.34.0 起不再静默断流）；已生成内容有效，整条重试即可 |
-
-
-
-## 附录 · v3.31 用户文档 API
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/api/documents/user/{user_id}` | 列表：doc_id / title / version / status / chunk_count |
-| GET | `/api/documents/user/{user_id}/{doc_id}` | 单条元信息 |
-| DELETE | `/api/documents/user/{user_id}/{doc_id}` | 删除文档（MySQL 删行 + Milvus 软删该 doc_id 全部 chunk；归属不符 404） |
-| POST | `/api/upload` Form: `file,user_id,mode=create\|replace,doc_id?` | create 写 MySQL pending；replace 必须已有 doc_id 且归属校验 |
-| GET | `/api/upload/status/{task_id}` | 任务结果含 doc_id / version / chunks |
-
-**更新文档约定**：前端列表展示 `title` + `doc_id`；点「更新」时上传新文件并固定传同一 `doc_id` + `mode=replace`，与 MySQL/Milvus 对齐。
+| 401 缺少访问令牌 | 忘带 `Authorization: Bearer`；或 token 过期/被清 |
+| 404 会话不存在或不属于当前用户 | id 打错，或试图操作他人会话（防枚举统一文案） |
+| 429 | 同一用户并发 SSE 超过上限（默认 3 路） |
+| 列表看不到刚建会话 | 标题仍是「新会话」，被 list 过滤（发首条消息后前端会改名） |
+| 上传 400 | 扩展名 / 魔数 / 大小 / visibility 取值 |
+| status 一直 pending | 消费者未运行（内嵌被关且没起 worker）/ 解析卡住 |
+| status 变 interrupted | **回退通道**任务随进程消失；stream 通道会自动续跑不出现此态 |
+| SSE 无输出 | 全是 tool/research_plan 被过滤；拿 X-Request-ID 查后端日志 |
+| SSE 收到 `event: error` | 流中途后端异常；已生成内容有效，整条重试即可 |
