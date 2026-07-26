@@ -5,6 +5,30 @@
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v3.35.1] - 2026-07-26
+
+第四轮审查：1 个静默连接故障 + 若干 v3.35 接缝修正。
+
+### 修复
+- **LTM 连的可能不是 Milvus 服务（第 4 个静默故障）**：`settings.MILVUS_URL`
+  返回 `host:port` **不带 scheme**，而 pymilvus 把无 scheme 的 uri 按
+  **本地文件路径**处理、转投 milvus-lite 嵌入式库——要么启动报错，要么
+  （pymilvus 在 Linux 自带 milvus-lite 时）**静默连到容器内嵌入式本地库**：
+  长期记忆看似工作，实际与真正的 Milvus 服务完全隔离，容器重建即清零。
+  修复为 `http://host:port`（07 文档一直写的就是带 scheme 的正确形态）。
+- **bootstrap 建表漏掉 messages 模型**：`db_script_support.prepare_db_models`
+  未导入新的 Message 模型，脚本路径 `create_all` 不会建 messages 表
+  （compose 走 init.sql 不受影响）。
+- **429 前不再创建空会话**：限流检查移到会话解析之前——此前被限流的
+  请求每次都会留下一个空会话行；归属校验失败也会正确释放并发槽位。
+- **owner 常量单源**：上传/索引侧的共享域标识改读
+  `rag_visibility.global_owner`，与检索过滤同源（消除两处硬编码 "global"）。
+
+### 前端
+- AuthPanel 重绘为「鎏金礼宾 Art Deco」设计语言（--gold/--ivory/--noir
+  设计变量 + plaque/gold-btn 组件类），与 v3.35 合并进来的整体视觉一致。
+- 任务状态类型补充 `interrupted` 字面量。
+
 ## [v3.35.0] - 2026-07-26
 
 架构路线图整轮落地：鉴权、事件管线、消息持久化、评测、可观测性、

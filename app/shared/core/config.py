@@ -70,7 +70,14 @@ class _Settings:
 
     @property
     def MILVUS_URL(self) -> str:  # noqa: N802
-        return f"{self.MILVUS_HOST}:{self.MILVUS_PORT}"
+        """Milvus 服务端 URI（必须带 scheme）。
+
+        WHY 必须带 http://：pymilvus 对无 scheme 的 uri 按**本地文件路径**处理，
+        转投 milvus-lite 嵌入式库——要么因缺依赖直接报错，要么（Linux 上
+        pymilvus 自带 milvus-lite 时）**静默连到容器内的本地嵌入库**：
+        LTM 看似工作，实际与真正的 Milvus 服务完全隔离，容器重建即清零。
+        """
+        return f"http://{self.MILVUS_HOST}:{self.MILVUS_PORT}"
 
 
 settings = _Settings()

@@ -118,20 +118,27 @@ async def langgraph_query(
     - thread_id（STM/LTM session 作用域）恒等于 str(conversation_id)，
       消除"uuid 孤儿线程的记忆无法被会话删除清理"的问题
     """
-    try:
-        resolved_conversation_id = await conversation_service.ensure_conversation(
-            current_user.id,
-            conversation_id,
-        )
-    except ResourceNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=exc.message) from exc
-
+    # 限流在会话解析之前：被 429 拒掉的请求不该每次都留下一个空会话行
     limiter = await _get_sse_limiter()
     if limiter is not None:
         try:
             await limiter.acquire(current_user.id)
         except ConcurrencyLimitExceededError as exc:
             raise HTTPException(status_code=429, detail=_RATE_LIMIT_DETAIL) from exc
+
+    try:
+        resolved_conversation_id = await conversation_service.ensure_conversation(
+            current_user.id,
+            conversation_id,
+        )
+    except ResourceNotFoundError as exc:
+        if limiter is not None:
+            await limiter.release(current_user.id)
+        raise HTTPException(status_code=404, detail=exc.message) from exc
+    except Exception:
+        if limiter is not None:
+            await limiter.release(current_user.id)
+        raise
 
     thread_id = str(resolved_conversation_id)
     try:

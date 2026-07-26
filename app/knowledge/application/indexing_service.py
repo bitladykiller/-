@@ -160,7 +160,10 @@ class IndexingService:
             return {"status": STATUS_ERROR, "message": str(exc)}
 
         content_hash = str(file_info.get("content_hash") or "")
-        owner_id = str(file_info.get("owner_id") or "global")
+        from app.shared.core.config import settings as app_settings
+
+        default_owner = app_settings.app_config.rag_visibility.global_owner
+        owner_id = str(file_info.get("owner_id") or default_owner)
 
         try:
             parse_document, searcher = self._pipeline_loader()

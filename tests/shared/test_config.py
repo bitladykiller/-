@@ -49,7 +49,8 @@ def test_settings_proxies_sub_settings_and_computed_urls() -> None:
     assert settings.DEEPSEEK_MODEL == "deepseek-chat"
     assert settings.DATABASE_URL == "mysql+aiomysql://root:1234@mysql:3306/kefu_agent"
     assert settings.REDIS_URL == "redis://:secret@redis:6379/1"
-    assert settings.MILVUS_URL == "milvus:19530"
+    # 必须带 scheme：无 scheme 会被 pymilvus 当本地文件路径转投 milvus-lite
+    assert settings.MILVUS_URL == "http://milvus:19530"
 
 
 def test_settings_redis_url_without_password_omits_auth_prefix() -> None:

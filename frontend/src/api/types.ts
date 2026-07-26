@@ -34,7 +34,7 @@ export interface UploadAccepted {
 
 export interface TaskStatusPayload {
   task_id: string;
-  status: "pending" | "running" | "completed" | "failed" | string;
+  status: "pending" | "running" | "completed" | "failed" | "interrupted" | string;
   updated_at?: string;
   result?: {
     status?: string;

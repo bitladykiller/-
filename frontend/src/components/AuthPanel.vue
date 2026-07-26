@@ -35,10 +35,11 @@ async function onSubmit() {
 
 <template>
   <div class="auth-wrap">
-    <div class="auth-card">
-      <div class="mark" aria-hidden="true">AG</div>
+    <div class="auth-card plaque">
+      <div class="mark" aria-hidden="true"><span>AG</span></div>
       <h1>AssistGen</h1>
-      <p class="sub">登录后开始对话（演示账号：demo_user / demo1234）</p>
+      <p class="sub">智能客服 · 礼宾控制台</p>
+      <p class="hint">演示账号 demo_user ✦ 密码 demo1234</p>
 
       <div class="tabs">
         <button
@@ -75,8 +76,8 @@ async function onSubmit() {
             placeholder="至少 6 位"
           />
         </label>
-        <button class="submit" type="submit" :disabled="submitting">
-          {{ submitting ? "请稍候…" : mode === "login" ? "登录" : "注册并登录" }}
+        <button class="gold-btn block" type="submit" :disabled="submitting">
+          {{ submitting ? "请稍候…" : mode === "login" ? "进入控制台" : "注册并进入" }}
         </button>
       </form>
 
@@ -91,100 +92,110 @@ async function onSubmit() {
   display: grid;
   place-items: center;
   padding: 24px;
+  background: var(--noir);
 }
 
 .auth-card {
-  width: min(380px, 100%);
-  padding: 32px 28px;
-  border-radius: 18px;
-  background: color-mix(in oklab, canvas 92%, canvastext 8%);
-  border: 1px solid color-mix(in oklab, canvastext 14%, transparent);
+  position: relative;
+  width: min(400px, 100%);
+  padding: 40px 32px 32px;
   text-align: center;
+  overflow: hidden;
 }
 
 .mark {
-  width: 44px;
-  height: 44px;
-  margin: 0 auto 12px;
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 14px;
   display: grid;
   place-items: center;
-  border-radius: 12px;
-  font-weight: 700;
-  background: canvastext;
-  color: canvas;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  font-family: var(--serif);
+  font-size: 20px;
+  color: var(--gold-bright);
+  background: var(--gold-soft);
 }
 
 h1 {
   margin: 0 0 4px;
-  font-size: 22px;
+  font-family: var(--serif);
+  font-size: 26px;
+  letter-spacing: 0.14em;
+  color: var(--ivory);
 }
 
 .sub {
-  margin: 0 0 20px;
-  font-size: 13px;
-  opacity: 0.7;
+  margin: 0 0 6px;
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  color: var(--ivory-dim);
+}
+
+.hint {
+  margin: 0 0 22px;
+  font-size: 12px;
+  color: var(--gold);
 }
 
 .tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 6px;
-  margin-bottom: 18px;
+  gap: 8px;
+  margin-bottom: 20px;
 }
 
 .tabs button {
-  padding: 8px 0;
-  border-radius: 10px;
-  border: 1px solid color-mix(in oklab, canvastext 18%, transparent);
+  padding: 9px 0;
+  border: 1px solid var(--line);
+  border-radius: 3px;
   background: transparent;
+  color: var(--ivory-dim);
+  font-size: 13px;
+  letter-spacing: 0.12em;
   cursor: pointer;
+  transition: all 0.2s ease;
 }
 
 .tabs button.active {
-  background: canvastext;
-  color: canvas;
-  border-color: canvastext;
+  border-color: var(--line-strong);
+  background: var(--gold-soft);
+  color: var(--gold-bright);
 }
 
 form {
   display: grid;
-  gap: 14px;
+  gap: 16px;
   text-align: left;
 }
 
 label {
   display: grid;
-  gap: 6px;
-  font-size: 13px;
+  gap: 7px;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  color: var(--ivory-dim);
 }
 
 input {
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid color-mix(in oklab, canvastext 20%, transparent);
-  background: transparent;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--noir-2);
+  color: var(--ivory);
   font-size: 14px;
+  font-family: var(--sans);
 }
 
-.submit {
-  margin-top: 4px;
-  padding: 10px 0;
-  border-radius: 10px;
-  border: none;
-  background: canvastext;
-  color: canvas;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.submit:disabled {
-  opacity: 0.6;
-  cursor: wait;
+input:focus {
+  outline: none;
+  border-color: var(--line-strong);
+  box-shadow: 0 0 0 3px var(--gold-soft);
 }
 
 .error {
-  margin: 14px 0 0;
+  margin: 16px 0 0;
   font-size: 13px;
-  color: #c0392b;
+  color: var(--garnet);
 }
 </style>

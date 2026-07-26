@@ -252,11 +252,16 @@ _ALLOWED_VISIBILITY = {"global", "private"}
 
 
 def _resolve_owner(visibility: str, user_id: int) -> str:
-    """把可见域参数解析为 chunk 的 owner 标识。"""
+    """把可见域参数解析为 chunk 的 owner 标识。
+
+    共享域标识取自配置（rag_visibility.global_owner），与检索侧过滤
+    使用同一来源——两侧硬编码各写一个 "global" 迟早会分家。
+    """
     value = (visibility or "global").strip().lower()
     if value not in _ALLOWED_VISIBILITY:
         raise HTTPException(status_code=400, detail="visibility 仅支持 global 或 private")
-    return "global" if value == "global" else str(user_id)
+    global_owner = settings.app_config.rag_visibility.global_owner
+    return global_owner if value == "global" else str(user_id)
 
 
 async def _run_upload(
