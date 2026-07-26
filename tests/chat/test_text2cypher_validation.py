@@ -209,3 +209,63 @@ def test_extract_entities_for_validation_reads_node_and_relationship_properties(
             "property_type": None,
         },
     ]
+
+
+async def test_llm_validator_skips_hallucinated_schema_entries() -> None:
+    """LLM 幻觉出不存在的 label/property 时必须跳过并记 mapping_error。
+
+    回归背景：`[...][0]` 曾对空匹配列表直接 IndexError（未知 property）、
+    未知 label 直接 KeyError——炸掉整个校验节点导致本次 KG 查询失败。
+    """
+    from types import SimpleNamespace
+
+    from app.chat.infrastructure.kg.validation.validators import (
+        validate_cypher_query_with_llm,
+    )
+
+    class FakeGraph:
+        structured_schema = {
+            "node_props": {
+                "Product": [{"property": "name", "type": "STRING"}],
+            }
+        }
+
+        def query(self, *_a, **_k):
+            return [{"yes": "yes"}]
+
+        def get_structured_schema(self):
+            return self.structured_schema
+
+    class FakeChain:
+        async def ainvoke(self, _payload):
+            return SimpleNamespace(
+                errors=[],
+                filters=[
+                    # 幻觉 label
+                    SimpleNamespace(node_label="Ghost", property_key="name", property_value="x"),
+                    # 幻觉 property
+                    SimpleNamespace(node_label="Product", property_key="ghost_prop", property_value="x"),
+                    # 合法条目照常校验
+                    SimpleNamespace(node_label="Product", property_key="name", property_value="门铃"),
+                ],
+            )
+
+    import app.chat.infrastructure.kg.validation.validators as v
+
+    original = v.retrieve_and_parse_schema_from_graph_for_prompts
+    v.retrieve_and_parse_schema_from_graph_for_prompts = lambda g: "schema"
+    try:
+        result = await validate_cypher_query_with_llm(
+            validate_cypher_chain=FakeChain(),
+            question="q",
+            graph=FakeGraph(),  # type: ignore[arg-type]
+            cypher_statement="MATCH (n) RETURN n",
+        )
+    finally:
+        v.retrieve_and_parse_schema_from_graph_for_prompts = original
+
+    assert result["errors"] == []
+    # 两条幻觉 → 两条 mapping_error；合法条目命中不再追加
+    assert len(result["mapping_errors"]) == 2
+    assert any("Ghost" in e for e in result["mapping_errors"])
+    assert any("ghost_prop" in e for e in result["mapping_errors"])

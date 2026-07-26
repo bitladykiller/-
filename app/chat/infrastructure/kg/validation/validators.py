@@ -12,6 +12,7 @@
 from typing import Any
 
 import regex as re
+from app.shared.core.async_bridge import run_blocking
 from langchain_core.runnables.base import Runnable
 from langchain_neo4j import Neo4jGraph
 from langchain_neo4j.chains.graph_qa.cypher_utils import CypherQueryCorrector, Schema
@@ -177,18 +178,27 @@ async def validate_cypher_query_with_llm(
     if llm_output.errors:
         errors.extend(llm_output.errors)
     if llm_output.filters:
+        node_props = graph.structured_schema.get("node_props", {})
         for filter in llm_output.filters:
-            # Do mapping only for string values
-            if (
-                not [
-                    prop
-                    for prop in graph.structured_schema["node_props"][filter.node_label]
-                    if prop["property"] == filter.property_key
-                ][0]["type"]
-                == "STRING"
-            ):
+            # LLM 可能幻觉出 schema 里不存在的 label / property——
+            # 直接跳过而不是让 [0] 抛 IndexError 炸掉整个校验节点
+            label_props = node_props.get(filter.node_label) or []
+            matched = [
+                prop
+                for prop in label_props
+                if prop.get("property") == filter.property_key
+            ]
+            if not matched:
+                mapping_errors.append(
+                    f"Unknown property {filter.node_label}.{filter.property_key} in filters"
+                )
                 continue
-            mapping = graph.query(
+            # Do mapping only for string values
+            if matched[0].get("type") != "STRING":
+                continue
+            # Neo4j 同步驱动：每个 filter 一次 RTT，必须下线程池
+            mapping = await run_blocking(
+                graph.query,
                 f"MATCH (n:{filter.node_label}) WHERE toLower(n.`{filter.property_key}`) = toLower($value) RETURN 'yes' LIMIT 1",
                 {"value": filter.property_value},
             )
