@@ -8,12 +8,18 @@
 - 对话级编排
 - LLM 抽取逻辑
 - Prompt 构造
+
+分层约定：
+模块级函数只放**纯函数**（过滤表达式拼装、记录构造、命中转换），
+它们无 IO、可单测、可被别处复用；带 IO 的编排一律是 `SimpleLongTermMemory`
+的方法，直接使用实例上的 client / config，不再把 logger、写入函数这类
+恒定依赖当参数层层下传。
 """
 from __future__ import annotations
 
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, TypeAlias
 
 from app.knowledge.domain.schemas import LongTermMemory, MemorySearchResult
@@ -21,11 +27,20 @@ from app.knowledge.infrastructure.ltm.ltm_collection import (
     DEDUP_OUTPUT_FIELDS,
     MEMORY_OUTPUT_FIELDS,
     MilvusRecord,
+    build_primary_key_in_filter,
+    delete_by_filter,
     ensure_memory_collection,
     insert_records,
+    query_records,
     search_records,
     upsert_records,
 )
+from app.shared.core.app_config import (
+    LTMDeduplicationConfig,
+    LTMSearchConfig,
+    LTMUpdateOnHitConfig,
+)
+from app.shared.core.async_bridge import run_blocking
 from app.shared.core.config import settings
 from app.shared.core.logger import get_logger
 from app.shared.retrieval import MilvusHybridSearchCore
@@ -33,13 +48,28 @@ from pymilvus import MilvusClient
 from typing_extensions import TypedDict
 
 logger = get_logger(__name__)
+
 SEARCH_LOG_PREVIEW_LIMIT = 100
 EMBEDDING_LOG_PREVIEW_LIMIT = 200
 HYBRID_SEARCH_LIMIT_MULTIPLIER = 2
+#: Milvus query 单次返回上限
+MAX_QUERY_LIMIT = 16384
+
 LoggerLike: TypeAlias = Any
-_NowProvider: TypeAlias = Callable[[], int]
-EmbeddingGetter: TypeAlias = Callable[[str], Awaitable[list[float] | None]]
 _MilvusHit: TypeAlias = Mapping[str, Any]
+
+
+class _HitUpdatePlan(TypedDict):
+    """长期记忆命中后的更新计划。"""
+
+    hit_count: int
+    last_hit_at: int
+    update_record: MilvusRecord
+
+
+# ---------------------------------------------------------------------- #
+# 纯函数：过滤表达式、记录构造、结果转换
+# ---------------------------------------------------------------------- #
 
 
 def entity_to_memory(entity: Mapping[str, Any]) -> LongTermMemory:
@@ -72,15 +102,33 @@ def build_active_memory_filter(
     user_id: str,
     memory_type: str | None = None,
 ) -> str:
-    """构造长期记忆查询过滤条件。"""
+    """构造"未软删的某用户记忆"过滤条件。"""
     filters = [
         f'tenant_id == "{tenant_id}"',
         f'user_id == "{user_id}"',
-        'is_deleted == false',
+        "is_deleted == false",
     ]
     if memory_type is not None:
         filters.insert(2, f'memory_type == "{memory_type}"')
     return " and ".join(filters)
+
+
+def build_session_memory_filter(tenant_id: str, user_id: str, session_id: str) -> str:
+    """构造"某会话下未软删记忆"过滤条件。"""
+    return (
+        f'tenant_id == "{tenant_id}" and '
+        f'user_id == "{user_id}" and '
+        f'session_id == "{session_id}" and '
+        "is_deleted == false"
+    )
+
+
+def build_expired_soft_deleted_filter(cutoff_ts: int) -> str:
+    """构造"已软删且超过保留期"过滤条件。
+
+    软删时会刷新 `updated_at`，故可用它近似软删发生时间。
+    """
+    return f"is_deleted == true and updated_at < {cutoff_ts}"
 
 
 def build_memory_record(
@@ -126,42 +174,6 @@ def build_partial_update_record(
     return record
 
 
-def search_results_from_hits(hits: Sequence[_MilvusHit]) -> list[MemorySearchResult]:
-    """把检索命中统一转换为领域层搜索结果。"""
-    search_results: list[MemorySearchResult] = []
-    for hit in hits:
-        entity = hit.get("entity")
-        if not isinstance(entity, dict):
-            continue
-        search_results.append(
-            MemorySearchResult(
-                memory=entity_to_memory(entity),
-                score=hit.get("score", 0.0),
-            )
-        )
-    return search_results
-
-
-def has_dedup_match(
-    result_groups,
-    similarity_threshold: float,
-) -> bool:
-    """判断去重检索结果里是否已有足够相似的记忆。"""
-    if not result_groups or not result_groups[0]:
-        return False
-
-    max_score = max(item.get("distance", 0) for item in result_groups[0])
-    return max_score >= similarity_threshold
-
-
-class _HitUpdatePlan(TypedDict):
-    """长期记忆命中后的更新计划。"""
-
-    hit_count: int
-    last_hit_at: int
-    update_record: MilvusRecord
-
-
 def build_new_memory_insert_record(
     *,
     tenant_id: str,
@@ -173,7 +185,7 @@ def build_new_memory_insert_record(
     memory_id: str | None = None,
     session_id: str = "",
 ) -> tuple[str, MilvusRecord]:
-    """构造一条新长期记忆的写入计划。"""
+    """构造一条新长期记忆的写入计划（分配 memory_id + 组装记录）。"""
     resolved_memory_id = memory_id or str(uuid.uuid4())
     record = build_memory_record(
         memory_id=resolved_memory_id,
@@ -190,27 +202,64 @@ def build_new_memory_insert_record(
 
 def build_hit_update_plan(
     memory: LongTermMemory,
-    update_config: dict[str, Any],
+    update_config: LTMUpdateOnHitConfig,
     now_ts: int,
 ) -> _HitUpdatePlan:
     """根据命中更新策略生成 partial upsert payload。"""
-    last_hit_at = now_ts if update_config["update_last_hit_at"] else memory.last_hit_at
+    last_hit_at = now_ts if update_config.update_last_hit_at else memory.last_hit_at
     hit_count = (
         (memory.hit_count or 0) + 1
-        if update_config["increase_hit_count"]
+        if update_config.increase_hit_count
         else memory.hit_count
-    )
-    update_record = build_partial_update_record(
-        memory.memory_id,
-        updated_at=now_ts,
-        hit_count=hit_count,
-        last_hit_at=last_hit_at,
     )
     return {
         "hit_count": hit_count,
         "last_hit_at": last_hit_at,
-        "update_record": update_record,
+        "update_record": build_partial_update_record(
+            memory.memory_id,
+            updated_at=now_ts,
+            hit_count=hit_count,
+            last_hit_at=last_hit_at,
+        ),
     }
+
+
+def search_results_from_hits(hits: Sequence[_MilvusHit]) -> list[MemorySearchResult]:
+    """把检索命中统一转换为领域层搜索结果。"""
+    search_results: list[MemorySearchResult] = []
+    for hit in hits:
+        entity = hit.get("entity")
+        if not isinstance(entity, dict):
+            continue
+        search_results.append(
+            MemorySearchResult(
+                memory=entity_to_memory(entity),
+                score=hit.get("score", 0.0),
+            )
+        )
+    return search_results
+
+
+def has_dedup_match(result_groups: Any, similarity_threshold: float) -> bool:
+    """判断去重检索结果里是否已有足够相似的记忆。"""
+    if not result_groups or not result_groups[0]:
+        return False
+    return max(item.get("distance", 0) for item in result_groups[0]) >= similarity_threshold
+
+
+def resolve_active_search_request(
+    search_config: LTMSearchConfig,
+    tenant_id: str,
+    user_id: str,
+    top_k: int | None,
+    score_threshold: float | None,
+) -> tuple[str, int, float]:
+    """统一补齐活跃记忆过滤条件与检索参数（显式入参优先于配置默认值）。"""
+    resolved_top_k = top_k if top_k is not None else search_config.top_k
+    resolved_score_threshold = (
+        score_threshold if score_threshold is not None else search_config.score_threshold
+    )
+    return build_active_memory_filter(tenant_id, user_id), resolved_top_k, resolved_score_threshold
 
 
 def preview_text(text: str, limit: int) -> str:
@@ -218,22 +267,18 @@ def preview_text(text: str, limit: int) -> str:
     return text[:limit]
 
 
-def resolve_active_search_request(
-    search_config: dict[str, Any],
-    tenant_id: str,
-    user_id: str,
-    top_k: int | None,
-    score_threshold: float | None,
-) -> tuple[str, int, float]:
-    """统一补齐活跃记忆过滤条件与检索参数。"""
-    resolved_top_k = top_k if top_k is not None else search_config["top_k"]
-    resolved_score_threshold = (
-        score_threshold
-        if score_threshold is not None
-        else search_config["score_threshold"]
-    )
-    filter_expr = build_active_memory_filter(tenant_id, user_id)
-    return filter_expr, resolved_top_k, resolved_score_threshold
+def extract_ids(rows: Sequence[Any], field: str) -> list[str]:
+    """从 Milvus query 结果里提取非空主键，跳过异常行。"""
+    return [
+        str(row[field])
+        for row in rows
+        if isinstance(row, dict) and row.get(field)
+    ]
+
+
+# ---------------------------------------------------------------------- #
+# 构造期辅助（只在 __init__ 执行一次，不在请求路径上）
+# ---------------------------------------------------------------------- #
 
 
 def create_default_retrieval_core(
@@ -263,193 +308,34 @@ def ensure_collection_ready_or_raise(
 ) -> None:
     """确保长期记忆 collection 已就绪；失败时统一补充上下文日志。"""
     try:
-        created = ensure_memory_collection(
-            milvus_client,
-            collection_name,
-        )
-        if not created:
-            logger.info(f"Collection {collection_name} 已存在")
-            return
-        logger.info(f"Collection {collection_name} 创建成功（含 BM25 全文索引）")
+        created = ensure_memory_collection(milvus_client, collection_name)
     except Exception as exc:
-        logger.error(
-            f"创建 Collection {collection_name} 失败 | {exc}",
-            exc_info=True,
-        )
+        logger.error(f"创建 Collection {collection_name} 失败 | {exc}", exc_info=True)
         raise
 
-
-async def save_memory_record(
-    *,
-    tenant_id: str,
-    user_id: str,
-    memory_type: str,
-    content: str,
-    get_embedding: EmbeddingGetter,
-    now_ts: _NowProvider,
-    logger: LoggerLike,
-    build_record: Callable[..., tuple[str, MilvusRecord]],
-    insert_records: Callable[[Any, str, Sequence[MilvusRecord]], None],
-    milvus_client: Any,
-    collection_name: str,
-    session_id: str = "",
-) -> str | None:
-    """执行长期记忆保存流程。"""
-    try:
-        embedding = await get_embedding(content)
-        if not embedding:
-            logger.warning(
-                f"保存记忆失败：embedding 生成返回空 | tenant={tenant_id} "
-                f"user={user_id} type={memory_type}"
-            )
-            return None
-
-        memory_id, memory_data = build_record(
-            tenant_id=tenant_id,
-            user_id=user_id,
-            memory_type=memory_type,
-            content=content,
-            embedding=embedding,
-            now_ts=now_ts(),
-            session_id=session_id,
-        )
-        insert_records(milvus_client, collection_name, [memory_data])
-        return memory_id
-    except Exception as exc:
-        logger.error(
-            f"保存记忆异常 | tenant={tenant_id} user={user_id} "
-            f"type={memory_type} | {exc}",
-            exc_info=True,
-        )
-        return None
+    if created:
+        logger.info(f"Collection {collection_name} 创建成功（含 BM25 全文索引）")
+    else:
+        logger.info(f"Collection {collection_name} 已存在")
 
 
-async def update_memory_hit_record(
-    *,
-    memory: LongTermMemory,
-    update_on_hit_config: dict[str, Any],
-    now_ts: _NowProvider,
-    logger: LoggerLike,
-    build_hit_update_plan: Callable[[LongTermMemory, dict[str, Any], int], dict[str, Any]],
-    upsert_records: Callable[[Any, str, Sequence[MilvusRecord]], None],
-    milvus_client: Any,
-    collection_name: str,
-) -> bool:
-    """执行命中计数更新流程。"""
-    try:
-        if not update_on_hit_config["enabled"]:
-            return True
-
-        update_plan = build_hit_update_plan(memory, update_on_hit_config, now_ts())
-        memory.hit_count = update_plan["hit_count"]
-        memory.last_hit_at = update_plan["last_hit_at"]
-        upsert_records(milvus_client, collection_name, [update_plan["update_record"]])
-        return True
-    except Exception as exc:
-        logger.error(
-            f"update_memory_hit_info 异常 | memory_id={memory.memory_id} | {exc}",
-            exc_info=True,
-        )
-        return False
-
-
-async def deduplicate_memory_content(
-    *,
-    tenant_id: str,
-    user_id: str,
-    memory_type: str,
-    content: str,
-    get_embedding: EmbeddingGetter,
-    logger: LoggerLike,
-    build_active_memory_filter: Callable[[str, str, str | None], str],
-    deduplication_config: dict[str, Any],
-    dedup_output_fields: list[str],
-    milvus_client: Any,
-    collection_name: str,
-) -> bool:
-    """执行新增前去重检查。"""
-    try:
-        embedding = await get_embedding(content)
-        if not embedding:
-            return False
-
-        filter_expr = build_active_memory_filter(tenant_id, user_id, memory_type)
-        results = search_records(
-            milvus_client,
-            collection_name,
-            embedding,
-            filter_expr,
-            limit=deduplication_config["top_k"],
-            output_fields=dedup_output_fields,
-        )
-        return not has_dedup_match(
-            results,
-            deduplication_config["similarity_threshold"],
-        )
-    except Exception as exc:
-        logger.error(
-            f"deduplicate_memory 异常 | tenant={tenant_id} "
-            f"user={user_id} type={memory_type} | {exc}",
-            exc_info=True,
-        )
-        return False
-
-
-async def search_active_hybrid_memories(
-    *,
-    tenant_id: str,
-    user_id: str,
-    query: str,
-    top_k: int | None,
-    score_threshold: float | None,
-    search_config: dict[str, Any],
-    retrieval_core: Any,
-    output_fields: list[str],
-    resolve_active_search: Callable[
-        [dict[str, Any], str, str, int | None, float | None],
-        tuple[str, int, float],
-    ],
-    preview_text: Callable[[str, int], str],
-    logger: LoggerLike,
-    search_log_preview_limit: int,
-    search_limit_multiplier: int,
-) -> list[MemorySearchResult]:
-    """执行“活跃长期记忆”的混合检索流程。"""
-    try:
-        filter_expr, resolved_top_k, resolved_score_threshold = resolve_active_search(
-            search_config,
-            tenant_id,
-            user_id,
-            top_k,
-            score_threshold,
-        )
-        hits = await retrieval_core.search_hybrid(
-            query,
-            limit=resolved_top_k,
-            filter_expr=filter_expr,
-            output_fields=output_fields,
-            score_threshold=resolved_score_threshold,
-            search_limit=resolved_top_k * search_limit_multiplier,
-        )
-        return search_results_from_hits(hits)
-    except Exception as exc:
-        logger.error(
-            f"hybrid_search 异常 | tenant={tenant_id} user={user_id} "
-            f"query={preview_text(query, search_log_preview_limit)} | {exc}",
-            exc_info=True,
-        )
-        return []
+# ---------------------------------------------------------------------- #
+# 存储层
+# ---------------------------------------------------------------------- #
 
 
 class SimpleLongTermMemory:
-    """
-    简化版长期记忆模块。
+    """简化版长期记忆模块。
 
     LTM = Long-Term Memory，长期记忆。
     作用：
     1. 向 Milvus 写入用户长期记忆。
     2. 根据用户当前问题检索长期记忆。
     3. 命中长期记忆后刷新 last_hit_at 和 hit_count。
+    4. 会话删除时软删关联记忆，并按保留期物理清理。
+
+    所有 Milvus / embedding 调用都是同步 SDK，统一经线程池 await，
+    不会阻塞事件循环（见 `app.shared.core.async_bridge`）。
     """
 
     def __init__(
@@ -459,23 +345,26 @@ class SimpleLongTermMemory:
         collection_name: str | None = None,
         retrieval_core: MilvusHybridSearchCore | None = None,
     ):
-        """
-        初始化长期记忆模块。
+        """初始化长期记忆模块。
 
-        参数：
-        - milvus_client：Milvus 客户端
-        - embedding_model：Embedding 模型，需要有 embed_query 方法
-        - collection_name：Collection 名称，默认从配置读取
-        - retrieval_core：可选的检索核心注入点，便于单测或替换底层检索实现
+        Args:
+            milvus_client: Milvus 客户端。
+            embedding_model: Embedding 模型，需要有 `embed_query` 方法。
+            collection_name: Collection 名称，默认从配置读取。
+            retrieval_core: 可选的检索核心注入点，便于单测或替换底层检索实现。
         """
         self.milvus_client = milvus_client
         self.embedding_model = embedding_model
-        self.search_config = settings.app_config.memory.ltm.search
-        self.deduplication_config = settings.app_config.memory.ltm.deduplication
-        self.update_on_hit_config = settings.app_config.memory.ltm.update_on_hit
-        self.collection_name = collection_name or settings.app_config.memory.ltm.collection_name
+        ltm_config = settings.app_config.memory.ltm
+        # 这三个配置是 frozen dataclass，必须用属性访问。
+        # 显式标注类型，让"误当成 dict 下标取值"在类型检查阶段就暴露——
+        # 历史上这里正是被 `# type: ignore` 掩盖成了运行期 TypeError，
+        # 又被宽泛的 except 吞掉，导致长期记忆整条链路静默失效。
+        self.search_config: LTMSearchConfig = ltm_config.search
+        self.deduplication_config: LTMDeduplicationConfig = ltm_config.deduplication
+        self.update_on_hit_config: LTMUpdateOnHitConfig = ltm_config.update_on_hit
+        self.collection_name = collection_name or ltm_config.collection_name
 
-        # 初始化 Collection
         ensure_collection_ready_or_raise(
             milvus_client=self.milvus_client,
             collection_name=self.collection_name,
@@ -487,17 +376,25 @@ class SimpleLongTermMemory:
             collection_name=self.collection_name,
         )
 
-    # ------------------------------------------------------------------ #
-    # Collection 管理
-    # ------------------------------------------------------------------ #
-
     @staticmethod
     def _now_ts() -> int:
         """统一生成秒级时间戳。"""
         return int(time.time())
 
+    async def _get_embedding(self, text: str) -> list[float] | None:
+        """获取文本的 embedding 向量，失败返回 None。"""
+        try:
+            return await run_blocking(self.embedding_model.embed_query, text)
+        except Exception as exc:
+            logger.error(
+                f"embedding 生成异常 | "
+                f"text_preview={preview_text(text, EMBEDDING_LOG_PREVIEW_LIMIT)} | {exc}",
+                exc_info=True,
+            )
+            return None
+
     # ------------------------------------------------------------------ #
-    # 记忆 CRUD
+    # 记忆写入
     # ------------------------------------------------------------------ #
 
     async def save_memory(
@@ -509,33 +406,171 @@ class SimpleLongTermMemory:
         *,
         session_id: str = "",
     ) -> str | None:
-        """
-        保存长期记忆。
+        """保存长期记忆。
 
-        参数：
-        - tenant_id：租户 ID
-        - user_id：用户 ID
-        - memory_type：记忆类型
-        - content：记忆内容
-        - session_id：关联会话 ID（可选，用于会话级清理）
+        Args:
+            tenant_id: 租户 ID。
+            user_id: 用户 ID。
+            memory_type: 记忆类型。
+            content: 记忆内容。
+            session_id: 关联会话 ID（可选，用于会话级清理）。
 
-        返回：
-        - memory_id：保存成功返回记忆 ID，失败返回 None
+        Returns:
+            成功返回 memory_id，失败返回 None。
         """
-        return await save_memory_record(
-            tenant_id=tenant_id,
-            user_id=user_id,
-            memory_type=memory_type,
-            content=content,
-            get_embedding=self._get_embedding,
-            now_ts=self._now_ts,
-            logger=logger,
-            build_record=build_new_memory_insert_record,
-            insert_records=insert_records,
-            milvus_client=self.milvus_client,
-            collection_name=self.collection_name,
-            session_id=session_id,
-        )
+        try:
+            embedding = await self._get_embedding(content)
+            if not embedding:
+                logger.warning(
+                    f"保存记忆失败：embedding 生成返回空 | tenant={tenant_id} "
+                    f"user={user_id} type={memory_type}"
+                )
+                return None
+
+            memory_id, record = build_new_memory_insert_record(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                memory_type=memory_type,
+                content=content,
+                embedding=embedding,
+                now_ts=self._now_ts(),
+                session_id=session_id,
+            )
+            await insert_records(self.milvus_client, self.collection_name, [record])
+            return memory_id
+        except Exception as exc:
+            logger.error(
+                f"save_memory 异常 | tenant={tenant_id} user={user_id} "
+                f"type={memory_type} | {exc}",
+                exc_info=True,
+            )
+            return None
+
+    async def deduplicate_memory(
+        self,
+        tenant_id: str,
+        user_id: str,
+        memory_type: str,
+        content: str,
+    ) -> bool:
+        """新增前的去重检查。
+
+        Returns:
+            True 表示需要新增（没有足够相似的记忆）；False 表示已存在或检查失败。
+        """
+        try:
+            embedding = await self._get_embedding(content)
+            if not embedding:
+                return False
+
+            results = await search_records(
+                self.milvus_client,
+                self.collection_name,
+                embedding,
+                build_active_memory_filter(tenant_id, user_id, memory_type),
+                limit=self.deduplication_config.top_k,
+                output_fields=DEDUP_OUTPUT_FIELDS,
+            )
+            return not has_dedup_match(
+                results,
+                self.deduplication_config.similarity_threshold,
+            )
+        except Exception as exc:
+            logger.error(
+                f"deduplicate_memory 异常 | tenant={tenant_id} "
+                f"user={user_id} type={memory_type} | {exc}",
+                exc_info=True,
+            )
+            return False
+
+    async def update_memory_hit_info(self, memory: LongTermMemory) -> bool:
+        """刷新单条记忆的命中计数器。
+
+        只 upsert memory_id + hit_count + last_hit_at + updated_at（部分更新），
+        不重新生成 embedding，也不传输全量字段。
+        """
+        return await self.update_memory_hit_infos([memory])
+
+    async def update_memory_hit_infos(self, memories: Sequence[LongTermMemory]) -> bool:
+        """批量刷新命中计数器。
+
+        WHY 批量：一次检索通常命中多条记忆，逐条 upsert 就是逐条 Milvus 往返。
+        命中统计是旁路逻辑，不值得为它付 N 次 RTT。
+        """
+        if not self.update_on_hit_config.enabled or not memories:
+            return True
+
+        try:
+            now_ts = self._now_ts()
+            records: list[MilvusRecord] = []
+            for memory in memories:
+                plan = build_hit_update_plan(memory, self.update_on_hit_config, now_ts)
+                memory.hit_count = plan["hit_count"]
+                memory.last_hit_at = plan["last_hit_at"]
+                records.append(plan["update_record"])
+
+            await upsert_records(self.milvus_client, self.collection_name, records)
+            return True
+        except Exception as exc:
+            logger.error(
+                "update_memory_hit_infos 异常 | count=%s | %s",
+                len(memories),
+                exc,
+                exc_info=True,
+            )
+            return False
+
+    # ------------------------------------------------------------------ #
+    # 检索
+    # ------------------------------------------------------------------ #
+
+    async def hybrid_search(
+        self,
+        tenant_id: str,
+        user_id: str,
+        query: str,
+        top_k: int | None = None,
+        score_threshold: float | None = None,
+    ) -> list[MemorySearchResult]:
+        """混合检索：向量检索 + Milvus BM25 + RRF 融合。
+
+        WHY 用 Milvus 内置 BM25 而不是客户端手动关键词打分：
+        - BM25 在服务端计算，IDF 统计来自实际集合，打分更准
+        - 不需要把全部记忆拉到客户端
+        - 少一轮全量传输，延迟更低
+
+        检索失败时返回空列表——长期记忆是增强项，不应让主对话链路失败。
+        """
+        try:
+            filter_expr, resolved_top_k, resolved_score_threshold = (
+                resolve_active_search_request(
+                    self.search_config,
+                    tenant_id,
+                    user_id,
+                    top_k,
+                    score_threshold,
+                )
+            )
+            hits = await self.retrieval_core.search_hybrid(
+                query,
+                limit=resolved_top_k,
+                filter_expr=filter_expr,
+                output_fields=MEMORY_OUTPUT_FIELDS,
+                score_threshold=resolved_score_threshold,
+                search_limit=resolved_top_k * HYBRID_SEARCH_LIMIT_MULTIPLIER,
+            )
+            return search_results_from_hits(hits)
+        except Exception as exc:
+            logger.error(
+                f"hybrid_search 异常 | tenant={tenant_id} user={user_id} "
+                f"query={preview_text(query, SEARCH_LOG_PREVIEW_LIMIT)} | {exc}",
+                exc_info=True,
+            )
+            return []
+
+    # ------------------------------------------------------------------ #
+    # 删除与清理
+    # ------------------------------------------------------------------ #
 
     async def soft_delete_session_memories(
         self,
@@ -547,39 +582,38 @@ class SimpleLongTermMemory:
 
         依赖动态字段 session_id（enable_dynamic_field=True）。
         历史无 session_id 的记录不会被匹配，避免误删跨会话记忆。
+
+        Returns:
+            软删条数；失败返回 0。
         """
         if not session_id:
             return 0
         try:
-            filter_expr = (
-                f'tenant_id == "{tenant_id}" and '
-                f'user_id == "{user_id}" and '
-                f'session_id == "{session_id}" and '
-                "is_deleted == false"
-            )
-            rows = self.milvus_client.query(
-                collection_name=self.collection_name,
-                filter=filter_expr,
+            rows = await query_records(
+                self.milvus_client,
+                self.collection_name,
+                build_session_memory_filter(tenant_id, user_id, session_id),
+                limit=MAX_QUERY_LIMIT,
                 output_fields=["memory_id"],
-                limit=16384,
             )
-            if not rows:
+            memory_ids = extract_ids(rows, "memory_id")
+            if not memory_ids:
                 return 0
 
             now_ts = self._now_ts()
-            records = [
-                build_partial_update_record(
-                    str(row["memory_id"]),
-                    updated_at=now_ts,
-                    is_deleted=True,
-                )
-                for row in rows
-                if isinstance(row, dict) and row.get("memory_id")
-            ]
-            if not records:
-                return 0
-            upsert_records(self.milvus_client, self.collection_name, records)
-            return len(records)
+            await upsert_records(
+                self.milvus_client,
+                self.collection_name,
+                [
+                    build_partial_update_record(
+                        memory_id,
+                        updated_at=now_ts,
+                        is_deleted=True,
+                    )
+                    for memory_id in memory_ids
+                ],
+            )
+            return len(memory_ids)
         except Exception as exc:
             logger.error(
                 "soft_delete_session_memories 异常 | tenant=%s user=%s session=%s | %s",
@@ -599,48 +633,34 @@ class SimpleLongTermMemory:
     ) -> int:
         """物理删除已软删且超过保留期的 LTM 记录。
 
-        filter：is_deleted == true 且 updated_at < now - retention
-        （软删时会写 updated_at，故可用 updated_at 近似软删时间）
-
         Returns:
             删除条数；失败返回 0 并打错误日志。
         """
         purge_cfg = settings.app_config.memory.ltm.purge
         retention = (
-            retention_seconds
-            if retention_seconds is not None
-            else purge_cfg.retention_seconds
+            retention_seconds if retention_seconds is not None else purge_cfg.retention_seconds
         )
         limit = batch_limit if batch_limit is not None else purge_cfg.batch_limit
         if retention < 0 or limit <= 0:
             return 0
 
         cutoff = self._now_ts() - int(retention)
-        filter_expr = f"is_deleted == true and updated_at < {cutoff}"
         try:
-            rows = self.milvus_client.query(
-                collection_name=self.collection_name,
-                filter=filter_expr,
-                output_fields=["memory_id"],
+            rows = await query_records(
+                self.milvus_client,
+                self.collection_name,
+                build_expired_soft_deleted_filter(cutoff),
                 limit=limit,
+                output_fields=["memory_id"],
             )
-            if not rows:
-                return 0
-
-            memory_ids = [
-                str(row["memory_id"])
-                for row in rows
-                if isinstance(row, dict) and row.get("memory_id")
-            ]
+            memory_ids = extract_ids(rows, "memory_id")
             if not memory_ids:
                 return 0
 
-            # 按主键物理删除；表达式删除在部分版本对动态字段更挑
-            ids_literal = ", ".join(f'"{mid}"' for mid in memory_ids)
-            delete_filter = f"memory_id in [{ids_literal}]"
-            self.milvus_client.delete(
-                collection_name=self.collection_name,
-                filter=delete_filter,
+            await delete_by_filter(
+                self.milvus_client,
+                self.collection_name,
+                build_primary_key_in_filter("memory_id", memory_ids),
             )
             logger.info(
                 "LTM 硬清理完成 | deleted=%s cutoff=%s collection=%s",
@@ -658,108 +678,24 @@ class SimpleLongTermMemory:
             )
             return 0
 
-    async def update_memory_hit_info(self, memory: LongTermMemory) -> bool:
-        """
-        使用 Milvus partial_update 更新命中计数器。
 
-        只传 memory_id + hit_count + last_hit_at + updated_at（部分更新），
-        不需要重新生成 embedding，也不需要传输全量字段。
-        """
-        return await update_memory_hit_record(
-            memory=memory,
-            update_on_hit_config=self.update_on_hit_config,  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
-            now_ts=self._now_ts,
-            logger=logger,
-            build_hit_update_plan=build_hit_update_plan,  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
-            upsert_records=upsert_records,
-            milvus_client=self.milvus_client,
-            collection_name=self.collection_name,
-        )
-
-    async def deduplicate_memory(
-        self,
-        tenant_id: str,
-        user_id: str,
-        memory_type: str,
-        content: str,
-    ) -> bool:
-        """
-        去重检查，判断是否需要新增长期记忆。
-
-        返回：
-        - True：需要新增（没有相似记忆）
-        - False：不需要新增（已有相似记忆）
-        """
-        return await deduplicate_memory_content(
-            tenant_id=tenant_id,
-            user_id=user_id,
-            memory_type=memory_type,
-            content=content,
-            get_embedding=self._get_embedding,
-            logger=logger,
-            build_active_memory_filter=build_active_memory_filter,
-            deduplication_config=self.deduplication_config,  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
-            dedup_output_fields=DEDUP_OUTPUT_FIELDS,
-            milvus_client=self.milvus_client,
-            collection_name=self.collection_name,
-        )
-
-    # ------------------------------------------------------------------ #
-    # 混合检索（核心变更：Milvus 内置 BM25 替换手动 BM25）
-    # ------------------------------------------------------------------ #
-
-    async def hybrid_search(
-        self,
-        tenant_id: str,
-        user_id: str,
-        query: str,
-        top_k: int | None = None,
-        score_threshold: float | None = None,
-    ) -> list[MemorySearchResult]:
-        """
-        混合检索：向量检索 + Milvus BM25 + RRF 融合。
-
-        流程：
-        1. 向量检索：使用 embedding 进行语义相似度检索
-        2. Milvus BM25 检索：使用 Milvus 内置 BM25 全文检索
-        3. RRF 融合：将两个排序结果按排名融合
-
-        WHY：
-        这里优先使用 Milvus 内置 BM25，而不是在客户端手动做关键词打分：
-        - BM25 在 Milvus 服务端计算，IDF 统计来自实际集合
-        - 不需要客户端拉取全部记忆做关键词打分
-        - 检索更准确、延迟更低
-        """
-        return await search_active_hybrid_memories(
-            tenant_id=tenant_id,
-            user_id=user_id,
-            query=query,
-            top_k=top_k,
-            score_threshold=score_threshold,
-            search_config=self.search_config,  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
-            retrieval_core=self.retrieval_core,
-            output_fields=MEMORY_OUTPUT_FIELDS,
-            resolve_active_search=resolve_active_search_request,
-            preview_text=preview_text,
-            logger=logger,
-            search_log_preview_limit=SEARCH_LOG_PREVIEW_LIMIT,
-            search_limit_multiplier=HYBRID_SEARCH_LIMIT_MULTIPLIER,
-        )
-
-    # ------------------------------------------------------------------ #
-    # 内部工具方法
-    # ------------------------------------------------------------------ #
-
-    async def _get_embedding(self, text: str) -> list[float] | None:
-        """获取文本的 embedding 向量。"""
-        try:
-            embedding = self.embedding_model.embed_query(text)
-            return embedding
-
-        except Exception as exc:
-            logger.error(
-                f"embedding 生成异常 | "
-                f"text_preview={preview_text(text, EMBEDDING_LOG_PREVIEW_LIMIT)} | {exc}",
-                exc_info=True,
-            )
-            return None
+__all__ = [
+    "DEDUP_OUTPUT_FIELDS",
+    "MEMORY_OUTPUT_FIELDS",
+    "SimpleLongTermMemory",
+    "build_active_memory_filter",
+    "build_expired_soft_deleted_filter",
+    "build_hit_update_plan",
+    "build_memory_record",
+    "build_new_memory_insert_record",
+    "build_partial_update_record",
+    "build_session_memory_filter",
+    "create_default_retrieval_core",
+    "ensure_collection_ready_or_raise",
+    "entity_to_memory",
+    "extract_ids",
+    "has_dedup_match",
+    "preview_text",
+    "resolve_active_search_request",
+    "search_results_from_hits",
+]

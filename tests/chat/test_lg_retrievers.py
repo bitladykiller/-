@@ -218,12 +218,13 @@ def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
     registry = retriever_contracts.RetrieverRegistry()
 
     # 预填充，跳过 _get_neo4j_graph 中的健康检查和真实连接
+    from app.platform.container import KnowledgeGraphComponents
+
     async def fake_get_container():
         class FakeContainer:
             retriever_registry = registry
             retriever_registry_lock = asyncio.Lock()
-            _cypher_example_retriever = None
-            _t2c_agent = None
+            kg_components = KnowledgeGraphComponents()
             neo4j_graph = fake_graph
             neo4j_last_health_check_ts = 0.0
 

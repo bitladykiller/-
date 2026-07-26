@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Literal
 
 from app.chat.infrastructure.graph.execution_utils import (
@@ -93,8 +94,6 @@ class ExecutionPipeline:
             progress_message: 覆盖默认进度消息
             fallback: 覆盖默认兜底消息
         """
-        import asyncio
-
         query = await enrich_question(state, config, question_from_state(state))
 
         if mode == "parallel":

@@ -54,6 +54,7 @@ class FakeRedisShortTermMemory:
         ]
         self.meta = SessionMeta(total_turns=1, last_updated_at=0, last_compressed_turn=0)
         self.appended_messages: list[MessageRecord] = []
+        self.append_messages_calls = 0
         self.saved_meta: SessionMeta | None = None
         self.refresh_calls = 0
         self.should_compress_args: tuple[int, int, int] | None = None
@@ -82,6 +83,16 @@ class FakeRedisShortTermMemory:
         message: MessageRecord,
     ) -> None:
         self.appended_messages.append(message)
+
+    async def append_messages(
+        self,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        messages,
+    ) -> None:
+        self.append_messages_calls += 1
+        self.appended_messages.extend(messages)
 
     async def save_meta(
         self,
@@ -131,6 +142,7 @@ class FakeLongTermMemory:
         self.deduplicate_calls: list[tuple[str, str, str, str, str]] = []
         self.saved_memories: list[tuple[str, str, str, str, str]] = []
         self.updated_memory_ids: list[str] = []
+        self.hit_update_batches = 0
 
     async def hybrid_search(
         self,
@@ -164,7 +176,11 @@ class FakeLongTermMemory:
         return "mem-saved"
 
     async def update_memory_hit_info(self, memory: LongTermMemory) -> bool:
-        self.updated_memory_ids.append(memory.memory_id)
+        return await self.update_memory_hit_infos([memory])
+
+    async def update_memory_hit_infos(self, memories) -> bool:
+        self.hit_update_batches += 1
+        self.updated_memory_ids.extend(memory.memory_id for memory in memories)
         return True
 
 
@@ -282,11 +298,14 @@ def test_before_agent_degrades_and_warns_once_on_memory_load_failures(monkeypatc
     assert second.recent_messages == []
     assert second.user_profile == {}
     assert second.long_term_memories == []
-    assert logger.warnings == [
-        "[memory] Redis STM 读取失败（未知错误），短期记忆降级",
-        "[memory] 用户画像读取失败（未知错误），降级为空画像",
-        "[memory] Milvus LTM 检索失败（未知错误），长期记忆降级",
-    ]
+    # 三路读取是并发的，告警到达顺序不确定，只断言集合与"每类只告警一次"
+    assert sorted(logger.warnings) == sorted(
+        [
+            "[memory] Redis STM 读取失败（未知错误），短期记忆降级",
+            "[memory] 用户画像读取失败（未知错误），降级为空画像",
+            "[memory] Milvus LTM 检索失败（未知错误），长期记忆降级",
+        ]
+    )
 
 
 def test_after_agent_persists_turn_extracts_memory_and_updates_hits() -> None:
@@ -451,18 +470,26 @@ def test_after_agent_skips_extraction_when_compress_did_not_complete() -> None:
     assert profile_writer_calls == []
 
 
-def test_after_agent_updates_hits_best_effort() -> None:
-    class PartiallyFailingLongTermMemory(FakeLongTermMemory):
-        async def update_memory_hit_info(self, memory: LongTermMemory) -> bool:
-            if memory.memory_id == "mem-fail":
-                raise RuntimeError("boom")
-            self.updated_memory_ids.append(memory.memory_id)
-            return True
+def _hit_results(*memory_ids: str) -> list[MemorySearchResult]:
+    return [
+        MemorySearchResult(
+            memory=LongTermMemory(
+                memory_id=memory_id,
+                tenant_id="tenant-1",
+                user_id="5",
+                memory_type="issue_history",
+                content=f"命中 {memory_id}",
+            ),
+            score=0.9,
+        )
+        for memory_id in memory_ids
+    ]
 
-    redis_stm = FakeRedisShortTermMemory(should_compress_result=False)
-    milvus_ltm = PartiallyFailingLongTermMemory()
+
+def test_after_agent_refreshes_all_hits_in_one_batch() -> None:
+    milvus_ltm = FakeLongTermMemory()
     middleware = MemoryMiddleware(
-        redis_stm=redis_stm,
+        redis_stm=FakeRedisShortTermMemory(should_compress_result=False),
         milvus_ltm=milvus_ltm,
         memory_extractor=FakeMemoryExtractor(),
     )
@@ -474,29 +501,109 @@ def test_after_agent_updates_hits_best_effort() -> None:
             "session-1",
             "门铃连不上网",
             "你可以先检查一下 WiFi 和电源",
-            [
-                MemorySearchResult(
-                    memory=LongTermMemory(
-                        memory_id="mem-ok",
-                        tenant_id="tenant-1",
-                        user_id="5",
-                        memory_type="issue_history",
-                        content="正常命中",
-                    ),
-                    score=0.9,
-                ),
-                MemorySearchResult(
-                    memory=LongTermMemory(
-                        memory_id="mem-fail",
-                        tenant_id="tenant-1",
-                        user_id="5",
-                        memory_type="issue_history",
-                        content="单条失败",
-                    ),
-                    score=0.8,
-                ),
-            ],
+            _hit_results("mem-a", "mem-b", "mem-c"),
         )
     )
 
-    assert milvus_ltm.updated_memory_ids == ["mem-ok"]
+    assert milvus_ltm.updated_memory_ids == ["mem-a", "mem-b", "mem-c"]
+    # 关键断言：3 条命中只走 1 次批量刷新，而不是逐条往返 Milvus
+    assert milvus_ltm.hit_update_batches == 1
+
+
+def test_after_agent_swallows_hit_refresh_failure(monkeypatch) -> None:
+    """命中统计是旁路逻辑：整批刷新失败也不能让 after_agent 抛出。"""
+
+    class BrokenLongTermMemory(FakeLongTermMemory):
+        async def update_memory_hit_infos(self, memories) -> bool:
+            raise RuntimeError("boom")
+
+    logger = FakeLogger()
+    monkeypatch.setattr(memory_middleware, "logger", logger)
+    middleware = MemoryMiddleware(
+        redis_stm=FakeRedisShortTermMemory(should_compress_result=False),
+        milvus_ltm=BrokenLongTermMemory(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+
+    _run(
+        middleware.after_agent(
+            "tenant-1",
+            "5",
+            "session-1",
+            "门铃连不上网",
+            "你可以先检查一下 WiFi 和电源",
+            _hit_results("mem-ok", "mem-fail"),
+        )
+    )
+
+    assert logger.warnings == ["[memory] LTM 命中统计刷新失败（未知错误）"]
+
+
+async def test_before_agent_reads_all_sources_concurrently() -> None:
+    """三路记忆读取必须并发。
+
+    STM / 画像 / LTM 落在三套不同存储上，互不依赖。串行会把每轮对话的
+    记忆加载耗时变成三者之和——其中 LTM 还要跑 embedding + 向量检索。
+    这里让每一路都阻塞到"三路都已进场"，串行实现会直接超时。
+    """
+    # 手写 barrier：asyncio.Barrier 要 Python 3.11，本项目下限是 3.10
+    arrived = 0
+    all_arrived = asyncio.Event()
+
+    async def rendezvous() -> None:
+        nonlocal arrived
+        arrived += 1
+        if arrived == 3:
+            all_arrived.set()
+        # 串行实现下第一路会在这里等到超时，因为后两路根本还没开始
+        await asyncio.wait_for(all_arrived.wait(), timeout=2)
+
+    class ConcurrentRedis(FakeRedisShortTermMemory):
+        async def get_summary(self, tenant_id, user_id, session_id):
+            await rendezvous()
+            return self.summary
+
+    class ConcurrentLongTerm(FakeLongTermMemory):
+        async def hybrid_search(self, tenant_id, user_id, user_input):
+            await rendezvous()
+            return []
+
+    async def concurrent_profile_reader(user_id: int, redis_client: object | None):
+        await rendezvous()
+        return {"preferred_brand": "小米"}
+
+    middleware = MemoryMiddleware(
+        redis_stm=ConcurrentRedis(should_compress_result=False),
+        milvus_ltm=ConcurrentLongTerm(),
+        memory_extractor=FakeMemoryExtractor(),
+        profile_reader=concurrent_profile_reader,
+    )
+
+    state = await middleware.before_agent("tenant-1", "42", "session-1", "怎么修空调")
+
+    assert state.user_profile == {"preferred_brand": "小米"}
+    assert state.long_term_memories == []
+
+
+async def test_after_agent_reuses_meta_without_second_read() -> None:
+    """第 1 段已经拿到并写回 meta，第 2 段不该再读一次。"""
+
+    class CountingRedis(FakeRedisShortTermMemory):
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.get_meta_calls = 0
+
+        async def get_meta(self, tenant_id, user_id, session_id):
+            self.get_meta_calls += 1
+            return self.meta
+
+    redis_stm = CountingRedis(should_compress_result=False)
+    middleware = MemoryMiddleware(
+        redis_stm=redis_stm,
+        milvus_ltm=FakeLongTermMemory(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+
+    await middleware.after_agent("tenant-1", "5", "session-1", "问题", "回答")
+
+    assert redis_stm.get_meta_calls == 1

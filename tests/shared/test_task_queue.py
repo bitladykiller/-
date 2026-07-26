@@ -271,35 +271,32 @@ def test_get_task_manager_reuses_existing_instance(monkeypatch) -> None:
         assert len(created_clients) == 1
         assert container.task_manager is first
 
-        await task_queue_module.close_task_manager()
-        assert created_clients[0].closed is True
-        assert container.task_manager is None
-
     asyncio.run(scenario())
 
 
-def test_close_task_manager_swallows_close_errors(monkeypatch) -> None:
-    async def scenario() -> None:
-        failing_store = FakeTaskStore(fail_on_close=True)
+# 关闭路径的唯一所有者是 AppContainer.close()，因此断言直接打在它身上。
 
-        class FakeContainer:
-            def __init__(self) -> None:
-                self.task_manager = task_queue_module._TaskManager(failing_store)
 
-        container = FakeContainer()
+async def test_app_container_close_releases_task_manager() -> None:
+    from app.platform.container import AppContainer
 
-        async def fake_get_container():
-            return container
+    store = FakeTaskStore()
+    container = AppContainer(task_manager=task_queue_module._TaskManager(store))
 
-        monkeypatch.setitem(
-            sys.modules,
-            "app.platform.container",
-            types.SimpleNamespace(get_container=fake_get_container),
-        )
+    await container.close()
 
-        await task_queue_module.close_task_manager()
+    assert store.closed is True
+    assert container.task_manager is None
 
-        assert failing_store.closed is True
-        assert container.task_manager is None
 
-    asyncio.run(scenario())
+async def test_app_container_close_swallows_task_manager_errors() -> None:
+    """关连接失败不能让停机流程炸掉，后续资源仍要继续释放。"""
+    from app.platform.container import AppContainer
+
+    failing_store = FakeTaskStore(fail_on_close=True)
+    container = AppContainer(task_manager=task_queue_module._TaskManager(failing_store))
+
+    await container.close()
+
+    assert failing_store.closed is True
+    assert container.task_manager is None

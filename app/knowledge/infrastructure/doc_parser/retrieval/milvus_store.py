@@ -25,10 +25,22 @@ from app.knowledge.infrastructure.doc_parser.retrieval.doc_lifecycle import (
     now_ts,
     validate_doc_id,
 )
+from app.shared.core.async_bridge import run_blocking
 from app.shared.retrieval import MilvusHybridSearchCore
 from pymilvus import DataType, Function, FunctionType, MilvusClient
 
 logger = logging.getLogger(__name__)
+
+
+def _max_version_of(rows: list[dict[str, Any]]) -> int:
+    """从 query 结果里取最大 version，脏值按 0 处理。"""
+    max_v = 0
+    for row in rows:
+        try:
+            max_v = max(max_v, int(row.get("version") or 0))
+        except (TypeError, ValueError):
+            continue
+    return max_v
 
 
 class MilvusStore:
@@ -171,51 +183,64 @@ class MilvusStore:
     # 数据操作
     # ------------------------------------------------------------------ #
 
-    async def _get_embedding(self, text: str) -> list[float]:
-        """获取文本的 embedding 向量。"""
+    async def _embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """批量生成 chunk 向量。
+
+        WHY 批量而不是逐条：索引一篇文档会产出几十到几百个 chunk。
+        逐条 `embed_query` 就是几十到几百次模型前向 / HTTP 往返，
+        而 `embed_documents` 只走一次批推理，是数量级的差距。
+        """
         if self.embedding_model is None:
             raise RuntimeError("embedding_model 未设置，无法生成向量")
-        return self.embedding_model.embed_query(text)
+        vectors = await self.retrieval_core.embed_documents(texts)
+        if vectors is None or len(vectors) != len(texts):
+            raise RuntimeError(
+                f"embedding 批量生成失败或数量不匹配 | expected={len(texts)} "
+                f"got={0 if vectors is None else len(vectors)}"
+            )
+        return vectors
 
-    def get_max_version(self, doc_id: str) -> int:
+    async def _query(
+        self,
+        filter_expr: str,
+        *,
+        output_fields: list[str],
+        limit: int = DEFAULT_QUERY_LIMIT,
+    ) -> list[dict[str, Any]]:
+        """统一封装 Milvus 标量 query（同步 SDK → 线程池）。"""
+        rows = await run_blocking(
+            self.client.query,
+            collection_name=self.config.milvus_collection_name,
+            filter=filter_expr,
+            output_fields=output_fields,
+            limit=limit,
+        )
+        return [row for row in (rows or []) if isinstance(row, dict)]
+
+    async def get_max_version(self, doc_id: str) -> int:
         """查询某文档历史最大 version（含已软删），不存在则 0。"""
         safe_doc = validate_doc_id(doc_id)
-        filter_expr = doc_id_filter(safe_doc, active_only=False)
         try:
-            rows = self.client.query(
-                collection_name=self.config.milvus_collection_name,
-                filter=filter_expr,
+            rows = await self._query(
+                doc_id_filter(safe_doc, active_only=False),
                 output_fields=["version"],
-                limit=DEFAULT_QUERY_LIMIT,
             )
         except Exception as exc:
             logger.warning("get_max_version 失败 | doc_id=%s | %s", safe_doc, exc)
             return 0
+        return _max_version_of(rows)
 
-        max_v = 0
-        for row in rows or []:
-            if not isinstance(row, dict):
-                continue
-            try:
-                max_v = max(max_v, int(row.get("version") or 0))
-            except (TypeError, ValueError):
-                continue
-        return max_v
-
-    def soft_delete_by_doc_id(self, doc_id: str) -> dict[str, int]:
+    async def soft_delete_by_doc_id(self, doc_id: str) -> dict[str, int]:
         """软删除某文档下全部未删 chunk。
 
         Returns:
             {"soft_deleted": n, "max_version": v}
         """
         safe_doc = validate_doc_id(doc_id)
-        filter_expr = doc_id_filter(safe_doc, active_only=True)
         try:
-            rows = self.client.query(
-                collection_name=self.config.milvus_collection_name,
-                filter=filter_expr,
+            rows = await self._query(
+                doc_id_filter(safe_doc, active_only=True),
                 output_fields=["chunk_id", "version"],
-                limit=DEFAULT_QUERY_LIMIT,
             )
         except Exception as exc:
             logger.error(
@@ -224,31 +249,24 @@ class MilvusStore:
                 exc,
                 exc_info=True,
             )
-            return {"soft_deleted": 0, "max_version": self.get_max_version(safe_doc)}
+            return {"soft_deleted": 0, "max_version": await self.get_max_version(safe_doc)}
 
         if not rows:
-            return {"soft_deleted": 0, "max_version": self.get_max_version(safe_doc)}
+            return {"soft_deleted": 0, "max_version": await self.get_max_version(safe_doc)}
 
+        max_v = _max_version_of(rows)
         ts = now_ts()
-        max_v = 0
-        records: list[dict[str, Any]] = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            chunk_id = row.get("chunk_id")
-            if not chunk_id:
-                continue
-            try:
-                max_v = max(max_v, int(row.get("version") or 0))
-            except (TypeError, ValueError):
-                pass
-            records.append(build_soft_delete_record(str(chunk_id), updated_at=ts))
-
+        records = [
+            build_soft_delete_record(str(row["chunk_id"]), updated_at=ts)
+            for row in rows
+            if row.get("chunk_id")
+        ]
         if not records:
             return {"soft_deleted": 0, "max_version": max_v}
 
         try:
-            self.client.upsert(
+            await run_blocking(
+                self.client.upsert,
                 collection_name=self.config.milvus_collection_name,
                 data=records,
             )
@@ -292,28 +310,31 @@ class MilvusStore:
         version = max(1, int(version))
         hash_value = (content_hash or "")[:64]
         ts = now_ts()
-        data: list[dict[str, Any]] = []
-        for chunk in chunks:
-            text = chunk.embedding_text or chunk.raw_text
-            vector = await self._get_embedding(text)
-            data.append(
-                {
-                    "chunk_id": chunk.chunk_id,
-                    "doc_id": chunk.doc_id,
-                    "source_file": chunk.source_file,
-                    "chunk_type": chunk.chunk_type,
-                    "section_path": chunk.section_path,
-                    "raw_text": chunk.raw_text,
-                    "embedding_text": chunk.embedding_text,
-                    "version": version,
-                    "is_deleted": False,
-                    "updated_at": ts,
-                    "content_hash": hash_value,
-                    "embedding": vector,
-                }
-            )
+        vectors = await self._embed_texts(
+            [chunk.embedding_text or chunk.raw_text for chunk in chunks]
+        )
+        data: list[dict[str, Any]] = [
+            {
+                "chunk_id": chunk.chunk_id,
+                "doc_id": chunk.doc_id,
+                "source_file": chunk.source_file,
+                "chunk_type": chunk.chunk_type,
+                "section_path": chunk.section_path,
+                "raw_text": chunk.raw_text,
+                "embedding_text": chunk.embedding_text,
+                "version": version,
+                "is_deleted": False,
+                "updated_at": ts,
+                "content_hash": hash_value,
+                "embedding": vector,
+            }
+            # strict=True 冗余但明确：_embed_texts 已保证长度一致，
+            # 万一底层模型返回数量不符，宁可炸出来也不要静默丢 chunk
+            for chunk, vector in zip(chunks, vectors, strict=True)
+        ]
 
-        result = self.client.insert(
+        result = await run_blocking(
+            self.client.insert,
             collection_name=self.config.milvus_collection_name,
             data=data,
         )
@@ -334,7 +355,7 @@ class MilvusStore:
             soft_deleted / version / chunks
         """
         safe_doc = validate_doc_id(doc_id)
-        delete_info = self.soft_delete_by_doc_id(safe_doc)
+        delete_info = await self.soft_delete_by_doc_id(safe_doc)
         version = next_version(delete_info.get("max_version"))
         # 确保 chunks 上的 doc_id 一致（防止解析侧漂移）
         for chunk in chunks:
@@ -354,7 +375,7 @@ class MilvusStore:
             "chunks": inserted,
         }
 
-    def hard_purge_soft_deleted(
+    async def hard_purge_soft_deleted(
         self,
         *,
         retention_seconds: int = 7 * 24 * 3600,
@@ -368,25 +389,19 @@ class MilvusStore:
         if retention_seconds < 0 or batch_limit <= 0:
             return 0
         cutoff = now_ts() - int(retention_seconds)
-        filter_expr = hard_purge_filter(cutoff_ts=cutoff)
         try:
-            rows = self.client.query(
-                collection_name=self.config.milvus_collection_name,
-                filter=filter_expr,
+            rows = await self._query(
+                hard_purge_filter(cutoff_ts=cutoff),
                 output_fields=["chunk_id"],
                 limit=batch_limit,
             )
-            if not rows:
-                return 0
-            chunk_ids = [
-                str(row["chunk_id"])
-                for row in rows
-                if isinstance(row, dict) and row.get("chunk_id")
-            ]
+            chunk_ids = [str(row["chunk_id"]) for row in rows if row.get("chunk_id")]
             if not chunk_ids:
                 return 0
+
             ids_literal = ", ".join(f'"{cid}"' for cid in chunk_ids)
-            self.client.delete(
+            await run_blocking(
+                self.client.delete,
                 collection_name=self.config.milvus_collection_name,
                 filter=f"chunk_id in [{ids_literal}]",
             )

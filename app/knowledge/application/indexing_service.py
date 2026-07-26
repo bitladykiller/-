@@ -59,16 +59,18 @@ _REPLACE_REQUIRES_DOC_ID = "replace 模式必须提供合法 doc_id"
 
 
 def load_pipeline_dependencies() -> tuple[ParseDocumentFn, ChunkIndexer]:
-    """延迟导入解析函数和检索索引器，降低模块 import 成本。"""
+    """延迟导入解析函数和检索索引器，降低模块 import 成本。
+
+    索引器走 `get_shared_searcher()` 的进程内单例：以前每处理一个上传文件
+    都会新建一个 `HybridSearcher`（新 Milvus 连接 + 重新加载 embedding 模型），
+    白白付出重复的构造成本。
+    """
     from app.knowledge.infrastructure.doc_parser.pipeline import parse_document
-    from app.knowledge.infrastructure.doc_parser.retrieval.config import RetrievalConfig
     from app.knowledge.infrastructure.doc_parser.retrieval.hybrid_search import (
-        HybridSearcher,
+        get_shared_searcher,
     )
 
-    return cast(ParseDocumentFn, parse_document), cast(
-        ChunkIndexer, HybridSearcher(RetrievalConfig())
-    )
+    return cast(ParseDocumentFn, parse_document), cast(ChunkIndexer, get_shared_searcher())
 
 
 def build_doc_id(user_id: int) -> str:
@@ -262,4 +264,4 @@ class IndexingService:
             return {"status": STATUS_ERROR, "message": str(exc)}
 
 
-__all__ = ["IndexingService"]
+__all__ = ["IndexingService", "load_pipeline_dependencies"]

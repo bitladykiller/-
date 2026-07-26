@@ -49,24 +49,24 @@ def _run(awaitable):
 
 def test_build_runtime_settings_collects_nested_config() -> None:
     stm = _settings.app_config.memory.stm
-    settings = build_runtime_settings(
+    runtime = build_runtime_settings(
         config=stm,
         redis_config=stm.redis,
         window_config=stm.window,
         compression_config=stm.compression,
     )
 
-    assert settings.key_prefix == "agent:stm"
-    assert settings.ttl_seconds == 86400
-    assert settings.max_messages == 16
-    assert settings.trigger_rounds == 6
-    assert settings.keep_recent_rounds == 4
-    assert settings.time_window_seconds == 86400
+    assert runtime.key_prefix == "agent:stm"
+    assert runtime.ttl_seconds == 86400
+    assert runtime.max_messages == 16
+    assert runtime.trigger_rounds == 6
+    assert runtime.keep_recent_rounds == 4
+    assert runtime.time_window_seconds == 86400
 
 
 def test_should_compress_session_respects_disable_and_thresholds() -> None:
     stm = _settings.app_config.memory.stm
-    settings = build_runtime_settings(
+    runtime = build_runtime_settings(
         config=stm,
         redis_config=stm.redis,
         window_config=stm.window,
@@ -74,20 +74,20 @@ def test_should_compress_session_respects_disable_and_thresholds() -> None:
     )
 
     assert should_compress_session(
-        settings,
+        runtime,
         total_turns=8,
         last_compressed_turn=1,
         message_count=2,
     ) is True
     assert should_compress_session(
-        settings,
+        runtime,
         total_turns=2,
         last_compressed_turn=1,
         message_count=20,
     ) is True
-    disabled_settings = settings.__class__(**{**settings.__dict__, "compression_enabled": False})
+    disabled = runtime.__class__(**{**runtime.__dict__, "compression_enabled": False})
     assert should_compress_session(
-        disabled_settings,
+        disabled,
         total_turns=100,
         last_compressed_turn=0,
         message_count=100,
@@ -96,7 +96,7 @@ def test_should_compress_session_respects_disable_and_thresholds() -> None:
 
 def test_build_compression_context_splits_messages_and_carries_summary() -> None:
     stm = _settings.app_config.memory.stm
-    settings = build_runtime_settings(
+    runtime = build_runtime_settings(
         config=stm,
         redis_config=stm.redis,
         window_config=stm.window,
@@ -108,7 +108,7 @@ def test_build_compression_context_splits_messages_and_carries_summary() -> None
     messages = [_build_message(message_id=f"msg-{index}", turn_index=index) for index in range(1, 11)]
 
     context = build_compression_context(
-        settings=settings,
+        runtime=runtime,
         keys=keys,
         meta=meta,
         message_count=len(messages),

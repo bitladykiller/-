@@ -277,28 +277,15 @@ async def get_task_manager() -> _TaskManager:
     return manager
 
 
-async def close_task_manager() -> None:
-    """关闭任务管理器的 Redis 连接（由 AppContainer.close 统一调用）。"""
-    from app.platform.container import get_container
-
-    container = await get_container()
-    manager = container.task_manager
-    container.task_manager = None
-    if manager is None:
-        return
-
-    try:
-        await manager.close()
-    except Exception:
-        logger.debug("关闭 task_manager Redis 连接时出错", exc_info=True)
-        return
+# NOTE: 关闭动作只有 `AppContainer.close()` 一个入口。
+# 这里曾有一个 `close_task_manager()` 与之重复实现，但从没有被生产代码调用过，
+# 两份同义逻辑并存只会让"到底谁负责关连接"变得含糊，已删除。
 
 
 __all__ = [
     "TaskStatus",
     "TaskStatusPayload",
     "build_task_status_payload",
-    "close_task_manager",
     "dump_task_status_payload",
     "get_task_manager",
     "load_task_status_payload",

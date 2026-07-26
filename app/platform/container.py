@@ -23,6 +23,26 @@ logger = get_logger(__name__)
 
 
 @dataclass
+class KnowledgeGraphComponents:
+    """KG 检索链路的运行时组件缓存。
+
+    这些对象构造昂贵（Cypher 示例检索器要建向量索引、Text2Cypher 子图要编译
+    LangGraph），但一旦建成就是无状态可复用的，因此按进程缓存一份。
+
+    WHY 单独成组而不是散落在 AppContainer 上：它们是一组必须一起初始化、
+    一起失效的关联对象，聚成一个命名结构后，chat 域可以正常读写，
+    不必再去访问容器的下划线私有字段。
+    """
+
+    cypher_example_retriever: Any = None
+    text2cypher_agent: Any = None
+
+    def clear(self) -> None:
+        self.cypher_example_retriever = None
+        self.text2cypher_agent = None
+
+
+@dataclass
 class AppContainer:
     """应用级依赖容器。
 
@@ -43,8 +63,9 @@ class AppContainer:
     # ---- 检索器运行时（替代 retriever_runtime 中的全局变量） ----
     retriever_registry: Any = None
     retriever_registry_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    _cypher_example_retriever: Any = None
-    _t2c_agent: Any = None
+    kg_components: KnowledgeGraphComponents = field(
+        default_factory=KnowledgeGraphComponents
+    )
 
     # ---- KG Neo4j 连接缓存（替代 kg_neo4j_conn 中的全局变量） ----
     neo4j_graph: Any = None
@@ -177,6 +198,7 @@ class AppContainer:
 
         self.llm_models.clear()
         self.retriever_registry = None
+        self.kg_components.clear()
         self.neo4j_graph = None
         self.react_subgraph = None
         self.summarize_chain = None
@@ -291,6 +313,7 @@ async def _close_memory_resources(middleware: Any) -> None:
 
 __all__ = [
     "AppContainer",
+    "KnowledgeGraphComponents",
     "get_container",
     "reset_container",
     "set_container",

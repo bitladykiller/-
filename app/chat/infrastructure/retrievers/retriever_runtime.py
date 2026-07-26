@@ -4,6 +4,10 @@
 - 从 AppContainer 获取检索器注册表和 KG 子图组件
 - 懒初始化 KG / RAG 检索器
 - 缓存 Text2Cypher 子图和 Cypher 示例检索器
+
+不负责：
+- 检索器的具体实现（见 retriever_implementations）
+- 容器自身的生命周期
 """
 
 from __future__ import annotations
@@ -18,70 +22,106 @@ from app.chat.infrastructure.retrievers.retriever_contracts import (
 
 
 async def get_retriever(name: str) -> Any:
-    """获取检索器。
+    """获取检索器，首次调用时懒初始化并注册到容器的注册表。
 
-    通过 AppContainer 管理检索器注册表、KG 子图组件和 Neo4j 连接缓存。
-    首次调用时懒初始化 KG/RAG 检索器并注册到容器的注册表中。
+    并发安全：注册表的创建与填充都在 `retriever_registry_lock` 内完成。
+    锁外只做一次"是否已就绪"的快速判断，命中时直接返回，不付加锁成本。
     """
     from app.platform.container import get_container
 
     container = await get_container()
 
+    registry = container.retriever_registry
+    if registry is not None and _registry_ready(registry):
+        return registry.get(name)
+
+    async with container.retriever_registry_lock:
+        registry = _ensure_registry(container)
+        if KG_RETRIEVER_NAME not in registry:
+            _register_kg_retriever(container, registry)
+        if RAG_RETRIEVER_NAME not in registry:
+            _register_rag_retriever(registry)
+
+    return registry.get(name)
+
+
+def _registry_ready(registry: Any) -> bool:
+    """两个检索器都已注册时才算就绪。"""
+    return KG_RETRIEVER_NAME in registry and RAG_RETRIEVER_NAME in registry
+
+
+def _ensure_registry(container: Any) -> Any:
+    """取出容器上的注册表，不存在则创建。
+
+    必须在 `retriever_registry_lock` 内调用：之前这段在锁外执行，
+    两个并发请求可能各建一个 registry，后写入的把先写入的连同已注册的
+    检索器一起覆盖掉。
+    """
     if container.retriever_registry is None:
         from app.chat.infrastructure.retrievers.retriever_contracts import RetrieverRegistry
 
         container.retriever_registry = RetrieverRegistry()
+    return container.retriever_registry
 
-    registry = container.retriever_registry
 
-    if KG_RETRIEVER_NAME not in registry or RAG_RETRIEVER_NAME not in registry:
-        async with container.retriever_registry_lock:
-            registry = container.retriever_registry
+def _register_kg_retriever(container: Any, registry: Any) -> None:
+    """构造并注册 KG 检索器；Neo4j 不可用时静默跳过。
 
-            if KG_RETRIEVER_NAME not in registry:
-                neo4j_graph = _get_neo4j_graph(container)
-                if neo4j_graph is not None:
-                    if container._cypher_example_retriever is None:
-                        from app.chat.infrastructure.kg.northwind_retriever import (
-                            NorthwindCypherRetriever,
-                        )
+    跳过而不是抛错：图谱是增强能力，缺失时 RAG 链路仍应可用。
+    """
+    neo4j_graph = _get_neo4j_graph(container)
+    if neo4j_graph is None:
+        return
 
-                        container._cypher_example_retriever = NorthwindCypherRetriever()
+    from app.chat.infrastructure.retrievers.retriever_implementations import (
+        KnowledgeGraphRetriever,
+    )
 
-                    if container._t2c_agent is None:
-                        from app.chat.infrastructure.kg.predefined_cypher.cypher_dict import (
-                            predefined_cypher_dict,
-                        )
-                        from app.chat.infrastructure.kg.predefined_cypher.descriptions import (
-                            QUERY_DESCRIPTIONS,
-                        )
-                        from app.chat.infrastructure.kg.text2cypher_workflow import (
-                            create_text2cypher_agent,
-                        )
-                        from app.chat.infrastructure.modeling.models import cypher_model
+    agent = _ensure_text2cypher_agent(container, neo4j_graph)
+    registry.register(KG_RETRIEVER_NAME, KnowledgeGraphRetriever(agent))
 
-                        container._t2c_agent = create_text2cypher_agent(
-                            llm=cypher_model,  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
-                            graph=neo4j_graph,
-                            cypher_example_retriever=container._cypher_example_retriever,
-                            predefined_cypher_dict=predefined_cypher_dict,
-                            query_descriptions=QUERY_DESCRIPTIONS,
-                        )
 
-                    from app.chat.infrastructure.retrievers.retriever_implementations import (
-                        KnowledgeGraphRetriever,
-                    )
+def _ensure_text2cypher_agent(container: Any, neo4j_graph: Any) -> Any:
+    """取出（或首次构造）Text2Cypher 子图与其依赖的示例检索器。"""
+    components = container.kg_components
 
-                    registry.register(KG_RETRIEVER_NAME, KnowledgeGraphRetriever(container._t2c_agent))
+    if components.cypher_example_retriever is None:
+        from app.chat.infrastructure.kg.northwind_retriever import NorthwindCypherRetriever
 
-            if RAG_RETRIEVER_NAME not in registry:
-                from app.chat.infrastructure.retrievers.retriever_implementations import (
-                    MilvusDocRetriever,
-                )
+        components.cypher_example_retriever = NorthwindCypherRetriever()
 
-                registry.register(RAG_RETRIEVER_NAME, MilvusDocRetriever())
+    if components.text2cypher_agent is None:
+        from app.chat.infrastructure.kg.predefined_cypher.cypher_dict import (
+            predefined_cypher_dict,
+        )
+        from app.chat.infrastructure.kg.predefined_cypher.descriptions import (
+            QUERY_DESCRIPTIONS,
+        )
+        from app.chat.infrastructure.kg.text2cypher_workflow import (
+            create_text2cypher_agent,
+        )
+        from app.chat.infrastructure.modeling.models import cypher_model
 
-    return registry.get(name)
+        components.text2cypher_agent = create_text2cypher_agent(
+            # cypher_model 是 LazyModelProxy：转发到真实 BaseChatModel，
+            # 但要等首次使用时才建连接。这是刻意的鸭子类型，不是类型错误。
+            llm=cypher_model,  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
+            graph=neo4j_graph,
+            cypher_example_retriever=components.cypher_example_retriever,
+            predefined_cypher_dict=predefined_cypher_dict,
+            query_descriptions=QUERY_DESCRIPTIONS,
+        )
+
+    return components.text2cypher_agent
+
+
+def _register_rag_retriever(registry: Any) -> None:
+    """构造并注册 RAG 文档检索器。"""
+    from app.chat.infrastructure.retrievers.retriever_implementations import (
+        MilvusDocRetriever,
+    )
+
+    registry.register(RAG_RETRIEVER_NAME, MilvusDocRetriever())
 
 
 __all__ = ["get_retriever"]

@@ -194,20 +194,7 @@ def create_app(
 app = create_app()
 
 
-__all__ = [
-    "APP_TITLE",
-    "HEALTH_STATUS",
-    "OPEN_CORS_HEADERS",
-    "OPEN_CORS_METHODS",
-    "OPEN_CORS_ORIGINS",
-    "STATIC_DIR",
-    "app",
-    "build_lifespan",
-    "close_runtime_resources",
-    "configure_cors",
-    "create_app",
-    "register_middleware",
-    "register_routes",
-    "register_static_files",
-    "warm_up_runtime_resources",
-]
+# 只导出真正的对外入口。`configure_cors` / `register_*` / `build_lifespan`
+# 都是 create_app 的装配步骤，属于实现细节——测试按模块属性直接访问即可，
+# 不必写进公共 API。
+__all__ = ["app", "create_app"]

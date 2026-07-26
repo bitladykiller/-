@@ -1,3 +1,10 @@
+"""LTM 纯函数单测。
+
+注意：这里一律使用真实的配置 dataclass，不用等价的 dict 替身。
+历史上这些测试传 dict，掩盖了生产代码把 frozen dataclass 当 dict 下标取值的
+运行期 TypeError（见 test_ltm_config_objects_are_attribute_accessed）。
+"""
+
 from app.knowledge.domain.schemas import LongTermMemory
 from app.knowledge.infrastructure.ltm.simple_long_term_memory import (
     build_hit_update_plan,
@@ -5,10 +12,15 @@ from app.knowledge.infrastructure.ltm.simple_long_term_memory import (
     preview_text,
     resolve_active_search_request,
 )
+from app.shared.core.app_config import (
+    LTMDeduplicationConfig,
+    LTMSearchConfig,
+    LTMUpdateOnHitConfig,
+)
 
 
 def test_preview_text_and_search_param_resolution_are_stable() -> None:
-    search_config = {"top_k": 5, "score_threshold": 0.72}
+    search_config = LTMSearchConfig(top_k=5, score_threshold=0.72)
 
     assert preview_text("abcdef", 3) == "abc"
     assert resolve_active_search_request(
@@ -73,11 +85,11 @@ def test_build_hit_update_plan_follows_strategy() -> None:
         hit_count=2,
         last_hit_at=100,
     )
-    update_config = {
-        "enabled": True,
-        "update_last_hit_at": True,
-        "increase_hit_count": True,
-    }
+    update_config = LTMUpdateOnHitConfig(
+        enabled=True,
+        update_last_hit_at=True,
+        increase_hit_count=True,
+    )
 
     update_plan = build_hit_update_plan(memory, update_config, now_ts=200)
 
@@ -91,3 +103,24 @@ def test_build_hit_update_plan_follows_strategy() -> None:
             "last_hit_at": 200,
         },
     }
+
+
+def test_ltm_config_objects_are_attribute_accessed_not_subscripted() -> None:
+    """回归测试：LTM 配置是 frozen dataclass，不支持下标。
+
+    生产代码一旦写回 `config["top_k"]`，会抛 TypeError 并被上层宽泛的
+    except 吞掉，表现为"长期记忆静默失效"——没有报错，只是永远检索不到、
+    也永远写不进去。这里直接钉死访问方式。
+    """
+    for config, key in (
+        (LTMSearchConfig(), "top_k"),
+        (LTMDeduplicationConfig(), "top_k"),
+        (LTMUpdateOnHitConfig(), "enabled"),
+    ):
+        assert hasattr(config, key)
+        try:
+            config[key]  # type: ignore[index]
+        except TypeError:
+            pass
+        else:  # pragma: no cover - 配置类型变了就该重新审视调用方
+            raise AssertionError(f"{type(config).__name__} 变成可下标了，请复核调用方写法")

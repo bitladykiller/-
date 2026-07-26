@@ -1,7 +1,10 @@
 from app.knowledge.infrastructure.ltm.ltm_collection import (
     MEMORY_OUTPUT_FIELDS,
+    build_primary_key_in_filter,
+    delete_by_filter,
     ensure_memory_collection,
     insert_records,
+    query_records,
     search_records,
     upsert_records,
 )
@@ -36,6 +39,8 @@ class FakeMilvusClient:
         self.insert_calls: list[dict] = []
         self.upsert_calls: list[dict] = []
         self.search_calls: list[dict] = []
+        self.query_calls: list[dict] = []
+        self.delete_calls: list[dict] = []
 
     def create_schema(self, **kwargs) -> FakeSchema:
         self.create_schema_kwargs = kwargs
@@ -60,6 +65,13 @@ class FakeMilvusClient:
     def search(self, **kwargs):
         self.search_calls.append(kwargs)
         return [[{"distance": 0.91}]]
+
+    def query(self, **kwargs):
+        self.query_calls.append(kwargs)
+        return [{"memory_id": "mem-1"}]
+
+    def delete(self, **kwargs) -> None:
+        self.delete_calls.append(kwargs)
 
 
 def test_ensure_memory_collection_creates_collection_when_missing() -> None:
@@ -116,13 +128,13 @@ def test_ensure_memory_collection_skips_existing_collection() -> None:
     assert client.create_collection_calls == []
 
 
-def test_query_insert_upsert_and_search_delegate_to_client() -> None:
+async def test_insert_upsert_and_search_delegate_to_client() -> None:
     client = FakeMilvusClient()
     records = [{"memory_id": "mem-1"}]
 
-    insert_records(client, "memory_coll", records)
-    upsert_records(client, "memory_coll", records)
-    search_result = search_records(
+    await insert_records(client, "memory_coll", records)
+    await upsert_records(client, "memory_coll", records)
+    search_result = await search_records(
         client,
         "memory_coll",
         [0.1, 0.2],
@@ -147,3 +159,47 @@ def test_query_insert_upsert_and_search_delegate_to_client() -> None:
             "output_fields": MEMORY_OUTPUT_FIELDS,
         }
     ]
+
+
+async def test_query_records_normalizes_none_to_empty_list() -> None:
+    class NoneQueryClient(FakeMilvusClient):
+        def query(self, **kwargs):
+            self.query_calls.append(kwargs)
+            return None
+
+    client = NoneQueryClient()
+
+    rows = await query_records(
+        client,
+        "memory_coll",
+        "is_deleted == true",
+        limit=10,
+        output_fields=["memory_id"],
+    )
+
+    assert rows == []
+    assert client.query_calls == [
+        {
+            "collection_name": "memory_coll",
+            "filter": "is_deleted == true",
+            "output_fields": ["memory_id"],
+            "limit": 10,
+        }
+    ]
+
+
+async def test_delete_by_filter_delegates_to_client() -> None:
+    client = FakeMilvusClient()
+
+    await delete_by_filter(client, "memory_coll", 'memory_id in ["a"]')
+
+    assert client.delete_calls == [
+        {"collection_name": "memory_coll", "filter": 'memory_id in ["a"]'}
+    ]
+
+
+def test_build_primary_key_in_filter_quotes_every_key() -> None:
+    assert (
+        build_primary_key_in_filter("memory_id", ["a", "b"])
+        == 'memory_id in ["a", "b"]'
+    )

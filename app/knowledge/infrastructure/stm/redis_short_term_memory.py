@@ -175,35 +175,38 @@ def build_runtime_settings(
     )
 
 
+# NOTE: 下面这些函数的运行时参数统一叫 `runtime`，不叫 `settings`——
+# 本模块同时在用全局 `app.shared.core.config.settings`，同名参数会遮蔽它，
+# 读者很难判断某处的 `settings` 到底指哪个。
+
+
 def should_compress_session(
-    settings: ShortTermMemoryRuntimeSettings,
+    runtime: ShortTermMemoryRuntimeSettings,
     *,
     total_turns: int,
     last_compressed_turn: int,
     message_count: int,
 ) -> bool:
     """根据配置、轮次和消息数判断是否触发压缩。"""
-    if not settings.compression_enabled:
+    if not runtime.compression_enabled:
         return False
-    if total_turns - last_compressed_turn >= settings.trigger_rounds:
+    if total_turns - last_compressed_turn >= runtime.trigger_rounds:
         return True
-    if message_count >= settings.trigger_messages:
-        return True
-    return False
+    return message_count >= runtime.trigger_messages
 
 
 def build_compression_context(
     *,
-    settings: ShortTermMemoryRuntimeSettings,
+    runtime: ShortTermMemoryRuntimeSettings,
     keys: SessionKeys,
     meta: SessionMeta,
     message_count: int,
     old_summary: SessionSummary | None,
     all_messages: list[MessageRecord],
 ) -> CompressionContext | None:
-    """基于当前 session 状态准备压缩上下文。"""
+    """基于当前 session 状态准备压缩上下文；未达阈值返回 None。"""
     if not should_compress_session(
-        settings,
+        runtime,
         total_turns=meta.total_turns,
         last_compressed_turn=meta.last_compressed_turn,
         message_count=message_count,
@@ -212,7 +215,7 @@ def build_compression_context(
 
     messages_to_compress, messages_to_keep = split_messages_for_compression(
         all_messages,
-        settings.keep_recent_rounds,
+        runtime.keep_recent_rounds,
     )
     return CompressionContext(
         keys=keys,
@@ -223,17 +226,32 @@ def build_compression_context(
     )
 
 
+def queue_window_pruning(
+    pipe: Any,
+    key: str,
+    runtime: ShortTermMemoryRuntimeSettings,
+) -> None:
+    """把"滑动窗口修剪"的三条命令排入 pipeline。
+
+    修剪包含三件事：截断超出条数上限的旧消息、丢弃超出时间窗口的消息、
+    续期 TTL。三者都是 fire-and-forget，没有读依赖，适合合并成一次往返。
+    """
+    pipe.zremrangebyrank(key, 0, -runtime.max_messages - 1)
+    cutoff = int(time.time() * 1000) - runtime.time_window_seconds * 1000
+    pipe.zremrangebyscore(key, 0, cutoff)
+    pipe.expire(key, runtime.ttl_seconds)
+
+
 async def prune_message_window(
     *,
     redis_client: Any,
     key: str,
-    settings: ShortTermMemoryRuntimeSettings,
+    runtime: ShortTermMemoryRuntimeSettings,
 ) -> None:
     """维护消息滑动窗口：同时控制条数、时间窗口和 TTL。"""
-    await redis_client.zremrangebyrank(key, 0, -settings.max_messages - 1)
-    cutoff = int(time.time() * 1000) - settings.time_window_seconds * 1000
-    await redis_client.zremrangebyscore(key, 0, cutoff)
-    await redis_client.expire(key, settings.ttl_seconds)
+    async with redis_client.pipeline(transaction=False) as pipe:
+        queue_window_pruning(pipe, key, runtime)
+        await pipe.execute()
 
 
 async def persist_summary_from_messages(
@@ -259,17 +277,25 @@ async def persist_summary_from_messages(
 
 async def rewrite_recent_messages(
     *,
+    redis_client: Any,
     key: str,
     messages: Sequence[MessageRecord],
-    reset_messages: Callable[[str], Awaitable[None]],
-    append_message: Callable[[MessageRecord], Awaitable[None]],
+    runtime: ShortTermMemoryRuntimeSettings,
 ) -> None:
-    """用压缩后保留的最近消息重建消息窗口。"""
+    """用压缩后保留的最近消息重建消息窗口。
+
+    delete + 批量 zadd + 窗口修剪合并成一次往返。
+    之前是"删一次 + 每条消息各 4 次命令"，保留 5 条就是 21 次 Redis 往返。
+    """
     if not messages:
         return
-    await reset_messages(key)
-    for message in messages:
-        await append_message(message)
+
+    scored = {compress_message(message): message_score(message) for message in messages}
+    async with redis_client.pipeline(transaction=False) as pipe:
+        pipe.delete(key)
+        pipe.zadd(key, scored)
+        queue_window_pruning(pipe, key, runtime)
+        await pipe.execute()
 
 
 async def run_compression_pipeline(
@@ -337,20 +363,40 @@ class RedisShortTermMemory:
         session_id: str,
         message: MessageRecord,
     ) -> None:
-        """写入一条短期消息，并维护滑动窗口。"""
+        """写入一条短期消息，并维护滑动窗口。
+
+        zadd 与三条窗口修剪命令合并成一次往返（原本是 4 次）。
+        """
         try:
             key = self._build_session_keys(tenant_id, user_id, session_id)["messages"]
-            await self.redis.zadd(
-                key,
-                {compress_message(message): message_score(message)},
-            )
-            await prune_message_window(
-                redis_client=self.redis,
-                key=key,
-                settings=self.settings,
-            )
+            async with self.redis.pipeline(transaction=False) as pipe:
+                pipe.zadd(key, {compress_message(message): message_score(message)})
+                queue_window_pruning(pipe, key, self.settings)
+                await pipe.execute()
         except Exception:
             logger.warning("[stm] append_message 失败", exc_info=True)
+
+    async def append_messages(
+        self,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        messages: Sequence[MessageRecord],
+    ) -> None:
+        """批量写入短期消息（一轮对话的 user + assistant 合并成一次往返）。"""
+        if not messages:
+            return
+        try:
+            key = self._build_session_keys(tenant_id, user_id, session_id)["messages"]
+            scored = {
+                compress_message(message): message_score(message) for message in messages
+            }
+            async with self.redis.pipeline(transaction=False) as pipe:
+                pipe.zadd(key, scored)
+                queue_window_pruning(pipe, key, self.settings)
+                await pipe.execute()
+        except Exception:
+            logger.warning("[stm] append_messages 失败", exc_info=True)
 
     async def get_recent_messages(
         self,
@@ -460,20 +506,25 @@ class RedisShortTermMemory:
         session_id: str,
         llm_compress_func: SummaryCompressor,
     ) -> bool:
-        """压缩旧消息，并保留最近若干轮原始消息。"""
+        """压缩旧消息，并保留最近若干轮原始消息。
+
+        四路状态读取（meta / 计数 / 摘要 / 消息）互不依赖，并发发起。
+        """
         try:
-            meta = await self.get_meta(tenant_id, user_id, session_id)
-            msg_count = await self.get_message_count(tenant_id, user_id, session_id)
             keys = self._build_session_keys(tenant_id, user_id, session_id)
-            old_summary = await self.get_summary(tenant_id, user_id, session_id)
-            all_messages = await self.get_recent_messages(
-                tenant_id,
-                user_id,
-                session_id,
-                limit=COMPRESS_FETCH_LIMIT,
+            meta, msg_count, old_summary, all_messages = await asyncio.gather(
+                self.get_meta(tenant_id, user_id, session_id),
+                self.get_message_count(tenant_id, user_id, session_id),
+                self.get_summary(tenant_id, user_id, session_id),
+                self.get_recent_messages(
+                    tenant_id,
+                    user_id,
+                    session_id,
+                    limit=COMPRESS_FETCH_LIMIT,
+                ),
             )
             context = build_compression_context(
-                settings=self.settings,
+                runtime=self.settings,
                 keys=keys,
                 meta=meta,
                 message_count=msg_count,
@@ -498,15 +549,10 @@ class RedisShortTermMemory:
                     save_summary=self.save_summary,
                 ),
                 rewrite_messages=lambda current: rewrite_recent_messages(
+                    redis_client=self.redis,
                     key=current.keys["messages"],
                     messages=current.messages_to_keep,
-                    reset_messages=self.redis.delete,
-                    append_message=lambda message: self.append_message(
-                        tenant_id,
-                        user_id,
-                        session_id,
-                        message,
-                    ),
+                    runtime=self.settings,
                 ),
                 save_meta=lambda meta: self.save_meta(tenant_id, user_id, session_id, meta),
             )

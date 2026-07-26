@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+from functools import lru_cache
 from typing import Any
 
 from app.knowledge.infrastructure.doc_parser.retrieval.config import RetrievalConfig
@@ -83,16 +84,16 @@ class HybridSearcher:
 
     async def soft_delete_document(self, doc_id: str) -> dict[str, int]:
         """仅软删除文档（不写入新版）。"""
-        return self.milvus.soft_delete_by_doc_id(doc_id)
+        return await self.milvus.soft_delete_by_doc_id(doc_id)
 
-    def hard_purge_soft_deleted(
+    async def hard_purge_soft_deleted(
         self,
         *,
         retention_seconds: int = 7 * 24 * 3600,
         batch_limit: int = 16384,
     ) -> int:
         """物理删除过期软删 chunk。"""
-        return self.milvus.hard_purge_soft_deleted(
+        return await self.milvus.hard_purge_soft_deleted(
             retention_seconds=retention_seconds,
             batch_limit=batch_limit,
         )
@@ -133,3 +134,26 @@ class HybridSearcher:
             )
 
         return fused[:final_top_k]
+
+
+@lru_cache(maxsize=1)
+def get_shared_searcher() -> HybridSearcher:
+    """返回进程内共享的默认 HybridSearcher。
+
+    WHY 单例：构造 `HybridSearcher` 是重操作——建立 Milvus 连接、
+    往返一次 `has_collection`，并实例化 embedding 模型（HuggingFace 路径
+    会把模型权重加载进内存）。索引侧和检索侧都需要它，且实例本身无状态，
+    没有理由各建一份、更没有理由每次上传都重建一份。
+
+    需要自定义配置或注入 embedding 模型时，直接 `HybridSearcher(...)` 构造，
+    不要走这个入口。
+    """
+    return HybridSearcher(RetrievalConfig())
+
+
+def reset_shared_searcher() -> None:
+    """清空共享实例（配置变更或测试隔离时使用）。"""
+    get_shared_searcher.cache_clear()
+
+
+__all__ = ["HybridSearcher", "get_shared_searcher", "reset_shared_searcher"]

@@ -4,6 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import app.knowledge.infrastructure.ltm.simple_long_term_memory as ltm_module
+from app.shared.core.app_config import LTMDeduplicationConfig, LTMUpdateOnHitConfig
 
 
 class FakeEmbeddingModel:
@@ -123,11 +124,11 @@ def test_ensure_collection_ready_or_raise_logs_created_or_existing(monkeypatch) 
 def test_save_memory_inserts_record_built_from_embedding(monkeypatch) -> None:
     inserted_records: list[list[dict]] = []
     monkeypatch.setattr(ltm_module, "ensure_collection_ready_or_raise", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        ltm_module,
-        "insert_records",
-        lambda _client, _collection_name, records: inserted_records.append(records),
-    )
+
+    async def fake_insert(_client, _collection_name, records) -> None:
+        inserted_records.append(records)
+
+    monkeypatch.setattr(ltm_module, "insert_records", fake_insert)
 
     ltm = ltm_module.SimpleLongTermMemory(
         milvus_client=object(),
@@ -198,21 +199,27 @@ def test_hybrid_search_uses_multiplier_for_search_limit(monkeypatch) -> None:
 def test_deduplicate_memory_returns_false_when_hit_threshold_reached(monkeypatch) -> None:
     search_calls: list[dict] = []
     monkeypatch.setattr(ltm_module, "ensure_collection_ready_or_raise", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        ltm_module,
-        "search_records",
-        lambda _client, _collection_name, embedding, filter_expr, *, limit, output_fields: (
-            search_calls.append(
-                {
-                    "embedding": embedding,
-                    "filter_expr": filter_expr,
-                    "limit": limit,
-                    "output_fields": output_fields,
-                }
-            )
-            or [[{"distance": 0.95}]]
-        ),
-    )
+
+    async def fake_search(
+        _client,
+        _collection_name,
+        embedding,
+        filter_expr,
+        *,
+        limit,
+        output_fields,
+    ):
+        search_calls.append(
+            {
+                "embedding": embedding,
+                "filter_expr": filter_expr,
+                "limit": limit,
+                "output_fields": output_fields,
+            }
+        )
+        return [[{"distance": 0.95}]]
+
+    monkeypatch.setattr(ltm_module, "search_records", fake_search)
 
     ltm = ltm_module.SimpleLongTermMemory(
         milvus_client=object(),
@@ -220,7 +227,7 @@ def test_deduplicate_memory_returns_false_when_hit_threshold_reached(monkeypatch
         collection_name="memory_coll",
         retrieval_core=FakeRetrievalCore(),
     )
-    ltm.deduplication_config = {"top_k": 2, "similarity_threshold": 0.9}
+    ltm.deduplication_config = LTMDeduplicationConfig(top_k=2, similarity_threshold=0.9)
 
     should_save = _run(
         ltm.deduplicate_memory(
@@ -246,17 +253,17 @@ def test_deduplicate_memory_returns_false_when_hit_threshold_reached(monkeypatch
 def test_update_memory_hit_info_updates_memory_and_upserts_partial_record(monkeypatch) -> None:
     upserted_records: list[list[dict]] = []
     ltm, _embedding_model = _build_ltm(monkeypatch, retrieval_core=FakeRetrievalCore())
-    ltm.update_on_hit_config = {
-        "enabled": True,
-        "update_last_hit_at": True,
-        "increase_hit_count": True,
-    }
-    monkeypatch.setattr(ltm, "_now_ts", lambda: 200)
-    monkeypatch.setattr(
-        ltm_module,
-        "upsert_records",
-        lambda _client, _collection_name, records: upserted_records.append(records),
+    ltm.update_on_hit_config = LTMUpdateOnHitConfig(
+        enabled=True,
+        update_last_hit_at=True,
+        increase_hit_count=True,
     )
+    monkeypatch.setattr(ltm, "_now_ts", lambda: 200)
+
+    async def fake_upsert(_client, _collection_name, records) -> None:
+        upserted_records.append(records)
+
+    monkeypatch.setattr(ltm_module, "upsert_records", fake_upsert)
     memory = ltm_module.LongTermMemory(
         memory_id="mem-1",
         tenant_id="tenant-1",
