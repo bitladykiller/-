@@ -2,6 +2,23 @@ import asyncio
 
 from app.api import langgraph as langgraph_api
 from app.chat.application import agent_query_service
+from app.user.application.auth_service import AuthenticatedUser
+
+_TEST_USER = AuthenticatedUser(id=3, username="tester")
+
+
+def _stub_conversation(monkeypatch, resolved_id: int) -> list[tuple[int, object]]:
+    """替换会话解析：记录调用并返回固定会话 id。"""
+    calls: list[tuple[int, object]] = []
+
+    async def fake_ensure(user_id: int, conversation_id):
+        calls.append((user_id, conversation_id))
+        return resolved_id
+
+    monkeypatch.setattr(
+        langgraph_api.conversation_service, "ensure_conversation", fake_ensure
+    )
+    return calls
 
 
 class FakeChunk:
@@ -26,12 +43,12 @@ def test_langgraph_query_builds_streaming_response(monkeypatch) -> None:
         yield FakeChunk(""), {}
 
     async def scenario() -> None:
-        monkeypatch.setattr(langgraph_api.uuid, "uuid4", lambda: "thread-1")
+        ensure_calls = _stub_conversation(monkeypatch, resolved_id=11)
 
         def fake_stream_agent_query(*, query, user_id, thread_id):
             assert query == "空调推荐"
             assert user_id == 3
-            assert thread_id == "thread-1"
+            assert thread_id == "11"
             return fake_graph_stream()
 
         monkeypatch.setattr(
@@ -47,12 +64,13 @@ def test_langgraph_query_builds_streaming_response(monkeypatch) -> None:
         )
 
         response = await langgraph_api.langgraph_query(
+            _TEST_USER,
             query="空调推荐",
-            user_id=3,
             conversation_id=None,
         )
 
-        assert response.headers["X-Conversation-ID"] == "thread-1"
+        assert ensure_calls == [(3, None)]
+        assert response.headers["X-Conversation-ID"] == "11"
         assert await _collect_response_body(response) == (
             'data: "推荐这款"\n\n'
             'data: "正常输出"\n\n'
@@ -73,6 +91,7 @@ def test_langgraph_query_emits_error_event_on_mid_stream_failure(monkeypatch) ->
         raise RuntimeError("llm exploded")
 
     async def scenario() -> None:
+        _stub_conversation(monkeypatch, resolved_id=77)
         monkeypatch.setattr(
             langgraph_api,
             "stream_agent_query",
@@ -80,9 +99,9 @@ def test_langgraph_query_emits_error_event_on_mid_stream_failure(monkeypatch) ->
         )
 
         response = await langgraph_api.langgraph_query(
+            _TEST_USER,
             query="任意问题",
-            user_id=3,
-            conversation_id="thread-x",
+            conversation_id=77,
         )
         body = await _collect_response_body(response)
 

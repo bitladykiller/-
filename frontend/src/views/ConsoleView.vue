@@ -1,20 +1,28 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
+import { onMounted, onUnmounted, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import SidebarPanel from "@/components/SidebarPanel.vue";
 import MessageList from "@/components/MessageList.vue";
 import UploadDrawer from "@/components/UploadDrawer.vue";
+import AuthPanel from "@/components/AuthPanel.vue";
 import { useChatStore } from "@/stores/chat";
 
 const store = useChatStore();
-const { messages, streaming, statusLine, error, activeTitle, conversationId } =
-  storeToRefs(store);
+const {
+  messages,
+  streaming,
+  statusLine,
+  error,
+  activeTitle,
+  conversationId,
+  authenticated,
+  authChecking,
+} = storeToRefs(store);
 
 const draft = ref("");
 const uploadOpen = ref(false);
 const mobileNav = ref(false);
 
-const numerals = ["Ⅰ", "Ⅱ", "Ⅲ"];
 const prompts = [
   "智能门锁有哪些型号与价格？",
   "保修政策和退换货流程是怎样的？",
@@ -55,11 +63,8 @@ let healthTimer: number | undefined;
 
 onMounted(async () => {
   await store.refreshHealth();
-  try {
-    await store.refreshConversations();
-  } catch {
-    /* 后端离线时列表拉取失败不应阻断页面挂载，状态由健康灯呈现 */
-  }
+  // 本地 token 有效则直接进入工作台；无效/缺失落到登录门
+  await store.bootstrapAuth();
   healthTimer = window.setInterval(() => {
     void store.refreshHealth();
   }, 30000);
@@ -68,93 +73,96 @@ onMounted(async () => {
 onUnmounted(() => {
   if (healthTimer) window.clearInterval(healthTimer);
 });
+
+watch(error, (v) => {
+  if (v) {
+    // keep visible in status strip
+  }
+});
 </script>
 
 <template>
-  <div class="console" :class="{ nav: mobileNav }">
+  <div v-if="authChecking" class="auth-gate">正在校验登录状态…</div>
+  <AuthPanel v-else-if="!authenticated" />
+  <div v-else class="console" :class="{ nav: mobileNav }">
+    <div class="ambient" aria-hidden="true">
+      <div class="wash" />
+      <div class="rail" />
+    </div>
+
     <SidebarPanel class="side" />
 
     <section class="stage">
-      <header class="top reveal">
-        <button type="button" class="ghost-btn nav-btn" @click="mobileNav = !mobileNav">
-          ☰ 菜单
+      <header class="top">
+        <button type="button" class="nav-btn" @click="mobileNav = !mobileNav">
+          菜单
         </button>
         <div class="titles">
-          <p class="eyebrow">◆ Smart-Home Concierge</p>
+          <p class="eyebrow">Smart-home concierge</p>
           <h1>{{ activeTitle }}</h1>
         </div>
         <div class="actions">
-          <button type="button" class="ghost-btn" @click="uploadOpen = true">
-            <span class="glyph">❖</span> 知识文档
+          <button type="button" class="ghost" @click="uploadOpen = true">
+            知识文档
           </button>
           <button
             type="button"
-            class="ghost-btn danger"
+            class="ghost danger"
             :disabled="!conversationId"
             @click="onDelete"
           >
-            删除会话
+            删除
           </button>
         </div>
       </header>
 
       <div v-if="!messages.length" class="hero">
-        <div class="hero-plaque plaque deco-corners reveal" style="--d: 0.08s">
-          <div class="rays" aria-hidden="true" />
-          <div class="monogram" aria-hidden="true"><span>AG</span></div>
-          <p class="eyebrow center">AssistGen · Concierge Desk</p>
-          <h2>以礼宾之道，<br aria-hidden="true" /><em>接通</em>图谱与文档智能。</h2>
+        <div class="hero-card">
+          <p class="eyebrow">AssistGen Console</p>
+          <h2>
+            以工程化工作台，
+            <em>接通</em> 图谱与文档智能。
+          </h2>
           <p class="lede">
             前后端分离部署。会话、SSE 流式回答、知识入库均对接现有 FastAPI。
             经营范围内的智能家居问题可直接提问。
           </p>
-          <div class="deco-rule" aria-hidden="true"><span class="deco-diamond" /></div>
-          <div class="prompt-grid">
+          <div class="prompt-row">
             <button
-              v-for="(p, i) in prompts"
+              v-for="p in prompts"
               :key="p"
               type="button"
               class="prompt"
               @click="store.send(p)"
             >
-              <span class="numeral">{{ numerals[i] }}</span>
-              <span class="ptext">{{ p }}</span>
-              <span class="parrow" aria-hidden="true">✦</span>
+              {{ p }}
             </button>
-          </div>
-          <div class="caps" aria-hidden="true">
-            <span>图谱检索</span>
-            <span>文档智能</span>
-            <span>会话记忆</span>
           </div>
         </div>
       </div>
       <MessageList v-else :messages="messages" />
 
-      <footer class="composer reveal" style="--d: 0.16s">
-        <div class="box plaque deco-corners">
+      <footer class="composer">
+        <div class="box">
           <textarea
             id="composer-input"
             v-model="draft"
             rows="1"
-            placeholder="写下你的问题…（Enter 发送）"
+            placeholder="写下你的问题 — Enter 发送，Shift+Enter 换行"
             :disabled="streaming"
             @input="resize"
             @keydown="onKey"
           />
           <button
             type="button"
-            class="gold-btn send"
+            class="send"
             :disabled="streaming || !draft.trim()"
             @click="onSend"
           >
-            <span v-if="streaming" class="fan-spinner" aria-hidden="true" />
-            <span v-else class="send-glyph" aria-hidden="true">✦</span>
             {{ streaming ? "生成中" : "发送" }}
           </button>
         </div>
         <div class="status">
-          <span class="tick" aria-hidden="true">✧</span>
           <span>{{ statusLine }}</span>
           <span v-if="error" class="err"> · {{ error }}</span>
         </div>
@@ -169,17 +177,45 @@ onUnmounted(() => {
 <style scoped>
 .console {
   position: relative;
-  z-index: 1;
   display: grid;
-  grid-template-columns: 316px 1fr;
+  grid-template-columns: 300px 1fr;
   height: 100%;
-  max-width: 1520px;
+  max-width: 1480px;
   margin: 0 auto;
+}
+
+.ambient {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.wash {
+  position: absolute;
+  width: 55vw;
+  height: 55vw;
+  right: -10vw;
+  top: -20vw;
+  background: radial-gradient(circle, rgba(232, 160, 84, 0.14), transparent 65%);
+}
+
+.rail {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 40%,
+    rgba(232, 220, 196, 0.02) 50%,
+    transparent 60%
+  );
 }
 
 .side,
 .stage {
   position: relative;
+  z-index: 1;
   min-height: 0;
 }
 
@@ -187,32 +223,17 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: linear-gradient(180deg, rgba(16, 23, 17, 0.5), rgba(7, 11, 9, 0.15));
+  background: linear-gradient(180deg, rgba(18, 21, 28, 0.5), rgba(10, 12, 15, 0.2));
 }
 
-/* ---------- 顶栏 ---------- */
 .top {
-  position: relative;
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 16px 24px;
+  padding: 16px 22px;
   border-bottom: 1px solid var(--line);
   backdrop-filter: blur(12px);
-  background: rgba(7, 11, 9, 0.4);
-}
-
-/* 顶栏底线中央的菱形铆钉 */
-.top::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  bottom: -4px;
-  width: 7px;
-  height: 7px;
-  transform: translateX(-50%) rotate(45deg);
-  background: var(--gold-deep);
-  box-shadow: 0 0 8px var(--gold-glow);
+  background: rgba(10, 12, 15, 0.35);
 }
 
 .titles {
@@ -220,12 +241,20 @@ onUnmounted(() => {
   min-width: 0;
 }
 
+.eyebrow {
+  margin: 0;
+  font-size: 0.68rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ember);
+}
+
 .titles h1 {
-  margin: 4px 0 0;
+  margin: 2px 0 0;
   font-family: var(--serif);
-  font-weight: 500;
-  font-size: 1.5rem;
-  letter-spacing: 0.01em;
+  font-weight: 400;
+  font-size: 1.45rem;
+  letter-spacing: -0.02em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -236,199 +265,117 @@ onUnmounted(() => {
   gap: 8px;
 }
 
-.glyph {
-  color: var(--gold);
-  font-size: 0.9em;
+.ghost,
+.nav-btn {
+  border: 1px solid var(--line);
+  background: transparent;
+  border-radius: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 0.84rem;
+}
+
+.ghost:hover,
+.nav-btn:hover {
+  border-color: rgba(232, 160, 84, 0.4);
+}
+
+.ghost.danger {
+  color: var(--rose);
+  border-color: rgba(224, 122, 122, 0.3);
+}
+
+.ghost:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .nav-btn {
   display: none;
 }
 
-/* ---------- 鎏金大厅（空状态） ---------- */
 .hero {
   flex: 1;
   display: grid;
   place-items: center;
   padding: 32px 24px;
-  overflow: auto;
 }
 
-.hero-plaque {
-  position: relative;
-  width: min(680px, 100%);
-  padding: 46px 40px 34px;
-  text-align: center;
-  overflow: hidden;
-}
-
-/* 冠顶扇形放射纹 */
-.rays {
-  position: absolute;
-  left: 50%;
-  top: 0;
-  width: 620px;
-  height: 240px;
-  transform: translateX(-50%);
-  pointer-events: none;
-  background: repeating-conic-gradient(
-    from -90deg at 50% 0%,
-    rgba(216, 178, 106, 0.35) 0deg 0.9deg,
-    transparent 0.9deg 6deg
-  );
-  -webkit-mask-image: radial-gradient(115% 95% at 50% 0%, #000 12%, transparent 68%);
-  mask-image: radial-gradient(115% 95% at 50% 0%, #000 12%, transparent 68%);
-  animation: ray-breathe 7s ease-in-out infinite;
-}
-
-.monogram {
-  position: relative;
-  width: 56px;
-  height: 56px;
-  margin: 4px auto 22px;
-  display: grid;
-  place-items: center;
-  transform: rotate(45deg);
+.hero-card {
+  width: min(640px, 100%);
+  padding: 36px 32px;
+  border-radius: 24px;
   border: 1px solid var(--line-strong);
-  border-radius: 12px;
-  background: linear-gradient(135deg, rgba(216, 178, 106, 0.18), rgba(216, 178, 106, 0.04));
-  box-shadow: 0 0 30px rgba(216, 178, 106, 0.22), inset 0 0 16px rgba(216, 178, 106, 0.12);
+  background:
+    linear-gradient(145deg, rgba(232, 160, 84, 0.08), transparent 40%),
+    var(--panel);
+  box-shadow: var(--shadow);
+  animation: rise 0.5s ease both;
 }
 
-.monogram span {
-  transform: rotate(-45deg);
+.hero-card h2 {
+  margin: 10px 0 14px;
   font-family: var(--serif);
-  font-size: 1.02rem;
-  letter-spacing: 0.04em;
-  color: var(--gold-bright);
+  font-weight: 400;
+  font-size: clamp(1.8rem, 4vw, 2.55rem);
+  line-height: 1.15;
+  letter-spacing: -0.03em;
 }
 
-.eyebrow.center {
-  text-align: center;
-}
-
-.hero-plaque h2 {
-  margin: 14px 0 16px;
-  font-family: var(--serif);
-  font-weight: 600;
-  font-size: clamp(1.8rem, 4vw, 2.6rem);
-  line-height: 1.22;
-  letter-spacing: 0.01em;
-  text-wrap: balance;
-}
-
-.hero-plaque h2 em {
-  font-style: normal;
-  color: var(--gold);
-  background: linear-gradient(180deg, transparent 68%, var(--gold-soft) 68%);
-  padding: 0 2px;
+.hero-card h2 em {
+  font-style: italic;
+  color: var(--ember);
 }
 
 .lede {
-  margin: 0 auto 24px;
-  max-width: 44em;
-  color: var(--ivory-dim);
-  line-height: 1.75;
-  font-size: 0.95rem;
+  margin: 0 0 22px;
+  color: var(--cream-dim);
+  line-height: 1.65;
+  font-size: 0.98rem;
 }
 
-.hero-plaque .deco-rule {
-  margin: 0 auto 24px;
-  width: min(360px, 80%);
-}
-
-.prompt-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+.prompt-row {
+  display: flex;
+  flex-wrap: wrap;
   gap: 10px;
 }
 
 .prompt {
-  position: relative;
-  display: grid;
-  gap: 10px;
-  justify-items: start;
   text-align: left;
-  padding: 14px 14px 12px;
   border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: rgba(7, 11, 9, 0.45);
-  color: var(--ivory-dim);
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 999px;
+  padding: 10px 14px;
   cursor: pointer;
-  transition: transform 0.18s var(--ease), border-color 0.18s ease, background 0.18s ease,
-    color 0.18s ease, box-shadow 0.18s ease;
+  font-size: 0.84rem;
+  color: var(--cream-dim);
+  transition: 0.15s ease;
 }
 
 .prompt:hover {
-  transform: translateY(-2px);
-  color: var(--ivory);
-  border-color: var(--line-strong);
-  background: linear-gradient(160deg, var(--gold-soft), rgba(7, 11, 9, 0.4));
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+  color: var(--cream);
+  border-color: rgba(232, 160, 84, 0.45);
+  background: var(--ember-soft);
 }
 
-.numeral {
-  font-family: var(--serif);
-  font-size: 0.92rem;
-  color: var(--gold);
-  border-bottom: 1px solid var(--line-strong);
-  padding-bottom: 3px;
-}
-
-.ptext {
-  font-size: 0.86rem;
-  line-height: 1.5;
-}
-
-.parrow {
-  position: absolute;
-  right: 12px;
-  top: 12px;
-  font-size: 0.7rem;
-  color: var(--gold);
-  opacity: 0;
-  transition: opacity 0.18s ease, transform 0.18s var(--ease);
-  transform: translateX(-4px);
-}
-
-.prompt:hover .parrow {
-  opacity: 1;
-  transform: none;
-}
-
-.caps {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 20px;
-  justify-content: center;
-  margin-top: 22px;
-  color: var(--ivory-faint);
-  font-size: 0.76rem;
-  letter-spacing: 0.14em;
-}
-
-.caps span::before {
-  content: "◇ ";
-  color: var(--gold);
-}
-
-/* ---------- 侍应台（输入区） ---------- */
 .composer {
-  padding: 14px 22px 24px;
+  padding: 12px 20px 18px;
 }
 
 .box {
   display: flex;
   align-items: flex-end;
   gap: 12px;
-  padding: 14px;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  padding: 12px;
+  border-radius: 18px;
+  border: 1px solid var(--line-strong);
+  background: rgba(22, 26, 34, 0.9);
+  box-shadow: var(--shadow);
 }
 
 .box:focus-within {
-  border-color: rgba(216, 178, 106, 0.5);
-  box-shadow: 0 0 0 3px var(--gold-soft), 0 0 34px rgba(216, 178, 106, 0.12),
-    var(--shadow-soft);
+  border-color: rgba(232, 160, 84, 0.45);
+  box-shadow: 0 0 0 3px var(--ember-soft), var(--shadow);
 }
 
 .box textarea {
@@ -439,47 +386,53 @@ onUnmounted(() => {
   background: transparent;
   min-height: 28px;
   max-height: 160px;
-  line-height: 1.55;
+  line-height: 1.5;
   padding: 8px 6px;
-}
-
-.box textarea::placeholder {
-  color: var(--ivory-faint);
 }
 
 .send {
   flex-shrink: 0;
-  padding: 12px 18px;
+  border: 0;
+  border-radius: 12px;
+  padding: 12px 16px;
+  font-weight: 700;
+  cursor: pointer;
+  color: #1a1208;
+  background: linear-gradient(135deg, #c9843d, #e8a054);
 }
 
-.send-glyph {
-  font-size: 0.82em;
+.send:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .status {
   margin-top: 10px;
-  display: flex;
-  justify-content: center;
-  gap: 6px;
-  font-size: 0.72rem;
-  color: var(--ivory-faint);
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--cream-faint);
   font-family: var(--mono);
-  letter-spacing: 0.06em;
-}
-
-.tick {
-  color: var(--gold);
 }
 
 .err {
-  color: var(--garnet);
+  color: var(--rose);
 }
 
 .scrim {
   display: none;
 }
 
-/* ---------- 移动端 ---------- */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 @media (max-width: 900px) {
   .console {
     grid-template-columns: 1fr;
@@ -488,10 +441,10 @@ onUnmounted(() => {
   .side {
     position: fixed;
     inset: 0 auto 0 0;
-    width: min(316px, 88vw);
+    width: min(300px, 88vw);
     z-index: 30;
     transform: translateX(-105%);
-    transition: transform 0.25s var(--ease);
+    transition: transform 0.25s ease;
   }
 
   .console.nav .side {
@@ -507,42 +460,15 @@ onUnmounted(() => {
     position: fixed;
     inset: 0;
     z-index: 25;
-    background: rgba(0, 0, 0, 0.5);
-    backdrop-filter: blur(3px);
-  }
-
-  .prompt-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .hero-plaque {
-    padding: 36px 22px 26px;
+    background: rgba(0, 0, 0, 0.45);
   }
 }
 
-@media (max-width: 640px) {
-  .top {
-    padding: 12px 14px;
-    gap: 10px;
-  }
-
-  /* 窄屏收起英文眉题，把空间留给标题与操作 */
-  .titles .eyebrow {
-    display: none;
-  }
-
-  .titles h1 {
-    margin: 0;
-    font-size: 1.16rem;
-  }
-
-  .actions .ghost-btn {
-    padding: 8px 10px;
-    font-size: 0.76rem;
-  }
-
-  .composer {
-    padding: 12px 14px 18px;
-  }
+.auth-gate {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  opacity: 0.7;
 }
 </style>

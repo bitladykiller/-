@@ -51,3 +51,9 @@ neo4j-import: ## 导入 Neo4j 数据
 
 pre-commit: ## 运行 pre-commit hooks
 	pre-commit run --all-files
+
+eval: ## RAG 离线评测（需 Milvus 可连通且知识库有文档）
+	python scripts/rag_eval.py
+
+eval-json: ## RAG 评测输出 JSON（存档对比用）
+	python scripts/rag_eval.py --json

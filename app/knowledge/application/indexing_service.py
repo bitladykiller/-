@@ -160,6 +160,7 @@ class IndexingService:
             return {"status": STATUS_ERROR, "message": str(exc)}
 
         content_hash = str(file_info.get("content_hash") or "")
+        owner_id = str(file_info.get("owner_id") or "global")
 
         try:
             parse_document, searcher = self._pipeline_loader()
@@ -174,7 +175,9 @@ class IndexingService:
                 }
 
             if mode == _MODE_REPLACE:
-                result = await searcher.reindex(doc_id, chunks, content_hash=content_hash)
+                result = await searcher.reindex(
+                    doc_id, chunks, content_hash=content_hash, owner_id=owner_id
+                )
                 return {
                     "status": STATUS_SUCCESS,
                     "chunks": int(result.get("chunks") or 0),
@@ -186,7 +189,9 @@ class IndexingService:
                 }
 
             count = int(
-                await searcher.index(chunks, version=1, content_hash=content_hash)
+                await searcher.index(
+                    chunks, version=1, content_hash=content_hash, owner_id=owner_id
+                )
             )
             return {
                 "status": STATUS_SUCCESS,

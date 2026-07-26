@@ -146,13 +146,13 @@ def test_execute_react_returns_checked_answer_with_progress_message(monkeypatch)
 
 
 def test_execute_react_retries_on_step_exhaustion_and_returns_fallback(monkeypatch) -> None:
-    from dataclasses import replace
 
     from app.shared.core.app_config import ReactConfig
     from app.shared.core.config import settings as real_settings
 
     fake_react_config = ReactConfig(max_attempts=2)
-    fake_app_config = replace(real_settings.app_config, react=fake_react_config)
+    # pydantic 化后用 model_copy 替代 dataclasses.replace
+    fake_app_config = real_settings.app_config.model_copy(update={"react": fake_react_config})
     monkeypatch.setattr(
         lg_react, "settings",
         real_settings.__class__(app_config=fake_app_config),

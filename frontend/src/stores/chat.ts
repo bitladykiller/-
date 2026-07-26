@@ -1,12 +1,19 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import {
+  AuthRequiredError,
   createConversation,
   deleteConversation,
+  fetchMe,
   getHealth,
+  getToken,
   getUploadStatus,
+  listConversationMessages,
   listConversations,
+  login as apiLogin,
+  register as apiRegister,
   renameConversation,
+  setToken,
   streamAgentQuery,
   uploadDocument,
 } from "@/api/client";
@@ -17,7 +24,12 @@ function uid() {
 }
 
 export const useChatStore = defineStore("chat", () => {
-  const userId = ref(Number(localStorage.getItem("ag_uid") || 1) || 1);
+  // ---- 认证状态：身份来自后端令牌，不再由前端自报 uid ----
+  const authenticated = ref(false);
+  const authChecking = ref(true);
+  const username = ref<string>("");
+  const userId = ref<number | null>(null);
+
   const conversations = ref<ConversationSummary[]>([]);
   const conversationId = ref<number | null>(null);
   const threadId = ref<string | null>(null);
@@ -35,12 +47,62 @@ export const useChatStore = defineStore("chat", () => {
     return hit?.title || `会话 #${conversationId.value}`;
   });
 
-  function setUserId(id: number) {
-    userId.value = id;
-    localStorage.setItem("ag_uid", String(id));
+  function resetWorkspace() {
+    abort?.abort();
+    abort = null;
+    conversations.value = [];
     conversationId.value = null;
     threadId.value = null;
     messages.value = [];
+    streaming.value = false;
+    error.value = null;
+  }
+
+  function handleAuthLoss(message?: string) {
+    authenticated.value = false;
+    username.value = "";
+    userId.value = null;
+    resetWorkspace();
+    statusLine.value = message || "登录已过期，请重新登录";
+  }
+
+  async function bootstrapAuth() {
+    authChecking.value = true;
+    try {
+      if (!getToken()) return;
+      const me = await fetchMe();
+      authenticated.value = true;
+      username.value = me.username;
+      userId.value = me.user_id;
+      await refreshConversations();
+    } catch {
+      setToken(null);
+    } finally {
+      authChecking.value = false;
+    }
+  }
+
+  async function login(name: string, password: string) {
+    const info = await apiLogin(name, password);
+    authenticated.value = true;
+    username.value = info.username;
+    userId.value = info.user_id;
+    statusLine.value = `欢迎回来，${info.username}`;
+    await refreshConversations();
+  }
+
+  async function registerAccount(name: string, password: string) {
+    const info = await apiRegister(name, password);
+    authenticated.value = true;
+    username.value = info.username;
+    userId.value = info.user_id;
+    statusLine.value = `注册成功，${info.username}`;
+    await refreshConversations();
+  }
+
+  function logout() {
+    setToken(null);
+    handleAuthLoss("已退出登录");
   }
 
   async function refreshHealth() {
@@ -48,7 +110,12 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   async function refreshConversations() {
-    conversations.value = await listConversations(userId.value);
+    try {
+      conversations.value = await listConversations();
+    } catch (e) {
+      if (e instanceof AuthRequiredError) handleAuthLoss();
+      else throw e;
+    }
   }
 
   function newChat() {
@@ -62,41 +129,69 @@ export const useChatStore = defineStore("chat", () => {
     error.value = null;
   }
 
-  function selectConversation(c: ConversationSummary) {
+  async function selectConversation(c: ConversationSummary) {
     abort?.abort();
     abort = null;
     conversationId.value = c.id;
     threadId.value = String(c.id);
-    messages.value = [
-      {
-        id: uid(),
-        role: "system",
-        content:
-          "历史消息保存在服务端短期记忆中；此界面从本次输入起展示对话内容。",
-        createdAt: Date.now(),
-      },
-    ];
     streaming.value = false;
-    statusLine.value = `已切换：${c.title}`;
     error.value = null;
+    statusLine.value = `已切换：${c.title}`;
+
+    // 加载持久化历史（MySQL messages）：切回旧会话不再"隔天失忆"
+    messages.value = [];
+    try {
+      const history = await listConversationMessages(c.id);
+      messages.value = history.map((m) => ({
+        id: uid(),
+        role: m.role === "assistant" ? "assistant" : "user",
+        content: m.content,
+        createdAt: Date.parse(m.created_at) || Date.now(),
+      }));
+      if (!history.length) {
+        messages.value = [
+          {
+            id: uid(),
+            role: "system",
+            content: "该会话暂无历史消息。",
+            createdAt: Date.now(),
+          },
+        ];
+      }
+    } catch (e) {
+      if (e instanceof AuthRequiredError) return handleAuthLoss();
+      messages.value = [
+        {
+          id: uid(),
+          role: "system",
+          content: "历史消息加载失败，可直接继续对话。",
+          createdAt: Date.now(),
+        },
+      ];
+    }
   }
 
   async function removeConversation(id: number) {
-    await deleteConversation(id, userId.value);
+    try {
+      await deleteConversation(id);
+    } catch (e) {
+      if (e instanceof AuthRequiredError) return handleAuthLoss();
+      throw e;
+    }
     if (conversationId.value === id) newChat();
     await refreshConversations();
   }
 
   async function ensureSession(firstQuery: string) {
     if (conversationId.value && threadId.value) return;
-    const { conversation_id } = await createConversation(userId.value);
+    const { conversation_id } = await createConversation();
     conversationId.value = conversation_id;
     threadId.value = String(conversation_id);
     const title =
       firstQuery.trim().slice(0, 28) +
       (firstQuery.trim().length > 28 ? "…" : "");
     try {
-      await renameConversation(conversation_id, userId.value, title || "新对话");
+      await renameConversation(conversation_id, title || "新对话");
     } catch {
       /* 列表可能暂时不显示未改名会话 */
     }
@@ -133,7 +228,6 @@ export const useChatStore = defineStore("chat", () => {
       const full = await streamAgentQuery(
         {
           query,
-          userId: userId.value,
           conversationId: threadId.value,
         },
         {
@@ -146,6 +240,8 @@ export const useChatStore = defineStore("chat", () => {
           },
           onThreadId: (id) => {
             threadId.value = id;
+            const numeric = Number(id);
+            if (Number.isFinite(numeric)) conversationId.value = numeric;
           },
         },
         abort.signal,
@@ -162,6 +258,7 @@ export const useChatStore = defineStore("chat", () => {
         statusLine.value = "已取消";
         return;
       }
+      if (e instanceof AuthRequiredError) return handleAuthLoss();
       const msg = e instanceof Error ? e.message : String(e);
       error.value = msg;
       statusLine.value = "出错";
@@ -189,7 +286,7 @@ export const useChatStore = defineStore("chat", () => {
     options?: { mode?: "create" | "replace"; docId?: string },
   ) {
     onProgress?.("上传中…", 10);
-    const accepted = await uploadDocument(userId.value, file, options);
+    const accepted = await uploadDocument(file, options);
     if (accepted.unchanged || accepted.skipped || !accepted.task_id) {
       onProgress?.(accepted.message || "内容未变化，已跳过 reindex", 100);
       return {
@@ -224,7 +321,7 @@ export const useChatStore = defineStore("chat", () => {
         );
         return st;
       }
-      if (st.status === "failed") {
+      if (st.status === "failed" || st.status === "interrupted") {
         throw new Error(st.error || "索引失败");
       }
       await new Promise((r) => setTimeout(r, 1000));
@@ -233,6 +330,9 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   return {
+    authenticated,
+    authChecking,
+    username,
     userId,
     conversations,
     conversationId,
@@ -243,7 +343,10 @@ export const useChatStore = defineStore("chat", () => {
     statusLine,
     error,
     activeTitle,
-    setUserId,
+    bootstrapAuth,
+    login,
+    registerAccount,
+    logout,
     refreshHealth,
     refreshConversations,
     newChat,

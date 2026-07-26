@@ -1,9 +1,10 @@
 """LangGraph 查询接口。
 
 这个模块只负责：
-- 接收 HTTP 表单参数
-- 调用 chat.application 查询门面
-- 把图执行流转换成 SSE 响应
+- 接收 HTTP 表单参数（身份来自访问令牌）
+- 解析/创建会话（thread_id 与 MySQL 会话主键强一致）
+- 并发限流
+- 调用 chat.application 查询门面，把图执行流转换成 SSE 响应
 
 不负责：
 - LangGraph 节点编排
@@ -13,13 +14,16 @@
 from __future__ import annotations
 
 import json
-import uuid
 from collections.abc import Mapping
-from typing import Any
+from typing import Annotated, Any
 
 from app.api.common import INTERNAL_SERVER_ERROR_DETAIL
+from app.api.deps import CurrentUser
 from app.chat.application.agent_query_service import stream_agent_query
+from app.chat.application.conversation_service import conversation_service
+from app.shared.core.errors import ResourceNotFoundError
 from app.shared.core.logger import get_logger
+from app.shared.core.rate_limit import ConcurrencyLimitExceededError
 from fastapi import APIRouter, Form, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -33,6 +37,7 @@ _RESEARCH_PLAN_TAG = "research_plan"
 _SSE_DATA_PREFIX = "data: "
 _SSE_ERROR_EVENT = "event: error\n"
 _STREAM_ERROR_MESSAGE = "生成过程中出现异常，请重试。"
+_RATE_LIMIT_DETAIL = "并发对话数已达上限，请等待当前回答完成。"
 
 
 def format_sse_data(payload: object) -> str:
@@ -80,32 +85,70 @@ def _should_emit_sse_chunk(chunk: object, metadata: Mapping[str, Any]) -> bool:
     return True
 
 
+def _merge_usage(total: dict[str, int], chunk: object) -> None:
+    """累计 LLM token 用量（模型不上报时保持为空）。"""
+    usage = getattr(chunk, "usage_metadata", None)
+    if not isinstance(usage, Mapping):
+        return
+    for key in ("input_tokens", "output_tokens", "total_tokens"):
+        value = usage.get(key)
+        if isinstance(value, int):
+            total[key] = total.get(key, 0) + value
+
+
+async def _get_sse_limiter():
+    """取容器上的并发限流器；未初始化时返回 None（放行）。"""
+    from app.platform.container import get_container_if_initialized
+
+    container = get_container_if_initialized()
+    return getattr(container, "sse_limiter", None) if container else None
+
+
 @router.post("/langgraph/query")
 async def langgraph_query(
+    current_user: CurrentUser,
     query: str = Form(...),
-    user_id: int = Form(...),
-    conversation_id: str | None = Form(None),
+    conversation_id: Annotated[int | None, Form()] = None,
 ) -> StreamingResponse:
     """LangGraph Agent 查询接口（SSE）。
 
-    - conversation_id 缺省时生成新 thread_id（与 STM session 对齐）
-    - 响应头 X-Conversation-ID 在 StreamingResponse 创建时即写入，便于客户端续聊
+    会话标识（v3.35.0 起服务端唯一化）：
+    - 传 conversation_id：必须存在且属于当前用户，否则 404
+    - 不传：服务端自动创建会话
+    - thread_id（STM/LTM session 作用域）恒等于 str(conversation_id)，
+      消除"uuid 孤儿线程的记忆无法被会话删除清理"的问题
     """
     try:
-        # 续聊必须回传此 id；新建会话则用 uuid，与 MySQL conversation 主键可不同
-        thread_id = conversation_id or str(uuid.uuid4())
+        resolved_conversation_id = await conversation_service.ensure_conversation(
+            current_user.id,
+            conversation_id,
+        )
+    except ResourceNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.message) from exc
+
+    limiter = await _get_sse_limiter()
+    if limiter is not None:
+        try:
+            await limiter.acquire(current_user.id)
+        except ConcurrencyLimitExceededError as exc:
+            raise HTTPException(status_code=429, detail=_RATE_LIMIT_DETAIL) from exc
+
+    thread_id = str(resolved_conversation_id)
+    try:
         graph_stream = stream_agent_query(
             query=query,
-            user_id=user_id,
+            user_id=current_user.id,
             thread_id=thread_id,
         )
 
         async def response_stream():
+            usage_total: dict[str, int] = {}
             # 外层 try/except 只保护"流创建之前"；流一旦开始，
             # 异常必须在这里捕获并转成 error 事件，否则客户端只看到静默断流
             try:
                 async for chunk, metadata in graph_stream:
                     meta = metadata if isinstance(metadata, Mapping) else {}
+                    _merge_usage(usage_total, chunk)
                     if not _should_emit_sse_chunk(chunk, meta):
                         continue
                     content = getattr(chunk, "content", None)
@@ -113,10 +156,26 @@ async def langgraph_query(
             except Exception:
                 logger.exception("[api] SSE 流中途异常 | thread_id=%s", thread_id)
                 yield format_sse_error(_STREAM_ERROR_MESSAGE)
+            finally:
+                if limiter is not None:
+                    await limiter.release(current_user.id)
+                if usage_total:
+                    logger.info(
+                        "llm_usage | user=%s conversation=%s in=%s out=%s total=%s",
+                        current_user.id,
+                        thread_id,
+                        usage_total.get("input_tokens", 0),
+                        usage_total.get("output_tokens", 0),
+                        usage_total.get("total_tokens", 0),
+                    )
 
         response = StreamingResponse(response_stream(), media_type=_SSE_MEDIA_TYPE)
         response.headers[_CONVERSATION_ID_HEADER] = thread_id
         return response
+    except HTTPException:
+        raise
     except Exception as exc:
+        if limiter is not None:
+            await limiter.release(current_user.id)
         logger.exception("[api] SSE 流处理异常")
         raise HTTPException(status_code=500, detail=INTERNAL_SERVER_ERROR_DETAIL) from exc

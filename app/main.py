@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -110,19 +111,32 @@ def configure_cors(
     )
 
 
+REQUEST_ID_HEADER = "X-Request-ID"
+
+
 def register_middleware(
     app: FastAPI,
     runtime_logger: logging.Logger,
     *,
     clock: Callable[[], float] = time.time,
 ) -> None:
-    """注册应用级请求日志中间件。"""
+    """注册应用级请求日志中间件（含 request_id 贯穿）。
+
+    request_id 通过 contextvars 注入日志格式：一次请求途经的所有日志
+    （图节点、检索、存储降级）自动携带同一标识，无需业务代码传参。
+    客户端可自带 X-Request-ID（网关透传场景），否则服务端生成。
+    """
+    from app.shared.core.identity import set_request_id
 
     @app.middleware("http")
     async def log_requests(request: Request, call_next):
+        request_id = request.headers.get(REQUEST_ID_HEADER) or uuid.uuid4().hex[:12]
+        set_request_id(request_id)
+
         start_time = clock()
         response = await call_next(request)
         elapsed = (clock() - start_time) * 1000
+        response.headers[REQUEST_ID_HEADER] = request_id
         runtime_logger.info(
             "%s %s → %s (%.1fms)",
             request.method,
@@ -139,13 +153,25 @@ def register_routes(
     app_api_router: APIRouter,
     health_status: str,
 ) -> None:
-    """注册 API 路由和内建健康检查路由。"""
+    """注册 API 路由和健康检查路由（浅探针 + 深探针）。"""
 
     async def health_check() -> dict[str, str]:
+        # 浅探针：只证明进程活着，供容器编排高频调用
         return {"status": health_status}
+
+    async def deep_health_check():
+        # 深探针：逐依赖探测（MySQL/Redis/Milvus/Neo4j），供运维排障
+        from app.platform.health import run_deep_health_check
+
+        report = await run_deep_health_check()
+        status_code = 200 if report["status"] == "ok" else 503
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(report, status_code=status_code)
 
     app.include_router(app_api_router, prefix="/api")
     app.add_api_route("/health", health_check, methods=["GET"])
+    app.add_api_route("/health/deep", deep_health_check, methods=["GET"])
 
 
 def register_static_files(

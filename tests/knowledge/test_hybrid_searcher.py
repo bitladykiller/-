@@ -30,12 +30,20 @@ class FakeMilvusStore:
         self.hybrid_results: list[dict[str, Any]] = []
         FakeMilvusStore.instances.append(self)
 
-    async def insert_chunks(self, chunks, *, version: int = 1, content_hash: str = "") -> int:
-        self.inserted.append({"chunks": list(chunks), "version": version, "hash": content_hash})
+    async def insert_chunks(
+        self, chunks, *, version: int = 1, content_hash: str = "", owner_id: str = "global"
+    ) -> int:
+        self.inserted.append(
+            {"chunks": list(chunks), "version": version, "hash": content_hash, "owner": owner_id}
+        )
         return len(chunks)
 
-    async def reindex_document(self, doc_id, chunks, *, content_hash: str = ""):
-        self.reindexed.append({"doc_id": doc_id, "chunks": list(chunks), "hash": content_hash})
+    async def reindex_document(
+        self, doc_id, chunks, *, content_hash: str = "", owner_id: str = "global"
+    ):
+        self.reindexed.append(
+            {"doc_id": doc_id, "chunks": list(chunks), "hash": content_hash, "owner": owner_id}
+        )
         return {"soft_deleted": 2, "version": 3, "chunks": len(chunks)}
 
     async def soft_delete_by_doc_id(self, doc_id: str) -> dict[str, int]:
@@ -73,7 +81,7 @@ async def test_index_delegates_version_and_hash() -> None:
 
     assert count == 2
     assert searcher.milvus.inserted == [
-        {"chunks": ["c1", "c2"], "version": 2, "hash": "h"}
+        {"chunks": ["c1", "c2"], "version": 2, "hash": "h", "owner": "global"}
     ]
 
 

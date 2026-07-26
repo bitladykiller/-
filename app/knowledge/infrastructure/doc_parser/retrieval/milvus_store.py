@@ -22,6 +22,7 @@ from app.knowledge.infrastructure.doc_parser.retrieval.doc_lifecycle import (
     merge_active_filter,
     next_version,
     now_ts,
+    owner_scope_filter,
     validate_doc_id,
 )
 from app.shared.core.async_bridge import run_blocking
@@ -127,6 +128,8 @@ class MilvusStore:
         schema.add_field("is_deleted", DataType.BOOL)
         schema.add_field("updated_at", DataType.INT64)
         schema.add_field("content_hash", DataType.VARCHAR, max_length=64)
+        # 可见域："global" 为共享知识库；私有文档为上传者 user_id 字符串
+        schema.add_field("owner_id", DataType.VARCHAR, max_length=64)
         bm25_fn = Function(
             name="bm25",
             function_type=FunctionType.BM25,
@@ -275,6 +278,7 @@ class MilvusStore:
         *,
         version: int = 1,
         content_hash: str = "",
+        owner_id: str = "global",
     ) -> int:
         """批量插入 DocumentChunk 到 Milvus。
 
@@ -308,6 +312,7 @@ class MilvusStore:
                 "is_deleted": False,
                 "updated_at": ts,
                 "content_hash": hash_value,
+                "owner_id": (owner_id or "global")[:64],
                 "embedding": vector,
             }
             # strict=True 冗余但明确：_embed_texts 已保证长度一致，
@@ -330,6 +335,7 @@ class MilvusStore:
         chunks: list[Any],
         *,
         content_hash: str = "",
+        owner_id: str = "global",
     ) -> dict[str, int]:
         """文档动态更新：软删旧版 → 插入新 version。
 
@@ -350,6 +356,7 @@ class MilvusStore:
             chunks,
             version=version,
             content_hash=content_hash,
+            owner_id=owner_id,
         )
         return {
             "soft_deleted": int(delete_info.get("soft_deleted") or 0),
@@ -407,6 +414,34 @@ class MilvusStore:
     # 向量检索
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _visibility_filter() -> str | None:
+        """分域开关开启时，按请求上下文身份构造可见域过滤。
+
+        身份来自 contextvars（认证依赖写入），检索层无需层层传参；
+        无认证上下文（脚本/评测）只能看共享域。
+        """
+        from app.shared.core.config import settings as app_settings
+
+        visibility = app_settings.app_config.rag_visibility
+        if not visibility.enabled:
+            return None
+        from app.shared.core.identity import get_current_user_id
+
+        user_id = get_current_user_id()
+        return owner_scope_filter(
+            str(user_id) if user_id is not None else None,
+            global_owner=visibility.global_owner,
+        )
+
+    def _merge_visibility(self, filter_expr: str | None) -> str | None:
+        scope = self._visibility_filter()
+        if scope is None:
+            return filter_expr
+        if not filter_expr or not str(filter_expr).strip():
+            return scope
+        return f"({scope}) and ({str(filter_expr).strip()})"
+
     def _search_output_fields(self) -> list[str]:
         return [
             "chunk_id",
@@ -451,7 +486,8 @@ class MilvusStore:
     ) -> list[dict[str, Any]]:
         """向量相似度检索（默认排除软删）。"""
         top_k = top_k or self.config.vector_top_k
-        effective = filter_expr if include_deleted else merge_active_filter(filter_expr)
+        scoped = self._merge_visibility(filter_expr)
+        effective = scoped if include_deleted else merge_active_filter(scoped)
         hits = await self.retrieval_core.search_dense(
             query,
             limit=top_k,
@@ -471,7 +507,8 @@ class MilvusStore:
         """Native Milvus hybrid search for document retrieval."""
         top_k = top_k or self.config.rrf_final_top_k
         search_limit = max(self.config.vector_top_k, self.config.bm25_top_k, top_k)
-        effective = filter_expr if include_deleted else merge_active_filter(filter_expr)
+        scoped = self._merge_visibility(filter_expr)
+        effective = scoped if include_deleted else merge_active_filter(scoped)
         hits = await self.retrieval_core.search_hybrid(
             query,
             limit=top_k,

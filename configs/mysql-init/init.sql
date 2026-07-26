@@ -44,11 +44,11 @@ CREATE TABLE IF NOT EXISTS messages (
     INDEX idx_sender (sender)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 插入示例用户数据
+-- 插入示例用户数据（演示密码统一为 demo1234，bcrypt 哈希；生产部署请删除种子用户）
 INSERT INTO users (username, email, password_hash, status) VALUES
-('admin', 'admin@example.com', '$2b$12$LJ3m4ys3Lk0TSwHjmz0VOeUtEfV0rFTUsBgAKVl0pQ0lX8TzqK5A6', 'active'),
-('test_user', 'test@example.com', '$2b$12$LJ3m4ys3Lk0TSwHjmz0VOeUtEfV0rFTUsBgAKVl0pQ0lX8TzqK5A6', 'active'),
-('demo_user', 'demo@example.com', '$2b$12$LJ3m4ys3Lk0TSwHjmz0VOeUtEfV0rFTUsBgAKVl0pQ0lX8TzqK5A6', 'active');
+('admin', 'admin@example.com', '$2b$12$cSfGnR7kFyCMvPN3XJsG5u4H2p5HQeRn6Up44MIEvz8rAkZN94QUu', 'active'),
+('test_user', 'test@example.com', '$2b$12$cSfGnR7kFyCMvPN3XJsG5u4H2p5HQeRn6Up44MIEvz8rAkZN94QUu', 'active'),
+('demo_user', 'demo@example.com', '$2b$12$cSfGnR7kFyCMvPN3XJsG5u4H2p5HQeRn6Up44MIEvz8rAkZN94QUu', 'active');
 
 -- 插入示例对话数据
 INSERT INTO conversations (user_id, title, dialogue_type) VALUES

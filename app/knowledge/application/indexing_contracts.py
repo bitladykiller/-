@@ -53,6 +53,7 @@ class ChunkIndexer(Protocol):
         *,
         version: int = 1,
         content_hash: str = "",
+        owner_id: str = "global",
     ) -> int: ...
 
     async def reindex(
@@ -61,6 +62,7 @@ class ChunkIndexer(Protocol):
         chunks: Sequence[Any],
         *,
         content_hash: str = "",
+        owner_id: str = "global",
     ) -> ReindexResult: ...
 
 

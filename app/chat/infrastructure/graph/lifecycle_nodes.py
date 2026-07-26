@@ -58,28 +58,61 @@ async def flush_pending_memory_writes() -> None:
         await asyncio.gather(*pending, return_exceptions=True)
 
 
+async def _publish_turn_completed(payload: dict[str, str]) -> bool:
+    """尝试把回合完成事件发到 Redis Streams。
+
+    Returns:
+        True 表示已投递（消费者负责历史落库 + 记忆写入，且具备
+        崩溃后认领重放能力）；False 表示事件基础设施不可用，调用方
+        应回退到进程内直写。
+    """
+    from app.platform.container import get_container_if_initialized
+
+    container = get_container_if_initialized()
+    queue = getattr(container, "event_queue", None) if container else None
+    if queue is None:
+        return False
+    try:
+        from app.platform.events import EVENT_TURN_COMPLETED
+
+        await queue.publish(EVENT_TURN_COMPLETED, payload)
+        return True
+    except Exception:
+        logger.warning("turn_completed 事件投递失败，回退进程内写入", exc_info=True)
+        return False
+
+
 async def after_response(
     state: AgentState, *, config: RunnableConfig
 ) -> dict[str, object]:
-    """响应后处理：把本轮对话的记忆写入调度为后台任务。
+    """响应后处理：发布回合完成事件（首选）或调度进程内写入（回退）。
 
-    WHY fire-and-forget 而不是 await：
+    WHY 不在本节点同步 await 记忆写入：
     本节点跑在 `graph.astream` 内部，是 SSE 流的最后一站。记忆写入在触发
     压缩的轮次要跑"摘要 LLM + 抽取 LLM + 去重 embedding"，动辄数秒——
-    同步 await 意味着用户看完答案后，连接还要挂着转圈等记忆落盘。
     答案已经发出，记忆是旁路产物，不该让用户为它等待。
 
-    WHY 失败只打 warning：用户答案已通过 SSE 发出，记忆失败不得反向变成 500。
-
-    代价（接受）：极端情况下用户在写入完成前发下一条消息，before_agent
-    可能读不到上一轮。这个窗口在同步版本里同样存在（网络间隙），
-    且 STM 压缩持有分布式锁，不会出现并发写坏数据。
+    WHY 首选事件流：fire-and-forget 协程随进程共存亡且无重试；
+    事件在 Redis PEL 里有崩溃认领与死信兜底（见 app.platform.events）。
+    进程内直写仅作为事件基础设施不可用时的降级路径。
     """
     tenant_id, user_id, session_id = configurable_scope(config)
     user_message = find_last_user_message(state.messages)
     assistant_message = find_last_assistant_message(state.messages)
     # 拒答/异常路径可能缺一侧消息，跳过写入避免脏会话
     if not (user_message and assistant_message):
+        return {}
+
+    published = await _publish_turn_completed(
+        {
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "session_id": session_id,
+            "user_message": user_message,
+            "assistant_message": assistant_message,
+        }
+    )
+    if published:
         return {}
 
     task = asyncio.create_task(

@@ -20,6 +20,7 @@ class FakeChunkIndexer:
         chunks: list[dict],
         *,
         content_hash: str = "",
+        owner_id: str = "global",
     ) -> dict[str, int]:
         self.reindex_calls.append((doc_id, chunks, content_hash))
         self.indexed_chunks = chunks

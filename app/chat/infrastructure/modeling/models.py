@@ -49,6 +49,25 @@ MODEL_TEMPERATURES: dict[ModelRole, float] = {
     "memory_extractor": 0.3,
 }
 
+#: 按角色的请求超时（秒）。
+#: WHY 分级：一次问答最多串 6+ 次 LLM 调用，此前没有任何超时——上游 API
+#: 挂起时请求会无限等待。决策类角色（路由/守卫/计划/裁判）输出只有几十
+#: token，10s 等不到就该失败让降级逻辑接管；生成类角色（回答/摘要/抽取）
+#: 要流式输出长文，给到 60s。
+MODEL_TIMEOUTS_SECONDS: dict[ModelRole, float] = {
+    "agent": 60.0,
+    "router": 10.0,
+    "retrieval_plan": 10.0,
+    "guardrails": 10.0,
+    "cypher": 20.0,
+    "react": 60.0,
+    "react_judge": 10.0,
+    "memory_extractor": 60.0,
+}
+_DEFAULT_TIMEOUT_SECONDS = 60.0
+#: 瞬时故障（连接抖动/限速）重试一次；避免更多次数放大上游过载
+_MAX_RETRIES = 1
+
 
 class LazyModelProxy:
     """延迟代理：访问属性/方法时才真正创建模型。"""
@@ -115,7 +134,11 @@ def _get_model(name: ModelRole, temperature: float) -> Any:
 
 
 def _create_model(name: ModelRole, temperature: float) -> Any:
-    """直接创建模型实例（同步，不依赖容器）。"""
+    """直接创建模型实例（同步，不依赖容器）。
+
+    统一挂接按角色的超时与瞬时重试策略（见 MODEL_TIMEOUTS_SECONDS）。
+    """
+    timeout = MODEL_TIMEOUTS_SECONDS.get(name, _DEFAULT_TIMEOUT_SECONDS)
     if settings.AGENT_SERVICE == ServiceType.DEEPSEEK:
         from langchain_deepseek import ChatDeepSeek
 
@@ -123,6 +146,8 @@ def _create_model(name: ModelRole, temperature: float) -> Any:
             api_key=settings.DEEPSEEK_API_KEY,
             model_name=settings.DEEPSEEK_MODEL,  # type: ignore[call-arg]  # pyright: ignore[reportCallIssue]
             temperature=temperature,
+            timeout=timeout,
+            max_retries=_MAX_RETRIES,
         )
     else:
         from langchain_ollama import ChatOllama
@@ -131,6 +156,8 @@ def _create_model(name: ModelRole, temperature: float) -> Any:
             model=settings.OLLAMA_AGENT_MODEL,
             base_url=settings.OLLAMA_BASE_URL,
             temperature=temperature,
+            # Ollama 客户端经 httpx 请求本地服务，同样必须有超时护栏
+            client_kwargs={"timeout": timeout},
         )
 
 

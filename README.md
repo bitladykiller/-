@@ -96,14 +96,44 @@ flowchart TB
 - **知识库为全局共享**：检索面向所有用户；`user_id` 只决定谁能替换/删除该文档（上传管理归属）。上传即全员生效，传错请用 DELETE 撤下
 - **RAG 书面化改写**：进入文档检索前把口语问句改成书面检索问句（默认开、超时回退；不做 HYDE/退步）
 
-### 6. 会话管理（带归属校验）
+### 6. 会话管理（身份来自令牌）
 - MySQL `conversations` 表只存会话元信息（标题、时间、类型）
-- **消息不存 MySQL**，只保留在 Redis STM（ZSET 滑动窗口，24h TTL）
-- 会话创建 / 列表 / 删除 / 改名；**删除与改名必须携带 user_id 做归属校验**（不符返回 404），防止按 id 误删他人会话与记忆
+- 消息双轨：**MySQL `messages` 持久化历史（给人看）** + Redis STM 推理上下文（ZSET 滑动窗口，24h TTL，给模型看）
+- 会话创建 / 列表 / 删除 / 改名 / **历史消息**（MySQL `messages` append-only，切回旧会话可见）；全部按令牌身份做归属校验（不符 404）
 - **删除会话会联动清理记忆**：
   - MySQL：删除 `conversations` 元信息，并兼容清理历史 `messages` 表数据
   - Redis STM：删除该 `session_id` 下 messages/summary/meta/lock
   - Milvus LTM：软删除带 `session_id` 的长期记忆（`is_deleted=true`）
+
+### 7. 事件管线与后台执行（v3.35.0）
+- Redis Streams 消费组：`turn_completed`（历史落库+记忆写入）、
+  `document_index_requested`（文档索引）
+- **进程崩溃自动续跑**（XAUTOCLAIM 认领 + 重试上限 + 死信流）
+- 默认 app 进程内嵌消费；可 `EVENTS_INLINE_CONSUMER=0` + `python -m app.worker` 拆分部署
+- SSE 按用户并发限流（429）；LLM 按角色超时；`X-Request-ID` 贯穿全链路日志
+- RAG 离线评测：`make eval`（hit@k / MRR，golden set 24 条）
+
+## 鉴权（v3.35.0 起）
+
+除 `/health*` 与 `/api/auth/*` 外，**所有接口需要 `Authorization: Bearer <token>`**。
+身份由服务端从令牌推导，任何接口不再接受自报 `user_id`。
+
+```bash
+# 注册（或用种子演示账号 demo_user / demo1234）
+curl -s -X POST http://localhost:8000/api/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"username": "alice", "password": "secret123"}'
+
+# 登录拿 token
+TOKEN=$(curl -s -X POST http://localhost:8000/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username": "demo_user", "password": "demo1234"}' | python -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+
+# 带 token 调用业务接口
+curl -s http://localhost:8000/api/conversations -H "Authorization: Bearer $TOKEN"
+```
+
+生产部署：`SECRET_KEY` 必须换成强随机值，并删除 init.sql 的种子用户。
 
 ## 性能与工程约定
 

@@ -59,6 +59,9 @@ def test_get_model_uses_provider_specific_client(monkeypatch) -> None:
             "api_key": "deepseek-key",
             "model_name": "deepseek-chat",
             "temperature": 0.3,
+            # 韧性护栏：按角色超时 + 瞬时重试（v3.35.0）
+            "timeout": 60.0,
+            "max_retries": 1,
         }
     ]
     assert ollama_calls == [
@@ -66,6 +69,8 @@ def test_get_model_uses_provider_specific_client(monkeypatch) -> None:
             "model": "qwen3",
             "base_url": "http://ollama.local",
             "temperature": 0.6,
+            # router 属决策类角色：短超时快速失败，交给降级逻辑
+            "client_kwargs": {"timeout": 10.0},
         }
     ]
 
@@ -90,10 +95,13 @@ def test_create_model_creates_new_instance_each_call(monkeypatch) -> None:
     second = lg_models._create_model("agent", 0.7)
 
     assert first is not second
-    assert created == [
-        {"model": "qwen3", "base_url": "http://ollama.local", "temperature": 0.7},
-        {"model": "qwen3", "base_url": "http://ollama.local", "temperature": 0.7},
-    ]
+    expected_entry = {
+        "model": "qwen3",
+        "base_url": "http://ollama.local",
+        "temperature": 0.7,
+        "client_kwargs": {"timeout": 60.0},
+    }
+    assert created == [expected_entry, expected_entry]
 
 
 def test_lazy_model_proxy_delegates_attribute_access_and_repr(monkeypatch) -> None:
