@@ -6,10 +6,7 @@ import {
   uploadDocument,
   getUploadStatus,
 } from "@/api/client";
-import { useChatStore } from "@/stores/chat";
-
 const open = defineModel<boolean>("open", { required: true });
-const store = useChatStore();
 
 type Tab = "upload" | "manage";
 
@@ -28,7 +25,7 @@ async function refreshDocs() {
   loadingDocs.value = true;
   err.value = null;
   try {
-    docs.value = await listDocuments(store.userId);
+    docs.value = await listDocuments();
   } catch (e) {
     err.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -107,7 +104,7 @@ async function submitCreate() {
   try {
     label.value = "上传中…";
     pct.value = 10;
-    const accepted = await uploadDocument(store.userId, file.value, {
+    const accepted = await uploadDocument(file.value, {
       mode: "create",
     });
     label.value = `解析中 task=${accepted.task_id}`;
@@ -130,7 +127,7 @@ async function submitReplace(docId: string) {
   try {
     label.value = "更新上传中…";
     pct.value = 10;
-    const accepted = await uploadDocument(store.userId, replaceFile.value, {
+    const accepted = await uploadDocument(replaceFile.value, {
       mode: "replace",
       docId,
     });

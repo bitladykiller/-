@@ -74,6 +74,8 @@ class TaskStatusPayload(TypedDict, total=False):
     status: str
     updated_at: str
     worker_id: str
+    #: 执行通道："stream" 表示经 Redis Streams 投递（崩溃后会被自动认领重跑）
+    origin: str
     result: Any
     error: str
 
@@ -110,6 +112,7 @@ def build_task_status_payload(
     result: Any = None,
     error: str | None = None,
     worker_id: str = WORKER_ID,
+    origin: str | None = None,
 ) -> TaskStatusPayload:
     """构造统一的任务状态负载。"""
     payload: TaskStatusPayload = {
@@ -118,6 +121,8 @@ def build_task_status_payload(
         "updated_at": datetime.now().isoformat(),
         "worker_id": worker_id,
     }
+    if origin is not None:
+        payload["origin"] = origin
     if result is not None:
         payload["result"] = result
     if error is not None:
@@ -168,6 +173,9 @@ def load_task_status_payload(raw: str | None) -> TaskStatusPayload | None:
     worker_id = raw_payload.get("worker_id")
     if isinstance(worker_id, str):
         payload["worker_id"] = worker_id
+    origin = raw_payload.get("origin")
+    if isinstance(origin, str):
+        payload["origin"] = origin
     return payload
 
 
@@ -176,8 +184,14 @@ def is_orphaned_task(payload: TaskStatusPayload, *, current_worker_id: str) -> b
 
     满足两个条件才算孤儿：状态尚未终结，且写入它的不是当前进程。
     缺少 `worker_id` 的历史记录一律视为旧进程留下的。
+
+    经 Redis Streams 投递的任务（origin="stream"）**不算孤儿**：
+    消息还在 stream 的 PEL 里，会被 XAUTOCLAIM 认领并自动重跑，
+    把它标成 interrupted 反而是误报。
     """
     if payload.get("status") not in UNFINISHED_STATUSES:
+        return False
+    if payload.get("origin") == "stream":
         return False
     return payload.get("worker_id") != current_worker_id
 
@@ -195,6 +209,7 @@ async def write_task_status(
     *,
     result: Any = None,
     error: str | None = None,
+    origin: str | None = None,
 ) -> None:
     """构造统一状态 payload 并写入 Redis。"""
     payload = build_task_status_payload(
@@ -202,6 +217,7 @@ async def write_task_status(
         status,
         result=result,
         error=error,
+        origin=origin,
     )
     await redis_client.set(
         f"{_TASK_CFG.task_key_prefix}{task_id}",
@@ -239,10 +255,11 @@ async def run_task_with_status_updates(
     task_id: str,
     coro_func: TaskCallable,
     *args: Any,
+    origin: str | None = None,
     **kwargs: Any,
 ) -> None:
     """执行后台任务，并统一维护 Redis 状态流转与日志。"""
-    await write_task_status(redis_client, task_id, TaskStatus.RUNNING)
+    await write_task_status(redis_client, task_id, TaskStatus.RUNNING, origin=origin)
     try:
         result = await coro_func(*args, **kwargs)
         await write_task_status(
@@ -250,6 +267,7 @@ async def run_task_with_status_updates(
             task_id,
             TaskStatus.COMPLETED,
             result=result,
+            origin=origin,
         )
         logger.info("任务完成 | task_id=%s", task_id)
     except Exception as exc:
@@ -258,6 +276,7 @@ async def run_task_with_status_updates(
             task_id,
             TaskStatus.FAILED,
             error=str(exc),
+            origin=origin,
         )
         logger.error("任务失败 | task_id=%s | %s", task_id, exc, exc_info=True)
 

@@ -435,3 +435,70 @@ async def test_hybrid_search_formats_rrf_scores() -> None:
     assert results[0]["chunk_id"] == "c9"
     assert results[0]["rrf_score"] == 0.66
     assert "is_deleted == false" in stub.calls[0]["filter_expr"]
+
+
+# ---------------------------------------------------------------------- #
+# 知识分域（owner_id，特性开关）
+# ---------------------------------------------------------------------- #
+
+
+def test_owner_scope_filter_shapes() -> None:
+    from app.knowledge.infrastructure.doc_parser.retrieval.doc_lifecycle import (
+        owner_scope_filter,
+    )
+
+    assert owner_scope_filter(None) == 'owner_id == "global"'
+    assert owner_scope_filter("7") == 'owner_id in ["global", "7"]'
+
+
+async def test_search_without_visibility_flag_keeps_filter_unchanged() -> None:
+    """默认关闭：不叠加 owner 过滤（存量集合无该字段，开了会全排除）。"""
+    client = FakeMilvusClient()
+    store = _build_store(client)
+
+    await store.search("查询", top_k=3)
+
+    assert "owner_id" not in client.search_calls[0]["filter"]
+
+
+async def test_search_with_visibility_flag_scopes_to_user(monkeypatch) -> None:
+    from app.shared.core.app_config import RagVisibilityConfig
+    from app.shared.core.config import settings as app_settings
+    from app.shared.core.identity import set_current_user_id
+
+    scoped_config = app_settings.app_config.model_copy(
+        update={"rag_visibility": RagVisibilityConfig(enabled=True)}
+    )
+    monkeypatch.setattr(
+        type(app_settings), "app_config", property(lambda self: scoped_config)
+    )
+    set_current_user_id(7)
+    try:
+        client = FakeMilvusClient()
+        store = _build_store(client)
+
+        await store.search("查询", top_k=3)
+
+        applied = client.search_calls[0]["filter"]
+        assert 'owner_id in ["global", "7"]' in applied
+        assert "is_deleted == false" in applied
+    finally:
+        set_current_user_id(None)
+
+
+async def test_insert_chunks_stamps_owner(monkeypatch) -> None:
+    client = FakeMilvusClient()
+    store = _build_store(client, FakeBatchEmbedding())
+
+    await store.insert_chunks([_chunk("c0")], owner_id="7")
+
+    assert client.inserts[0][0]["owner_id"] == "7"
+
+
+async def test_insert_chunks_defaults_to_global_owner() -> None:
+    client = FakeMilvusClient()
+    store = _build_store(client, FakeBatchEmbedding())
+
+    await store.insert_chunks([_chunk("c0")])
+
+    assert client.inserts[0][0]["owner_id"] == "global"

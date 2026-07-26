@@ -4,11 +4,20 @@ import { storeToRefs } from "pinia";
 import SidebarPanel from "@/components/SidebarPanel.vue";
 import MessageList from "@/components/MessageList.vue";
 import UploadDrawer from "@/components/UploadDrawer.vue";
+import AuthPanel from "@/components/AuthPanel.vue";
 import { useChatStore } from "@/stores/chat";
 
 const store = useChatStore();
-const { messages, streaming, statusLine, error, activeTitle, conversationId } =
-  storeToRefs(store);
+const {
+  messages,
+  streaming,
+  statusLine,
+  error,
+  activeTitle,
+  conversationId,
+  authenticated,
+  authChecking,
+} = storeToRefs(store);
 
 const draft = ref("");
 const uploadOpen = ref(false);
@@ -54,7 +63,8 @@ let healthTimer: number | undefined;
 
 onMounted(async () => {
   await store.refreshHealth();
-  await store.refreshConversations();
+  // 本地 token 有效则直接进入工作台；无效/缺失落到登录门
+  await store.bootstrapAuth();
   healthTimer = window.setInterval(() => {
     void store.refreshHealth();
   }, 30000);
@@ -72,7 +82,9 @@ watch(error, (v) => {
 </script>
 
 <template>
-  <div class="console" :class="{ nav: mobileNav }">
+  <div v-if="authChecking" class="auth-gate">正在校验登录状态…</div>
+  <AuthPanel v-else-if="!authenticated" />
+  <div v-else class="console" :class="{ nav: mobileNav }">
     <div class="ambient" aria-hidden="true">
       <div class="wash" />
       <div class="rail" />
@@ -450,5 +462,13 @@ watch(error, (v) => {
     z-index: 25;
     background: rgba(0, 0, 0, 0.45);
   }
+}
+
+.auth-gate {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  opacity: 0.7;
 }
 </style>

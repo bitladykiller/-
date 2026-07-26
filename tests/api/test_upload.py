@@ -281,7 +281,14 @@ def test_process_upload_runs_validation_storage_and_task_submission(
     monkeypatch.setattr(upload_api, "get_task_manager", fake_get_task_manager)
     monkeypatch.setattr(upload_api.document_service, "bind_task_id", fake_bind)
 
-    response = _run(upload_api.upload_file(_as_upload(file), 7))
+    from app.user.application.auth_service import AuthenticatedUser
+
+    response = _run(
+        upload_api.upload_file(
+            AuthenticatedUser(id=7, username="tester"),
+            _as_upload(file),
+        )
+    )
 
     assert captured[0] == ("validate", _as_upload(file))
     assert captured[1][0] == "store"
@@ -302,15 +309,18 @@ def test_get_upload_status_or_raise_returns_status_and_raises_404(
     async def fake_get_task_manager_ok() -> FakeTaskManager:
         return FakeTaskManager(status={"status": "running"})
 
+    from app.user.application.auth_service import AuthenticatedUser
+
+    viewer = AuthenticatedUser(id=1, username="tester")
     monkeypatch.setattr(upload_api, "get_task_manager", fake_get_task_manager_ok)
-    assert _run(upload_api.get_upload_status("task-ok")) == {"status": "running"}
+    assert _run(upload_api.get_upload_status("task-ok", viewer)) == {"status": "running"}
 
     async def fake_get_task_manager_missing() -> FakeTaskManager:
         return FakeTaskManager(status=None)
 
     monkeypatch.setattr(upload_api, "get_task_manager", fake_get_task_manager_missing)
     with pytest.raises(HTTPException) as exc:
-        _run(upload_api.get_upload_status("task-missing"))
+        _run(upload_api.get_upload_status("task-missing", viewer))
 
     assert exc.value.status_code == 404
     assert exc.value.detail == "任务不存在: task-missing"

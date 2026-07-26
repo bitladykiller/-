@@ -128,6 +128,30 @@ services:
       minio:
         condition: service_healthy
 
+  # （可选）独立事件 worker：与 app 同镜像不同 command。
+  # 启用方式：取消注释本服务，并给 app 服务加环境变量 EVENTS_INLINE_CONSUMER=0，
+  # 让 API 进程不再兼职跑 CPU 密集的文档解析。单容器部署无需启用。
+  # worker:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   image: deepseek-agent-app:local
+  #   container_name: kefu_worker
+  #   restart: unless-stopped
+  #   env_file:
+  #     - ./app/.env
+  #     - ./.env.docker
+  #   command: ["python", "-m", "app.worker"]
+  #   volumes:
+  #     - app_uploads:/app/app/uploads
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #     milvus:
+  #       condition: service_healthy
+
   # FastAPI 后端应用
   app:
     build:

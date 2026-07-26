@@ -125,6 +125,53 @@ class ConversationService:
             session_id=str(conversation_id),
         )
 
+    async def ensure_conversation(
+        self,
+        user_id: int,
+        conversation_id: int | None,
+    ) -> int:
+        """解析问答入口的会话：给定则校验归属，缺省则自动创建。
+
+        WHY 收敛在服务端：会话 id 同时充当 MySQL 主键、STM/LTM 的
+        session_id、SSE 的 thread_id。此前三者对齐靠**前端自觉**传同一个值，
+        任何直连 API 的客户端不传 conversation_id 就会产生 uuid 孤儿线程——
+        其 LTM 记忆永远无法被会话删除清理。现在服务端是唯一的 id 来源。
+
+        Raises:
+            ResourceNotFoundError: 指定的会话不存在或不属于该用户。
+        """
+        if conversation_id is None:
+            return await self.create_conversation(user_id)
+
+        await run_db_operation(
+            self._session_factory,
+            logger,
+            "ensure_conversation",
+            _get_owned_conversation,
+            conversation_id,
+            user_id,
+            conversation_id=conversation_id,
+            user_id=user_id,
+        )
+        return conversation_id
+
+    async def list_messages(
+        self,
+        conversation_id: int,
+        user_id: int,
+    ) -> list[dict[str, str]]:
+        """列出会话的持久化消息（先校验归属）。"""
+        return await run_db_operation(
+            self._session_factory,
+            logger,
+            "list_messages",
+            _list_messages,
+            conversation_id,
+            user_id,
+            conversation_id=conversation_id,
+            user_id=user_id,
+        )
+
     async def update_conversation_name(
         self,
         conversation_id: int,
@@ -192,6 +239,27 @@ async def _update_conversation_name(
     """更新会话标题。"""
     repo = ConversationRepository(db)
     await repo.rename(conversation_id, user_id, name)
+
+
+async def _get_owned_conversation(db: AsyncSession, conversation_id: int, user_id: int):
+    """校验会话归属；不存在或非本人抛 ResourceNotFoundError。"""
+    repo = ConversationRepository(db)
+    conversation = await repo.get_owned(conversation_id, user_id)
+    if conversation is None:
+        raise ResourceNotFoundError("会话不存在或不属于当前用户")
+    return conversation
+
+
+async def _list_messages(
+    db: AsyncSession,
+    conversation_id: int,
+    user_id: int,
+) -> list[dict[str, str]]:
+    """校验归属后列出持久化消息。"""
+    from app.chat.infrastructure.repository.message_repository import MessageRepository
+
+    await _get_owned_conversation(db, conversation_id, user_id)
+    return await MessageRepository(db).list_by_conversation(conversation_id)
 
 
 async def _clear_conversation_memories(*, user_id: str, session_id: str) -> None:

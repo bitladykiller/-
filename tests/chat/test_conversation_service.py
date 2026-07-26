@@ -133,3 +133,51 @@ def test_update_conversation_name_succeeds(monkeypatch) -> None:
     service = ConversationService()
     result = _run(service.update_conversation_name(1, 7, "new name"))
     assert result is None
+
+
+def test_ensure_conversation_creates_when_missing(monkeypatch) -> None:
+    created: list[int] = []
+
+    async def fake_create(user_id: int) -> int:
+        created.append(user_id)
+        return 42
+
+    service = ConversationService()
+    monkeypatch.setattr(service, "create_conversation", fake_create)
+
+    assert _run(service.ensure_conversation(7, None)) == 42
+    assert created == [7]
+
+
+def test_ensure_conversation_validates_ownership(monkeypatch) -> None:
+    """给定 conversation_id 时必须校验归属，不符 → ResourceNotFoundError。"""
+    from app.shared.core.errors import ResourceNotFoundError
+
+    checked: list[tuple] = []
+
+    async def fake_run(factory, log, action, op, *args, **ctx):
+        checked.append(args)
+        raise ResourceNotFoundError("会话不存在或不属于当前用户")
+
+    monkeypatch.setattr(
+        "app.chat.application.conversation_service.run_db_operation", fake_run
+    )
+
+    service = ConversationService()
+    import pytest as _pytest
+
+    with _pytest.raises(ResourceNotFoundError):
+        _run(service.ensure_conversation(7, 999))
+    assert checked == [(999, 7)]
+
+
+def test_ensure_conversation_returns_given_id_when_owned(monkeypatch) -> None:
+    async def fake_run(factory, log, action, op, *args, **ctx):
+        return object()  # 归属校验通过
+
+    monkeypatch.setattr(
+        "app.chat.application.conversation_service.run_db_operation", fake_run
+    )
+
+    service = ConversationService()
+    assert _run(service.ensure_conversation(7, 11)) == 11

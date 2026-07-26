@@ -2,6 +2,26 @@
 
 > **流程图**：[00-全流程图集.md](00-全流程图集.md) §4 会话时序、§5 SSE 问答、§15 上传索引。
 
+
+> ## ⚠️ v3.35.0 起：全站鉴权与路径变更
+>
+> 除 `/health*` 与 `/api/auth/*` 外，**所有接口需要 `Authorization: Bearer <token>`**；
+> 身份由令牌推导，任何位置不再接受自报 `user_id`。下文历史章节中带 user_id 的
+> 路径/参数均已按下表迁移（详见 CHANGELOG v3.35.0）：
+>
+> | 旧 | 新 |
+> |---|---|
+> | `POST /api/auth/login` `{username,password}` → token | （新增；注册 `/api/auth/register`，演示账号 demo_user / demo1234） |
+> | `GET /api/conversations/user/{uid}` | `GET /api/conversations` |
+> | `DELETE /api/conversations/{id}?user_id=` | `DELETE /api/conversations/{id}` |
+> | `PUT .../name` body`{user_id,name}` | body`{name}` |
+> | （无） | `GET /api/conversations/{id}/messages` 持久化历史 |
+> | `GET/DELETE /api/documents/user/{uid}[/{doc}]` | `GET /api/documents`、`GET/DELETE /api/documents/{doc}` |
+> | `POST /api/upload` form `user_id` | 身份取自令牌；新增可选 `visibility=global\|private` |
+> | `POST /api/langgraph/query` form `user_id`、任意字符串会话 | 身份取自令牌；`conversation_id` 为 int 且校验归属，缺省自动建会话 |
+> | （无） | `GET /health/deep` 逐依赖探测；所有响应带 `X-Request-ID` |
+> | 429 | SSE 并发超限（默认每用户 3 路） |
+
 ## 0. API 总览（图）
 
 ```mermaid

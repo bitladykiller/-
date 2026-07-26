@@ -62,6 +62,11 @@ class InfrastructureSettings(ProjectBaseSettings):
     MILVUS_HOST: str = "localhost"
     MILVUS_PORT: int = 19530
 
+    # JWT 签名密钥。生产必须通过环境变量覆盖；默认值仅保证本地开发可启动。
+    SECRET_KEY: str = "dev-secret-change-me"
+    # 访问令牌有效期（秒），默认 24h
+    ACCESS_TOKEN_TTL_SECONDS: int = 86400
+
 
 class BusinessSettings(ProjectBaseSettings):
     """业务行为配置。"""

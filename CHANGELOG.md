@@ -5,6 +5,89 @@
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v3.35.0] - 2026-07-26
+
+架构路线图整轮落地：鉴权、事件管线、消息持久化、评测、可观测性、
+配置校验、知识分域一次到位。**包含大量破坏性 API 变更**，见文末。
+
+### 1. 鉴权与信任边界（核心变更）
+- 新增 `/api/auth/register`、`/api/auth/login`、`/api/auth/me`；
+  JWT（HS256，`SECRET_KEY` 签名，TTL `ACCESS_TOKEN_TTL_SECONDS`）+ bcrypt 密码。
+- **所有业务端点身份改由 Bearer 令牌推导**，路径/表单/请求体不再接受
+  自报 `user_id` —— 此前前端 localStorage 一个数字就是"身份"。
+- `users.password_hash` 列首次真正投入使用；种子用户密码统一为
+  `demo1234`（生产请删除种子用户）。
+- 前端新增登录/注册门（AuthPanel），token 注入所有请求，401 自动回登录页。
+
+### 2. 会话标识唯一化
+- `/api/langgraph/query` 的 `conversation_id` 改为 int 且**必须属于当前用户**
+  （不传则服务端自动建会话）；`thread_id ≡ str(conversation_id)`。
+- 消除"任意字符串 thread 产生孤儿 STM/LTM、会话删除清不掉"的隐患。
+
+### 3. 消息持久化（告别"隔天失忆"）
+- 启用 init.sql 中一直存在但从未写入的 `messages` 表（append-only 历史）。
+- 新增 `GET /api/conversations/{id}/messages`；前端切回旧会话自动加载历史。
+- 与 Redis STM 职责分离：历史给人看，STM 是模型的上下文窗口。
+
+### 4+5. Redis Streams 事件管线（任务持久化 + 记忆事件化）
+- 新增 `app/shared/streams.py`：消费组 + XAUTOCLAIM 崩溃认领 + 重试上限 +
+  死信流；零新依赖（redis.asyncio 已有）。
+- `turn_completed` 事件：历史落库 + 记忆写入（压缩/抽取），崩溃自动重放；
+  fire-and-forget 协程降级为事件基础设施不可用时的回退路径。
+- 文档索引经 `document_index_requested` 事件执行：**进程重启后任务自动
+  续跑**（此前只能标 interrupted）；任务状态协议不变，前端轮询无感知。
+- 新增 `python -m app.worker` 独立消费入口 + compose 可选 worker 服务；
+  app 进程默认内嵌消费（`EVENTS_INLINE_CONSUMER=0` 可关闭）。
+
+### 6. RAG 离线评测
+- `scripts/golden_set.jsonl`（24 条客服问题）+ `scripts/rag_eval.py`
+  （hit@k / MRR，`--json` 可存档对比）+ `make eval`。
+- 指标层为纯函数（`app/knowledge/application/rag_eval.py`），单测覆盖。
+
+### 7. LLM 韧性与资源护栏
+- 模型工厂统一挂接**按角色超时**（决策类 10s / Cypher 20s / 生成类 60s）
+  与瞬时重试（1 次）；此前无任何超时，上游挂起请求会无限等待。
+- SSE 按用户并发限流（默认 3 路，Redis 计数器 + TTL 兜底），超限 429；
+  限流器自身故障放行（护栏不带走主功能）。
+- SSE 结束时记录本次对话 token 用量（模型上报 usage 时）。
+
+### 8. 可观测性
+- `X-Request-ID` 贯穿：中间件生成/透传，contextvars + 日志 Filter 注入
+  **每一条**日志（格式新增 request_id 列），响应头回传。
+- 图节点耗时打点（`app.chat.graph.timing`）：路由/检索/生成各花多久直接可读。
+- 新增 `GET /health/deep`：逐依赖探测（MySQL/Redis/Milvus/Neo4j），
+  故障返回 503 + 组件明细；`/health` 保持浅探针。
+
+### 9. 配置体系
+- `AppConfig` 全树 dataclass → **pydantic frozen BaseModel**：启动时校验
+  类型与取值范围（`extra="forbid"` 拒绝拼错的字段名）。
+- LTM collection 名单源化：env `MILVUS_COLLECTION_NAME` 成为
+  `app_config.memory.ltm.collection_name` 的默认值来源，容器只读后者。
+
+### 10. 知识库分域（特性开关，默认关）
+- chunk schema 新增 `owner_id`（"global" 或上传者 user_id）；
+  上传支持 `visibility=global|private`。
+- `rag_visibility.enabled=true` 时检索按 `owner_id in ("global", 当前用户)`
+  过滤（身份取自请求上下文 contextvars，检索层零传参）。
+- ⚠️ 开启前必须全量 reindex：存量 chunk 无 owner_id 字段会被过滤排除。
+
+### 破坏性变更（API）
+| 旧 | 新 |
+|---|---|
+| （无鉴权） | 除 /health、/api/auth/* 外全部需要 `Authorization: Bearer` |
+| `GET /api/conversations/user/{uid}` | `GET /api/conversations` |
+| `POST /api/conversations` body{user_id} | `POST /api/conversations`（空 body） |
+| `DELETE /api/conversations/{id}?user_id=` | `DELETE /api/conversations/{id}` |
+| `PUT .../name` body{user_id,name} | body{name} |
+| `GET/DELETE /api/documents/user/{uid}/{doc}` | `GET/DELETE /api/documents/{doc}` |
+| `POST /api/upload` form user_id | 身份取自令牌；新增可选 form `visibility` |
+| `POST /api/langgraph/query` form user_id + 任意字符串会话 | 身份取自令牌；`conversation_id` 为 int 且校验归属 |
+
+### 质量
+- 测试 337 → **375**；ruff / mypy / vue-tsc 全绿。
+- 新增测试：auth（哈希/令牌/伪造拒绝）、streams（重试/认领/死信）、
+  events、rate_limit、rag_eval、分域过滤、会话统一。
+
 ## [v3.34.0] - 2026-07-26
 
 第二轮设计审查的产出：2 个部署级静默故障 + API 完整性补全。

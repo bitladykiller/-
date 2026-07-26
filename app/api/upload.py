@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Annotated, cast
 
 from app.api.common import run_api_action
+from app.api.deps import CurrentUser
 from app.knowledge.application.document_indexing_job import run_document_indexing_job
 from app.knowledge.application.document_service import document_service
 from app.knowledge.application.indexing_service import (
@@ -69,6 +70,7 @@ class StoredUploadFileInfo(TypedDict, total=False):
     upload_time: str
     directory: str
     title: str
+    owner_id: str
     unchanged: bool
     version: int
     chunk_count: int
@@ -90,6 +92,7 @@ class UploadAcceptedResponse(TypedDict, total=False):
     upload_time: str
     directory: str
     title: str
+    owner_id: str
     task_id: str
     message: str
     unchanged: bool
@@ -245,15 +248,28 @@ async def _register_document_metadata(file_info: StoredUploadFileInfo) -> Stored
     return updated
 
 
+_ALLOWED_VISIBILITY = {"global", "private"}
+
+
+def _resolve_owner(visibility: str, user_id: int) -> str:
+    """把可见域参数解析为 chunk 的 owner 标识。"""
+    value = (visibility or "global").strip().lower()
+    if value not in _ALLOWED_VISIBILITY:
+        raise HTTPException(status_code=400, detail="visibility 仅支持 global 或 private")
+    return "global" if value == "global" else str(user_id)
+
+
 async def _run_upload(
     file: UploadFile,
     user_id: int,
     doc_id: str | None,
     mode: str,
+    visibility: str = "global",
 ) -> UploadAcceptedResponse:
     """上传主流程（显式 async，便于类型检查）。"""
     validate_upload(file)
     normalized_mode = _normalize_upload_mode(mode)
+    owner_id = _resolve_owner(visibility, user_id)
     if normalized_mode == "replace" and not _optional_str(doc_id):
         raise HTTPException(
             status_code=400,
@@ -266,6 +282,7 @@ async def _run_upload(
         doc_id=doc_id,
         mode=normalized_mode,
     )
+    file_info["owner_id"] = owner_id
     file_info = await _register_document_metadata(file_info)
     resolved_doc_id = _require_doc_id(file_info)
 
@@ -280,8 +297,7 @@ async def _run_upload(
         }
         return response
 
-    task_manager = await get_task_manager()
-    task_id = await task_manager.submit(run_document_indexing_job, file_info)
+    task_id = await _submit_indexing(dict(file_info))
     await document_service.bind_task_id(resolved_doc_id, task_id)
     return {
         **file_info,
@@ -293,36 +309,79 @@ async def _run_upload(
     }
 
 
+async def _submit_indexing(file_info: dict) -> str:
+    """提交索引任务：优先 Redis Streams（持久化、崩溃续跑），失败回退进程内。
+
+    WHY 优先事件流：进程内 asyncio 任务随进程共存亡；stream 消息在 PEL 里，
+    进程崩溃后被 XAUTOCLAIM 认领自动重跑（replace 语义幂等）。
+    状态协议不变，前端轮询接口无感知。
+    """
+    import uuid as _uuid
+
+    from app.platform.container import get_container_if_initialized
+    from app.platform.events import EVENT_DOCUMENT_INDEX_REQUESTED
+    from app.shared.background_tasks import TaskStatus, write_task_status
+
+    task_id = _uuid.uuid4().hex[:12]
+    # 机会型访问：容器未初始化（如单测直调 handler）时直接走进程内回退，
+    # 绝不为一次投递拉起整套外部连接
+    container = get_container_if_initialized()
+    queue = getattr(container, "event_queue", None) if container else None
+    manager = getattr(container, "task_manager", None) if container else None
+    if queue is not None and manager is not None:
+        try:
+            await write_task_status(
+                manager._redis,  # noqa: SLF001 — API 层经容器访问任务基础设施
+                task_id,
+                TaskStatus.PENDING,
+                origin="stream",
+            )
+            await queue.publish(
+                EVENT_DOCUMENT_INDEX_REQUESTED,
+                {"task_id": task_id, "file_info": file_info},
+            )
+            return task_id
+        except Exception as exc:
+            logger.warning("事件流投递失败，回退进程内任务 | %s", exc)
+
+    task_manager = await get_task_manager()
+    return await task_manager.submit(run_document_indexing_job, file_info)
+
+
 @router.post("/upload")
 async def upload_file(
+    current_user: CurrentUser,
     file: UploadFile = File(...),
-    user_id: int = Form(...),
     doc_id: Annotated[str | None, Form()] = None,
     mode: Annotated[str, Form()] = "create",
+    visibility: Annotated[str, Form()] = "global",
 ) -> UploadAcceptedResponse:
-    """上传并异步索引。
+    """上传并异步索引（归属为当前登录用户）。
 
     - mode=create：新建，服务端生成或使用传入 doc_id，写入 MySQL
     - mode=replace：必须传已有 doc_id；hash 相同则跳过，否则软删+新 version
+    - visibility=global|private：检索可见域。默认 global（全员可检索）；
+      private 仅在 `rag_visibility.enabled` 开启后生效（见 05 文档）
     """
     operation: Awaitable[UploadAcceptedResponse] = _run_upload(
         file,
-        user_id,
+        current_user.id,
         doc_id,
         mode,
+        visibility,
     )
     return await run_api_action(
         "upload_file",
         operation,
         logger=logger,
-        user_id=user_id,
+        user_id=current_user.id,
         filename=file.filename,
     )
 
 
 @router.get("/upload/status/{task_id}")
-async def get_upload_status(task_id: str) -> TaskStatusPayload:
-    """查询文档解析任务状态。"""
+async def get_upload_status(task_id: str, current_user: CurrentUser) -> TaskStatusPayload:
+    """查询文档解析任务状态（需登录；task_id 随机不可枚举，暂不做归属绑定）。"""
     operation: Awaitable[TaskStatusPayload] = _run_get_upload_status(task_id)
     return await run_api_action(
         "get_upload_status",

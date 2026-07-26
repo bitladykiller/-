@@ -15,7 +15,8 @@ from __future__ import annotations
 import logging
 import sys
 
-LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"
+# request_id 由 RequestContextFilter 注入；非请求上下文（启动/后台任务）显示 "-"
+LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(request_id)s | %(name)s | %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 _NOISY_LOGGERS = (
     "sqlalchemy.engine",
@@ -28,6 +29,21 @@ _NOISY_LOGGERS = (
 )
 
 _logging_initialized = False
+
+
+class RequestContextFilter(logging.Filter):
+    """把 contextvars 里的 request_id 注入每条日志记录。
+
+    WHY：一次 SSE 请求途经中间件 → 6 个图节点 → 检索器 → 3 套存储，
+    没有贯穿标识时这些日志无法串成一条链。Filter 挂在 handler 上，
+    对所有 logger 生效，业务代码零改动。
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        from app.shared.core.identity import get_request_id
+
+        record.request_id = get_request_id()
+        return True
 
 
 def format_log_context(**context: object) -> str:
@@ -69,6 +85,7 @@ def configure_root_logger(
 
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(logging.Formatter(format_str, datefmt=date_format))
+    handler.addFilter(RequestContextFilter())
     root.addHandler(handler)
 
 

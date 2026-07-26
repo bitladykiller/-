@@ -12,6 +12,36 @@ export type { UserDocumentSummary };
 /** 开发走 Vite 代理；生产由 nginx 同源反代，默认空字符串 */
 const BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
+// ---------------------------------------------------------------------- //
+// 认证：token 是唯一身份来源（v3.35.0 起后端不再接受自报 user_id）
+// ---------------------------------------------------------------------- //
+
+const TOKEN_KEY = "ag_token";
+
+export type AuthInfo = {
+  access_token: string;
+  token_type: string;
+  user_id: number;
+  username: string;
+};
+
+export function getToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setToken(token: string | null): void {
+  if (token) localStorage.setItem(TOKEN_KEY, token);
+  else localStorage.removeItem(TOKEN_KEY);
+}
+
+/** 401 时抛出，供上层区分"要重新登录"和普通错误 */
+export class AuthRequiredError extends Error {}
+
+function authHeaders(): Record<string, string> {
+  const token = getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function parseError(res: Response): Promise<string> {
   try {
     const body = await res.json();
@@ -24,6 +54,50 @@ async function parseError(res: Response): Promise<string> {
   }
 }
 
+async function ensureOk(res: Response): Promise<Response> {
+  if (res.status === 401) {
+    setToken(null);
+    throw new AuthRequiredError(await parseError(res));
+  }
+  if (!res.ok) throw new Error(await parseError(res));
+  return res;
+}
+
+export async function register(username: string, password: string): Promise<AuthInfo> {
+  const res = await fetch(`${BASE}/api/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  await ensureOk(res);
+  const info: AuthInfo = await res.json();
+  setToken(info.access_token);
+  return info;
+}
+
+export async function login(username: string, password: string): Promise<AuthInfo> {
+  const res = await fetch(`${BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  await ensureOk(res);
+  const info: AuthInfo = await res.json();
+  setToken(info.access_token);
+  return info;
+}
+
+/** 启动时校验本地 token 是否仍有效 */
+export async function fetchMe(): Promise<{ user_id: number; username: string }> {
+  const res = await fetch(`${BASE}/api/auth/me`, { headers: authHeaders() });
+  await ensureOk(res);
+  return res.json();
+}
+
+// ---------------------------------------------------------------------- //
+// 业务接口（全部携带 Bearer token）
+// ---------------------------------------------------------------------- //
+
 export async function getHealth(): Promise<boolean> {
   try {
     const res = await fetch(`${BASE}/health`);
@@ -33,109 +107,116 @@ export async function getHealth(): Promise<boolean> {
   }
 }
 
-export async function listConversations(
-  userId: number,
-): Promise<ConversationSummary[]> {
-  const res = await fetch(`${BASE}/api/conversations/user/${userId}`);
-  if (!res.ok) throw new Error(await parseError(res));
+export async function listConversations(): Promise<ConversationSummary[]> {
+  const res = await fetch(`${BASE}/api/conversations`, { headers: authHeaders() });
+  await ensureOk(res);
   return res.json();
 }
 
-export async function createConversation(
-  userId: number,
-): Promise<CreateConversationResponse> {
+export async function createConversation(): Promise<CreateConversationResponse> {
   const res = await fetch(`${BASE}/api/conversations`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: userId }),
+    headers: authHeaders(),
   });
-  if (!res.ok) throw new Error(await parseError(res));
+  await ensureOk(res);
   return res.json();
 }
 
 export async function renameConversation(
   id: number,
-  userId: number,
   name: string,
 ): Promise<MessageResponse> {
   const res = await fetch(`${BASE}/api/conversations/${id}/name`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: userId, name }),
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ name }),
   });
-  if (!res.ok) throw new Error(await parseError(res));
+  await ensureOk(res);
   return res.json();
 }
 
-/** 删除会话需带归属 user_id：后端会校验，防止按 id 误删他人会话与记忆 */
-export async function deleteConversation(
+export async function deleteConversation(id: number): Promise<MessageResponse> {
+  const res = await fetch(`${BASE}/api/conversations/${id}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  await ensureOk(res);
+  return res.json();
+}
+
+export type HistoryMessage = { role: string; content: string; created_at: string };
+
+/** 持久化历史（MySQL messages），与 STM 推理上下文互相独立 */
+export async function listConversationMessages(
   id: number,
-  userId: number,
-): Promise<MessageResponse> {
-  const res = await fetch(
-    `${BASE}/api/conversations/${id}?user_id=${encodeURIComponent(userId)}`,
-    { method: "DELETE" },
-  );
-  if (!res.ok) throw new Error(await parseError(res));
+): Promise<HistoryMessage[]> {
+  const res = await fetch(`${BASE}/api/conversations/${id}/messages`, {
+    headers: authHeaders(),
+  });
+  await ensureOk(res);
   return res.json();
 }
 
-export async function listDocuments(
-  userId: number,
-): Promise<UserDocumentSummary[]> {
-  const res = await fetch(`${BASE}/api/documents/user/${userId}`);
-  if (!res.ok) throw new Error(await parseError(res));
+export async function listDocuments(): Promise<UserDocumentSummary[]> {
+  const res = await fetch(`${BASE}/api/documents`, { headers: authHeaders() });
+  await ensureOk(res);
   return res.json();
 }
 
-export async function getDocument(
-  userId: number,
-  docId: string,
-): Promise<UserDocumentSummary> {
+export async function getDocument(docId: string): Promise<UserDocumentSummary> {
   const res = await fetch(
-    `${BASE}/api/documents/user/${userId}/${encodeURIComponent(docId)}`,
+    `${BASE}/api/documents/${encodeURIComponent(docId)}`,
+    { headers: authHeaders() },
   );
-  if (!res.ok) throw new Error(await parseError(res));
+  await ensureOk(res);
   return res.json();
 }
 
 /** 删除知识文档：MySQL 元信息删行 + Milvus 软删该 doc_id 全部 chunk */
 export async function deleteDocument(
-  userId: number,
   docId: string,
 ): Promise<MessageResponse & { doc_id: string; soft_deleted_chunks: number }> {
   const res = await fetch(
-    `${BASE}/api/documents/user/${userId}/${encodeURIComponent(docId)}`,
-    { method: "DELETE" },
+    `${BASE}/api/documents/${encodeURIComponent(docId)}`,
+    { method: "DELETE", headers: authHeaders() },
   );
-  if (!res.ok) throw new Error(await parseError(res));
+  await ensureOk(res);
   return res.json();
 }
 
 export async function uploadDocument(
-  userId: number,
   file: File,
-  options?: { mode?: "create" | "replace"; docId?: string },
+  options?: {
+    mode?: "create" | "replace";
+    docId?: string;
+    visibility?: "global" | "private";
+  },
 ): Promise<UploadAccepted> {
   const form = new FormData();
-  form.append("user_id", String(userId));
   form.append("file", file);
   form.append("mode", options?.mode ?? "create");
-  if (options?.docId) {
-    form.append("doc_id", options.docId);
-  }
-  const res = await fetch(`${BASE}/api/upload`, { method: "POST", body: form });
-  if (!res.ok) throw new Error(await parseError(res));
+  if (options?.docId) form.append("doc_id", options.docId);
+  if (options?.visibility) form.append("visibility", options.visibility);
+  const res = await fetch(`${BASE}/api/upload`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: form,
+  });
+  await ensureOk(res);
   return res.json();
 }
 
-export async function getUploadStatus(
-  taskId: string,
-): Promise<TaskStatusPayload> {
-  const res = await fetch(`${BASE}/api/upload/status/${taskId}`);
-  if (!res.ok) throw new Error(await parseError(res));
+export async function getUploadStatus(taskId: string): Promise<TaskStatusPayload> {
+  const res = await fetch(`${BASE}/api/upload/status/${taskId}`, {
+    headers: authHeaders(),
+  });
+  await ensureOk(res);
   return res.json();
 }
+
+// ---------------------------------------------------------------------- //
+// SSE 流式问答
+// ---------------------------------------------------------------------- //
 
 type SseEvent = { type: "chunk" | "error"; text: string };
 
@@ -173,11 +254,10 @@ export type StreamHandlers = {
   onThreadId?: (id: string) => void;
 };
 
-/** SSE 流式问答 */
+/** SSE 流式问答（conversation_id 为服务端会话主键；缺省自动创建） */
 export async function streamAgentQuery(
   params: {
     query: string;
-    userId: number;
     conversationId?: string | null;
   },
   handlers: StreamHandlers,
@@ -185,18 +265,18 @@ export async function streamAgentQuery(
 ): Promise<string> {
   const form = new FormData();
   form.append("query", params.query);
-  form.append("user_id", String(params.userId));
   if (params.conversationId) {
     form.append("conversation_id", params.conversationId);
   }
 
   const res = await fetch(`${BASE}/api/langgraph/query`, {
     method: "POST",
+    headers: authHeaders(),
     body: form,
     signal,
   });
 
-  if (!res.ok) throw new Error(await parseError(res));
+  await ensureOk(res);
 
   const thread = res.headers.get("X-Conversation-ID");
   if (thread) handlers.onThreadId?.(thread);

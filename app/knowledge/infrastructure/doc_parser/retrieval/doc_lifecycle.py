@@ -65,6 +65,23 @@ def merge_active_filter(user_filter: str | None) -> str:
     return f"({ACTIVE_FILTER}) and ({str(user_filter).strip()})"
 
 
+def owner_scope_filter(user_owner: str | None, *, global_owner: str = "global") -> str:
+    """构造可见域过滤：共享域 + 当前用户私有域。
+
+    仅在 `rag_visibility.enabled` 开启时使用。匿名（user_owner 为 None）
+    只能看共享域。
+
+    ⚠️ 存量 chunk 若没有 owner_id 字段（动态字段缺失），会被本过滤排除——
+    开启分域前必须完成全量 reindex。
+    """
+    safe_global = escape_milvus_string(global_owner)
+    if not user_owner:
+        return 'owner_id == "' + safe_global + '"'
+    safe_user = escape_milvus_string(str(user_owner))
+    return 'owner_id in ["' + safe_global + '", "' + safe_user + '"]'
+
+
+
 def next_version(max_version: int | None) -> int:
     """计算下一版本文档版本号（从 1 起）。"""
     current = int(max_version or 0)
@@ -97,6 +114,7 @@ __all__ = [
     "hard_purge_filter",
     "merge_active_filter",
     "next_version",
+    "owner_scope_filter",
     "now_ts",
     "validate_doc_id",
 ]

@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from collections.abc import Hashable
-from typing import cast
+from typing import Any, cast
 
 from app.chat.infrastructure.graph.decision_nodes import (
     analyze_and_route_query,
@@ -27,6 +27,7 @@ from app.chat.infrastructure.graph.retrieval_nodes import (
     execute_then,
 )
 from app.chat.infrastructure.graph.state import AgentState, InputState
+from app.chat.infrastructure.graph.timing import timed_node
 from app.chat.infrastructure.react.react import execute_react
 from langgraph.graph import END, START, StateGraph
 
@@ -85,9 +86,11 @@ _graph_builder = StateGraph(AgentState, input=InputState)
 for registration in _NODE_REGISTRATIONS:
     if isinstance(registration, tuple):
         node_name, node_handler = registration
-        _graph_builder.add_node(node_name, node_handler)
     else:
-        _graph_builder.add_node(registration)
+        # 各节点返回类型不同，联合类型对逐项迭代无意义，统一放宽为 Any
+        node_name, node_handler = registration.__name__, cast(Any, registration)
+    # 每个节点包一层耗时打点：一次请求哪个环节慢，日志直接可读
+    _graph_builder.add_node(node_name, timed_node(node_name, node_handler))
 
 # 起始边：START → 分析路由节点
 _graph_builder.add_edge(START, "analyze_and_route_query")

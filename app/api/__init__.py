@@ -4,6 +4,7 @@
 每个子路由文件已经声明了自己的 `tags`，这里不再重复配置。
 """
 
+from app.api.auth import router as auth_router
 from app.api.conversations import router as conversations_router
 from app.api.documents import router as documents_router
 from app.api.langgraph import router as langgraph_router
@@ -12,6 +13,7 @@ from fastapi import APIRouter
 
 api_router = APIRouter()
 
+api_router.include_router(auth_router)
 api_router.include_router(conversations_router)
 api_router.include_router(upload_router)
 api_router.include_router(documents_router)

@@ -4,13 +4,7 @@ import { useChatStore } from "@/stores/chat";
 import { formatTime } from "@/utils/format";
 
 const store = useChatStore();
-const { conversations, conversationId, userId, healthy } = storeToRefs(store);
-
-function onUserChange(e: Event) {
-  const v = Number((e.target as HTMLInputElement).value);
-  store.setUserId(Number.isFinite(v) && v >= 1 ? Math.floor(v) : 1);
-  void store.refreshConversations();
-}
+const { conversations, conversationId, username, healthy } = storeToRefs(store);
 </script>
 
 <template>
@@ -28,15 +22,10 @@ function onUserChange(e: Event) {
     </button>
 
     <div class="panel">
-      <label class="label">
-        用户 ID
-        <input
-          type="number"
-          min="1"
-          :value="userId"
-          @change="onUserChange"
-        />
-      </label>
+      <div class="user-row">
+        <span class="user-name">{{ username }}</span>
+        <button type="button" class="linkish" @click="store.logout()">退出</button>
+      </div>
       <div class="health">
         <span
           class="pulse"
@@ -313,5 +302,20 @@ function onUserChange(e: Event) {
 .sep {
   margin: 0 6px;
   opacity: 0.5;
+}
+
+.user-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.user-name {
+  font-weight: 600;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>

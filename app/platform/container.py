@@ -57,6 +57,11 @@ class AppContainer:
     # ---- 任务管理 ----
     task_manager: Any | None = None
 
+    # ---- 事件管线（Redis Streams）与资源护栏 ----
+    event_queue: Any | None = None
+    sse_limiter: Any | None = None
+    _events_redis: Any | None = None
+
     # ---- LLM 模型实例（替代 models.py 中的 _models_cache 全局变量） ----
     llm_models: dict[str, Any] = field(default_factory=dict)
 
@@ -101,6 +106,7 @@ class AppContainer:
         container = cls()
         try:
             await container._init_task_manager(config)
+            await container._init_event_infrastructure(config)
             await container._init_memory_middleware()
             return container
         except Exception:
@@ -117,6 +123,27 @@ class AppContainer:
         await manager.reconcile_orphaned_tasks()
         self.task_manager = manager
 
+    async def _init_event_infrastructure(self, config: Any) -> None:
+        """事件队列与并发限流共用一个二进制安全 Redis 客户端。"""
+        import redis.asyncio as aioredis
+        from app.platform.events import EVENT_GROUP, EVENT_STREAM
+        from app.shared.core.config import settings as app_settings
+        from app.shared.core.rate_limit import SseConcurrencyLimiter
+        from app.shared.streams import RedisStreamQueue
+
+        self._events_redis = aioredis.from_url(config.REDIS_URL, decode_responses=False)
+        self.event_queue = RedisStreamQueue(
+            self._events_redis,
+            stream=EVENT_STREAM,
+            group=EVENT_GROUP,
+        )
+        limits = app_settings.app_config.limits
+        self.sse_limiter = SseConcurrencyLimiter(
+            self._events_redis,
+            max_concurrent=limits.sse_max_concurrent_per_user,
+            slot_ttl_seconds=limits.sse_slot_ttl_seconds,
+        )
+
     async def _init_memory_middleware(self) -> None:
         self.memory_middleware = _create_memory_middleware()
 
@@ -128,9 +155,39 @@ class AppContainer:
             await self._init_memory_middleware()
 
     def start_background_jobs(self) -> None:
-        """启动进程内后台任务（LTM 软删记录的定时硬清理）。"""
+        """启动进程内后台任务（事件消费 + LTM 定时硬清理）。"""
         if self._background_stop is not None:
             return
+        stop_event = asyncio.Event()
+        self._background_stop = stop_event
+        self._start_event_consumer(stop_event)
+        self._start_ltm_purge(stop_event)
+
+    def _start_event_consumer(self, stop_event: asyncio.Event) -> None:
+        """内嵌事件消费者（单容器部署默认形态）。
+
+        拆分部署时：app 进程设 EVENTS_INLINE_CONSUMER=0 关闭内嵌消费，
+        另起 `python -m app.worker`（同镜像不同 command）专职消费。
+        """
+        import os
+
+        if os.getenv("EVENTS_INLINE_CONSUMER", "1") == "0":
+            logger.info("已按环境变量关闭内嵌事件消费（EVENTS_INLINE_CONSUMER=0）")
+            return
+        if self.event_queue is None:
+            logger.warning("事件队列未初始化，跳过消费者启动")
+            return
+        from app.platform.events import build_core_handlers
+
+        task = asyncio.create_task(
+            self.event_queue.run_consumer(build_core_handlers(), stop_event),
+            name="event_consumer_loop",
+        )
+        self._background_tasks.append(task)
+        logger.info("已启动后台任务: event_consumer_loop")
+
+    def _start_ltm_purge(self, stop_event: asyncio.Event) -> None:
+        """LTM 软删记录的定时硬清理。"""
         from app.knowledge.infrastructure.ltm.purge_scheduler import (
             run_ltm_hard_purge_loop,
         )
@@ -140,9 +197,6 @@ class AppContainer:
         if not purge_cfg.enabled or not settings.app_config.memory.ltm.enabled:
             logger.info("跳过 LTM 硬清理调度（ltm 或 purge 未启用）")
             return
-
-        stop_event = asyncio.Event()
-        self._background_stop = stop_event
 
         def _get_ltm() -> Any | None:
             mw = self.memory_middleware
@@ -200,6 +254,15 @@ class AppContainer:
                 logger.debug("关闭 memory_middleware 资源时出错", exc_info=True)
             self.memory_middleware = None
 
+        if self._events_redis is not None:
+            try:
+                await self._events_redis.close()
+            except Exception:
+                logger.debug("关闭事件 Redis 连接时出错", exc_info=True)
+            self._events_redis = None
+        self.event_queue = None
+        self.sse_limiter = None
+
         self.llm_models.clear()
         self.retriever_registry = None
         self.kg_components.clear()
@@ -241,6 +304,15 @@ async def get_container() -> AppContainer:
     if _container is not None:
         return _container
     return await _get_or_build_container()
+
+
+def get_container_if_initialized() -> AppContainer | None:
+    """只读取已初始化的容器，绝不触发构建。
+
+    供机会型访问点使用（事件发布、健康探测）：这些调用点"容器在就用、
+    不在就降级"，不应该因为一次探测就拉起整套外部连接。
+    """
+    return _container
 
 
 async def set_container(container: AppContainer) -> None:
@@ -290,7 +362,8 @@ def _create_memory_middleware() -> Any:
         milvus_ltm=SimpleLongTermMemory(
             milvus_client=MilvusClient(uri=settings.MILVUS_URL),
             embedding_model=embedding_model,
-            collection_name=settings.MILVUS_COLLECTION_NAME,
+            # 单一来源：env MILVUS_COLLECTION_NAME 已被该配置项的默认值吸收
+            collection_name=settings.app_config.memory.ltm.collection_name,
         ),
         memory_extractor=MemoryExtractor(llm_client=memory_extractor_llm),
     )
@@ -314,6 +387,7 @@ __all__ = [
     "AppContainer",
     "KnowledgeGraphComponents",
     "get_container",
+    "get_container_if_initialized",
     "reset_container",
     "set_container",
 ]

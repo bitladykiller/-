@@ -1,7 +1,9 @@
 """会话管理接口。
 
+身份一律来自访问令牌（`CurrentUser`），路径与请求体不再接受自报 user_id。
+
 职责：
-- 暴露会话创建、列表查询、删除、重命名接口
+- 暴露会话创建、列表查询、删除、重命名、历史消息接口
 - 只做 HTTP 参数接收与响应转换
 - 通过统一 helper 包装 Service 调用，避免每个 handler 重复样板代码
 """
@@ -9,9 +11,10 @@
 from __future__ import annotations
 
 from app.api.common import MessageResponse, build_message_response, run_api_action
+from app.api.deps import CurrentUser
 from app.chat.application.conversation_service import ConversationSummary, conversation_service
 from app.shared.core.logger import get_logger
-from fastapi import APIRouter, Query
+from fastapi import APIRouter
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
@@ -29,66 +32,72 @@ class ConversationCreatedResponse(TypedDict):
     conversation_id: int
 
 
-class CreateConversationRequest(BaseModel):
-    """创建会话请求体。"""
-
-    user_id: int
-
-
 class UpdateConversationNameRequest(BaseModel):
     """修改会话名称请求体。"""
 
-    user_id: int
     name: str
 
 
 @router.post("/conversations")
-async def create_conversation(
-    request: CreateConversationRequest,
-) -> ConversationCreatedResponse:
-    """创建新会话并返回会话 ID。"""
+async def create_conversation(current_user: CurrentUser) -> ConversationCreatedResponse:
+    """为当前用户创建新会话并返回会话 ID。"""
     conversation_id = await run_api_action(
         "create_conversation",
-        conversation_service.create_conversation(request.user_id),
+        conversation_service.create_conversation(current_user.id),
         logger=logger,
-        user_id=request.user_id,
+        user_id=current_user.id,
     )
     return {"conversation_id": conversation_id}
 
 
-@router.get("/conversations/user/{user_id}")
-async def get_user_conversations(user_id: int) -> list[ConversationSummary]:
-    """查询指定用户的会话列表。"""
+@router.get("/conversations")
+async def get_my_conversations(current_user: CurrentUser) -> list[ConversationSummary]:
+    """查询当前用户的会话列表。"""
     return await run_api_action(
-        "get_user_conversations",
-        conversation_service.get_user_conversations(user_id),
+        "get_my_conversations",
+        conversation_service.get_user_conversations(current_user.id),
         logger=logger,
-        user_id=user_id,
+        user_id=current_user.id,
+    )
+
+
+@router.get("/conversations/{conversation_id}/messages")
+async def get_conversation_messages(
+    conversation_id: int,
+    current_user: CurrentUser,
+) -> list[dict[str, str]]:
+    """查询会话的持久化历史消息（归属校验，非本人 404）。
+
+    数据来自 MySQL messages 表（append-only），与 Redis STM 的
+    推理上下文互相独立——STM 过期不影响这里的可见历史。
+    """
+    return await run_api_action(
+        "get_conversation_messages",
+        conversation_service.list_messages(conversation_id, current_user.id),
+        logger=logger,
+        conversation_id=conversation_id,
+        user_id=current_user.id,
     )
 
 
 @router.delete("/conversations/{conversation_id}")
 async def delete_conversation(
     conversation_id: int,
-    user_id: int = Query(..., description="会话归属用户，必须与创建时一致"),
+    current_user: CurrentUser,
 ) -> MessageResponse:
-    """删除指定用户名下的会话及其关联记忆。
-
-    归属校验：conversation 必须属于 user_id，否则 404
-    （删除会联动清空该会话的 STM/LTM 记忆，绝不允许按 id 裸删）。
+    """删除当前用户名下的会话及其关联记忆（非本人 404）。
 
     会清理：
-    - MySQL 会话元信息
-    - MySQL messages 兼容数据（若存在）
+    - MySQL 会话元信息与 messages 历史
     - Redis STM 该会话短期记忆
     - Milvus LTM 中带 session_id 的长期记忆（软删除）
     """
     await run_api_action(
         "delete_conversation",
-        conversation_service.delete_conversation(conversation_id, user_id),
+        conversation_service.delete_conversation(conversation_id, current_user.id),
         logger=logger,
         conversation_id=conversation_id,
-        user_id=user_id,
+        user_id=current_user.id,
     )
     return build_message_response(DELETE_SUCCESS_MESSAGE)
 
@@ -97,18 +106,19 @@ async def delete_conversation(
 async def update_conversation_name(
     conversation_id: int,
     request: UpdateConversationNameRequest,
+    current_user: CurrentUser,
 ) -> MessageResponse:
-    """更新指定用户名下的会话标题（归属不符返回 404）。"""
+    """更新当前用户名下的会话标题（非本人 404）。"""
     await run_api_action(
         "update_conversation_name",
         conversation_service.update_conversation_name(
             conversation_id,
-            request.user_id,
+            current_user.id,
             request.name,
         ),
         logger=logger,
         conversation_id=conversation_id,
-        user_id=request.user_id,
+        user_id=current_user.id,
         name=request.name,
     )
     return build_message_response(UPDATE_NAME_SUCCESS_MESSAGE)
