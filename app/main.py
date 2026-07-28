@@ -1,0 +1,229 @@
+"""FastAPI 应用入口。
+
+这个文件负责：
+- 声明应用入口常量
+- 构造 FastAPI app
+- 装配生命周期、路由、中间件和静态资源
+- 通过 AppContainer 管理所有应用级依赖的生命周期
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+import uuid
+from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from app.api import api_router
+from app.platform.container import AppContainer, reset_container, set_container
+from app.shared.core.logger import get_logger, setup_logging
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.routing import APIRouter
+from fastapi.staticfiles import StaticFiles
+
+STATIC_DIR = Path(__file__).parent / "static" / "dist"
+APP_TITLE = "AssistGen REST API"
+HEALTH_STATUS = "ok"
+OPEN_CORS_ORIGINS = ["*"]
+OPEN_CORS_METHODS = ["*"]
+OPEN_CORS_HEADERS = ["*"]
+
+setup_logging()
+logger = get_logger(__name__)
+
+
+async def warm_up_runtime_resources(runtime_logger: logging.Logger) -> None:
+    """预热懒加载资源，避免首请求承担初始化延迟。
+
+    通过 AppContainer 统一管理预热逻辑。"""
+    from app.platform.container import get_container
+
+    container = await get_container()
+    runtime_logger.info("预热 MemoryMiddleware...")
+    await container.warm_up()
+
+
+async def close_runtime_resources() -> None:
+    """释放应用级运行时资源。
+
+    通过 AppContainer.close() 统一释放所有外部连接。
+    """
+    await reset_container()
+
+
+def build_lifespan(
+    runtime_logger: logging.Logger,
+    *,
+    warm_up: Callable[[logging.Logger], Awaitable[None]] = warm_up_runtime_resources,
+    close_runtime: Callable[[], Awaitable[None]] = close_runtime_resources,
+):
+    """构造 FastAPI lifespan 处理器。
+
+    返回值保持 untyped/asynccontextmanager，避免与 FastAPI lifespan 签名过度耦合。
+    """
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # 在 lifespan 启动阶段创建 AppContainer
+        from app.shared.core.config import settings
+
+        container = await AppContainer.build(settings)
+        await set_container(container)
+
+        await warm_up(runtime_logger)
+        # 定时硬清理已软删的 LTM（Milvus 物理删除）；测试 FakeContainer 可无此方法
+        start_jobs = getattr(container, "start_background_jobs", None)
+        if callable(start_jobs):
+            start_jobs()
+        runtime_logger.info("启动完成")
+        try:
+            yield
+        finally:
+            runtime_logger.info("关闭连接...")
+            await close_runtime()
+            runtime_logger.info("关闭完成")
+
+    return lifespan
+
+
+def configure_cors(
+    app: FastAPI,
+    *,
+    allow_origins: list[str],
+    allow_methods: list[str],
+    allow_headers: list[str],
+) -> None:
+    """注册默认开放的 CORS 配置。"""
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allow_origins,
+        # WHY 不开 allow_credentials：本服务不使用 cookie/凭据；
+        # 且 CORS 规范禁止「通配符 origin + credentials」组合，浏览器会直接拒绝。
+        # 之前两者同时开启，给人"支持凭据"的错觉，实际永远不会生效。
+        allow_credentials=False,
+        allow_methods=allow_methods,
+        allow_headers=allow_headers,
+        # 前端 fetch 需读取 SSE 响应头中的会话 id
+        expose_headers=["X-Conversation-ID"],
+    )
+
+
+REQUEST_ID_HEADER = "X-Request-ID"
+
+
+def register_middleware(
+    app: FastAPI,
+    runtime_logger: logging.Logger,
+    *,
+    clock: Callable[[], float] = time.time,
+) -> None:
+    """注册应用级请求日志中间件（含 request_id 贯穿）。
+
+    request_id 通过 contextvars 注入日志格式：一次请求途经的所有日志
+    （图节点、检索、存储降级）自动携带同一标识，无需业务代码传参。
+    客户端可自带 X-Request-ID（网关透传场景），否则服务端生成。
+    """
+    from app.shared.core.identity import set_request_id
+
+    @app.middleware("http")
+    async def log_requests(request: Request, call_next):
+        request_id = request.headers.get(REQUEST_ID_HEADER) or uuid.uuid4().hex[:12]
+        set_request_id(request_id)
+
+        start_time = clock()
+        response = await call_next(request)
+        elapsed = (clock() - start_time) * 1000
+        response.headers[REQUEST_ID_HEADER] = request_id
+        runtime_logger.info(
+            "%s %s → %s (%.1fms)",
+            request.method,
+            request.url.path,
+            response.status_code,
+            elapsed,
+        )
+        return response
+
+
+def register_routes(
+    app: FastAPI,
+    *,
+    app_api_router: APIRouter,
+    health_status: str,
+) -> None:
+    """注册 API 路由和健康检查路由（浅探针 + 深探针）。"""
+
+    async def health_check() -> dict[str, str]:
+        # 浅探针：只证明进程活着，供容器编排高频调用
+        return {"status": health_status}
+
+    async def deep_health_check():
+        # 深探针：逐依赖探测（MySQL/Redis/Milvus/Neo4j），供运维排障
+        from app.platform.health import run_deep_health_check
+
+        report = await run_deep_health_check()
+        status_code = 200 if report["status"] == "ok" else 503
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(report, status_code=status_code)
+
+    app.include_router(app_api_router, prefix="/api")
+    app.add_api_route("/health", health_check, methods=["GET"])
+    app.add_api_route("/health/deep", deep_health_check, methods=["GET"])
+
+
+def register_static_files(
+    app: FastAPI,
+    *,
+    static_dir: Path,
+    runtime_logger: logging.Logger,
+) -> None:
+    """在静态目录存在时挂载前端资源。"""
+    if not static_dir.is_dir():
+        runtime_logger.info("静态资源目录不存在，跳过挂载: %s", static_dir)
+        return
+
+    app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
+
+
+def create_app(
+    *,
+    runtime_logger: logging.Logger = logger,
+    app_api_router: APIRouter = api_router,
+    static_dir: Path = STATIC_DIR,
+    health_status: str = HEALTH_STATUS,
+) -> FastAPI:
+    """构造并装配当前服务的 FastAPI app。"""
+    app = FastAPI(
+        title=APP_TITLE,
+        lifespan=build_lifespan(runtime_logger),
+    )
+    configure_cors(
+        app,
+        allow_origins=OPEN_CORS_ORIGINS,
+        allow_methods=OPEN_CORS_METHODS,
+        allow_headers=OPEN_CORS_HEADERS,
+    )
+    register_middleware(app, runtime_logger)
+    register_routes(
+        app,
+        app_api_router=app_api_router,
+        health_status=health_status,
+    )
+    register_static_files(
+        app,
+        static_dir=static_dir,
+        runtime_logger=runtime_logger,
+    )
+    return app
+
+
+app = create_app()
+
+
+# 只导出真正的对外入口。`configure_cors` / `register_*` / `build_lifespan`
+# 都是 create_app 的装配步骤，属于实现细节——测试按模块属性直接访问即可，
+# 不必写进公共 API。
+__all__ = ["app", "create_app"]
