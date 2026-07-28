@@ -29,9 +29,14 @@ app/knowledge/
 | Redis | STM、上传 task 状态 |
 | Milvus | LTM 记忆；RAG `rag_documents` chunks（`doc_id`/`version`/`is_deleted`） |
 | MySQL `user_documents` | 稳定 `doc_id`、title、hash、version、status（列表/更新绑定） |
+| Redis Streams + MySQL `processed_events` | `document_index_requested` 的至少一次投递与消费 Inbox；`task_id` 是索引事件的稳定 ID |
 | 本地文件 | `uploads/` 落盘原文 |
 
-迁移：`configs/mysql-init/migration_user_documents.sql` 或 compose bootstrap `create_all`。
+索引消费者会把 `task_id` 透传为 `event_id`：chunk ID 固定为事件派生值，Milvus
+使用 upsert / 已写版本检查，因而在 XACK 前重放不会再插入一份文档。
+
+迁移：已有环境除 `configs/mysql-init/migration_user_documents.sql` 外，还需执行
+`configs/mysql-init/migration_stream_idempotency.sql`；新数据卷由 `init.sql` 建表。
 
 ## 依赖
 

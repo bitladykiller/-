@@ -22,7 +22,11 @@ app/chat/
 ## 边界
 
 - **负责**：会话元信息、Agent 图执行、KG/RAG 检索编排入口
-- **不负责**：全局配置、任务队列、用户画像持久化
+- **不负责**：全局配置、事件/任务基础设施、用户画像持久化
+
+`graph/lifecycle_nodes.after_response` 只生成稳定的 `turn_id` 并发布
+`turn_completed`；Redis Streams 消费者随后写 MySQL 历史和记忆链。重复投递时，
+Inbox、`messages.turn_event_id` 唯一键与 STM 回合标记共同避免重复写入。
 
 ## 命名
 

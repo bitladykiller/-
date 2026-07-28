@@ -20,3 +20,15 @@
 
 - 新增脚本时，先判断它属于“本地开发辅助”还是“部署启动辅助”，避免不同用途的脚本混在一起。
 - 如果多个脚本再次出现明显重复且长期共同演进，再考虑重新抽出共享 helper；在重复规模很小时，优先保持脚本自包含。
+
+## 数据库迁移提示
+
+Compose 挂载的 `configs/mysql-init/*.sql` 仅在 MySQL **首次初始化数据卷**时自动执行。
+已有环境升级到 Redis Stream Inbox 幂等消费前，需手工运行：
+
+```bash
+mysql -u <user> -p <database> < configs/mysql-init/migration_stream_idempotency.sql
+```
+
+该迁移补充 `messages.turn_event_id`、对应唯一键与 `processed_events` Inbox 表；执行前
+请按常规发布流程备份数据库并在维护窗口验证。

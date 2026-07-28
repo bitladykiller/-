@@ -181,7 +181,7 @@ app/chat/
 | `graph/execution_pipeline.py` | 检索执行管道（enrich→search→summarize） |
 | `graph/execution_utils.py` | query 改写、`search_retriever`、摘要响应 |
 | `graph/memory_context.py` | load/enrich 记忆，P0–P3 文本拼装 |
-| `graph/lifecycle_nodes.py` | `after_response` 写记忆 |
+| `graph/lifecycle_nodes.py` | `after_response` 发布带稳定 ID 的回合事件（不可用时回退内存写入） |
 | `graph/message_utils.py` | `build_safe_messages`、进度/简单 AIMessage |
 
 ### 1.4 infrastructure · react / retrievers / modeling
@@ -537,7 +537,7 @@ async def execute_then(state, *, config) -> ...   # GRAPH_THEN_RAG
 async def execute_react(state, *, config) -> dict[str, object]
 
 async def after_response(state, *, config) -> dict[str, object]
-# 写 STM / 触发 after_agent 记忆链路
+# 发布 turn_completed；消费者写 STM / 触发 after_agent 记忆链路
 ```
 
 ### 6.2 工具函数（`execution_utils.py`）
@@ -748,10 +748,12 @@ execute_react(state, config):
 `after_response`：
 
 ```text
-middleware = MemoryMiddleware
 find_last_user_message + find_last_assistant_message
-middleware.after_agent(tenant, user, session, user_msg, assistant_msg)
-异常：warning 日志，不中断主响应
+生成 turn_id，同时作为 event_id
+publish turn_completed {turn_id, event_id, tenant, user, session, user_msg, assistant_msg}
+  → 成功：立即返回，消费者经 Inbox 认领后写 MySQL 历史 + after_agent
+  → 事件设施不可用：回退 _write_turn_memory（仍携带 turn_id）
+异常：warning 日志，不中断已开始的主响应
 ```
 
 ---
@@ -799,7 +801,7 @@ POST /api/langgraph/query
       [业务 分支] guardrails_node      # 范围守卫
       retrieval_plan_route             # 能力标签 + resolve
       execute_* / execute_react        # 检索+生成
-      after_response                   # STM/LTM/画像
+      after_response                   # 发布 turn_completed；消费者写 STM/LTM/画像
     SSE 过滤输出
 ```
 
@@ -829,7 +831,7 @@ POST /api/langgraph/query
 | `find_last_user_message` | 从后往前找 human/user |
 | `find_last_assistant_message` | 从后往前找 AI，**跳过 content 含「正在」的进度消息** |
 
-`after_response` 依赖后两个函数提取本轮真实问答再写 STM。
+`after_response` 依赖后两个函数提取本轮真实问答，再生成稳定 `turn_id` 并发布事件。
 
 ---
 
@@ -1057,7 +1059,7 @@ POST /api/langgraph/query (Form: query, user_id, conversation_id?)
 | `enrich_question` | 执行前 | `build_enriched_question` = 记忆段 + 当前问题 |
 | `build_memory_context` | 纯函数 | P0→P1→P2→P3 段落 + 冲突说明 |
 | `configurable_scope` | 读 config | tenant/user/session 默认 default/anonymous/default |
-| `after_response` | 图末 | find last user/assistant → middleware.after_agent；异常 warning |
+| `after_response` | 图末 | find last user/assistant → 生成 `turn_id` → publish `turn_completed`；仅事件设施不可用时回退内存写入 |
 
 ### A2.5 ReAct 双限制（必背数字）
 
@@ -1101,7 +1103,7 @@ POST /api/langgraph/query (Form: query, user_id, conversation_id?)
 
 ## A6. 高频追问 15 题（短答）
 
-1. **消息为何不进 MySQL？** 写放大 + 只需窗口；MySQL 只管列表元数据。  
+1. **为何消息双轨？** MySQL `messages` 保留给人看的完整历史，Redis STM 保留给模型的窗口；`turn_id` 让 ACK 前重放不重复写入。
 2. **thread_id vs conversations.id？** 字符串会话键 vs 整数 PK；前端应用 `X-Conversation-ID` 原样回传。  
 3. **删会话清什么？** Service：MySQL + STM clear + LTM soft delete by session_id；Repo 只 MySQL。  
 4. **WEB_SEARCH？** 枚举有，主图无节点；别吹联网。  
@@ -1119,7 +1121,7 @@ POST /api/langgraph/query (Form: query, user_id, conversation_id?)
 
 ## A7. 口述演示脚本（2 分钟）
 
-「用户问保修政策：Router 判 rag_doc-query → Guard 确认在智能家居范围 → Plan 标 need_rag → resolved RAG_ONLY → enrich_question 注入 P0–P3 → MilvusDocRetriever 混合检索 → summarize 成自然语言 → after_response 写 STM。若问题是订单号查物流：Plan need_graph → GRAPH_ONLY 走 Text2Cypher。若问题又模糊又要多跳：AGENT_REACT，最多 5 轮充分性检查。」
+「用户问保修政策：Router 判 rag_doc-query → Guard 确认在智能家居范围 → Plan 标 need_rag → resolved RAG_ONLY → enrich_question 注入 P0–P3 → MilvusDocRetriever 混合检索 → summarize 成自然语言 → after_response 发布带 turn_id 的事件；消费者幂等写 STM 和历史。若问题是订单号查物流：Plan need_graph → GRAPH_ONLY 走 Text2Cypher。若问题又模糊又要多跳：AGENT_REACT，最多 5 轮充分性检查。」
 
 ---
 
@@ -1239,7 +1241,8 @@ dict/LangChain Message。
 
 - 📌 `after_response(state, *, config)`：缺任一侧消息跳过（拒答路径防脏
   会话）→`_publish_turn_completed`（get_container_if_initialized 机会型
-  取 event_queue；成功即返回——写扩散交消费者）→失败回退
+  取 event_queue；先生成同值 `turn_id/event_id`，成功即返回——写扩散交消费者；
+  Inbox 与落点 ID 处理 ACK 前重放）→仅事件基础设施不可用时回退
   `_write_turn_memory` fire-and-forget（引用集合防 GC；
   `flush_pending_memory_writes()` 供测试/停机等待）
 - `timed_node(node_name, handler)`：functools.wraps 包装计时；异常也记
@@ -1352,7 +1355,7 @@ REACT_ANSWER_CHECK/SUMMARIZE）。
 
 | 范围 | 测试 |
 |---|---|
-| 决策/边/plan 解析 | tests/chat/test_lg_nodes.py（含 after_response 后台化回归） |
+| 决策/边/plan 解析 | tests/chat/test_lg_nodes.py（含 after_response 事件发布/回退回归） |
 | 执行工具/查询构造 | test_lg_execution_utils.py |
 | 记忆上下文/注入 | test_lg_context.py、test_lg_memory_prompt.py、test_lg_memory_runtime.py |
 | message_utils | test_lg_message_utils.py |

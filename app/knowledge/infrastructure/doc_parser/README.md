@@ -26,6 +26,9 @@
 - **RRF 融合**：Reciprocal Rank Fusion 合并两路排序结果
 - **动态更新（策略 2）**：`soft_delete_by_doc_id` + `reindex`（version 递增）；检索默认 `is_deleted == false`；`hard_purge_soft_deleted` 回收空间
 - **业务侧幂等**：replace 前由 `DocumentService.prepare_replace` 比对 MySQL `content_hash`，相同则不调用 reindex
+- **事件侧幂等**：`document_index_requested` 复用 `task_id` 作为 `event_id`；
+  `IndexingService` 将 chunk ID 固定为事件派生值，并把该键传给 Milvus upsert /
+  已写版本检测，因此在写入完成但 `XACK` 前重放时不会重复索引
 
 ```python
 from app.knowledge.infrastructure.doc_parser.retrieval.hybrid_search import HybridSearcher

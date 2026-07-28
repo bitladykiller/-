@@ -43,8 +43,8 @@
 
 1. 先说业务目标：这是一个智能客服后端，不是普通聊天页，重点是让用户既能问通用问题，也能问商品、订单、售后政策和企业内部知识。
 2. 再说主链路：请求从 FastAPI 进来后，不会直接丢给一个模型，而是先走 Router、Guardrails、Retrieval Plan，再决定走 Neo4j、Milvus 还是 ReAct。
-3. 再说存储分工：会话元信息和用户画像在 MySQL，消息窗口和任务状态在 Redis，结构化业务关系在 Neo4j，文档向量和长期记忆在 Milvus。
-4. 最后说工程点：这个项目比较值得讲的是 SSE 问答、上传异步索引、分层记忆，以及对依赖故障的降级处理。
+3. 再说存储分工：会话元信息、完整历史、用户画像和事件 Inbox 在 MySQL，消息窗口、任务状态和 Streams 在 Redis，结构化业务关系在 Neo4j，文档向量和长期记忆在 Milvus。
+4. 最后说工程点：SSE 答案先返回；上传索引和记忆写扩散走 Redis Streams，MySQL Inbox 与事件 ID 保证崩溃重放不重复产生业务副作用。
 
 ### 2.3 3 分钟版本
 
@@ -59,7 +59,7 @@
 4. 记忆系统：
    最近消息、用户画像、会话摘要和长期记忆分层注入，避免把所有历史直接拼进 Prompt，也更容易控制噪声。
 5. 工程设计：
-   上传不走同步解析，而是落盘后异步建索引；问答用 SSE 返回；记忆和图谱、文档、任务状态都做了失败降级，避免一个依赖挂掉就把整个主流程拖死。
+   上传不走同步解析，而是落盘后发布索引事件；问答用 SSE 返回；记忆写扩散也事件化。Streams 保持至少一次投递，消费者用 MySQL Inbox 和稳定事件 ID 抵抗 ACK 前重放，依赖故障则按链路降级。
 
 ## 3. 一次请求在系统里怎么走
 
@@ -67,14 +67,17 @@
 sequenceDiagram
     autonumber
     actor User as 客户端 (Vue3/curl)
-    participant API as FastAPI /api/chat/stream
+    participant API as FastAPI /api/langgraph/query
     participant Container as AppContainer
     participant Agent as LangGraph Agent主图
     participant Memory as MemoryMiddleware
     participant Exec as Execution Pipeline (KG/RAG/ReAct)
     participant Infra as 基础设施 (MySQL/Redis/Neo4j/Milvus)
+    participant Events as Redis Streams
+    participant Inbox as MySQL processed_events
+    participant Worker as 事件消费者
 
-    User->>API: POST /api/chat/stream (message, session_id, user_id)
+    User->>API: POST /api/langgraph/query (Bearer, query, conversation_id?)
     API->>Container: get_container()
     Container->>Memory: before_agent() (拉取 P0-P3 上下文)
     Memory->>Infra: 读取 Redis STM, MySQL 画像, Milvus LTM
@@ -91,8 +94,20 @@ sequenceDiagram
     Agent-->>API: SSE 事件流 (token, tool_call, heartbeat)
     API-->>User: HTTP 200 chunked SSE 响应 (X-Conversation-ID)
 
-    Agent->>Memory: after_agent() 触发异步归档
-    Memory->>Infra: 更新 Redis STM ZSET, 异步摘要, LTM 向量, MySQL 画像 Facts
+    Agent->>Events: after_response 发布 turn_completed {turn_id,event_id}
+    Events->>Worker: XREADGROUP / XAUTOCLAIM 重放
+    Worker->>Inbox: claim(type, turn_id, payload_hash)
+    alt 已完成
+        Inbox-->>Worker: SKIP_COMPLETED
+        Worker->>Events: XACK（不重复归档）
+    else 可处理
+        Inbox-->>Worker: PROCESS
+        Worker->>Infra: 写 MySQL messages（turn_event_id 唯一）
+        Worker->>Memory: after_agent(turn_id=...)
+        Memory->>Infra: 更新 Redis STM、摘要、LTM、画像
+        Worker->>Inbox: mark_completed
+        Worker->>Events: XACK
+    end
 ```
 
 你要能按这个顺序口述：
@@ -105,7 +120,8 @@ sequenceDiagram
 → Router / Guardrails / Retrieval Plan
 → KG / RAG / PARALLEL / GRAPH_THEN_RAG / AGENT_REACT
 → 生成答案并流式输出
-→ after_response 写回 STM / 摘要 / LTM / 画像
+→ after_response 发布 turn_completed(turn_id)
+→ Inbox 认领后异步写回 MySQL 历史 / STM / 摘要 / LTM / 画像
 ```
 
 这里最关键的不是背函数名，而是知道每一层各自解决什么问题：
@@ -131,8 +147,8 @@ sequenceDiagram
 
 | 存储 | 用来放什么 | 为什么不用别的 |
 |---|---|---|
-| MySQL | 会话元信息、用户画像、文档元数据 | 这些是关系型、durable、需要事务的数据 |
-| Redis | 最近消息、摘要、任务状态、缓存 | 读写频繁、适合热数据和 TTL |
+| MySQL | 会话元信息、完整历史、用户画像、文档元数据、`processed_events` Inbox | 这些是关系型、durable、需要事务/唯一约束的数据 |
+| Redis | 最近消息、摘要、任务状态、缓存、Streams/PEL | 读写频繁；Stream 能持久化待执行事件并支持消费组重放 |
 | Neo4j | 商品、订单、客户、供应商等关系型知识 | 图关系查询比关系表和向量检索更自然 |
 | Milvus | 文档 chunk、长期语义记忆 | 语义检索和相似性召回更适合向量库 |
 
@@ -201,19 +217,19 @@ sequenceDiagram
 
 ### 6.2 当前应该主动承认的边界
 
-1. 当前没有完整 JWT 鉴权。
-2. `user_id` 主要由调用方传入，安全模型偏演示 / 内部系统。
-3. `background_tasks` 是进程内 asyncio 任务，不是独立 worker 集群；重启后遗留任务会被标记为 interrupted，不会自动续跑。
+1. 当前接口已使用 JWT，但生产级的细粒度授权、密钥轮换和审计仍需加强。
+2. Redis Streams 仍是**至少一次**投递，不应把它误说成端到端 exactly-once；业务幂等来自 MySQL Inbox 与事件 ID 落点。
+3. `background_tasks` 是进程内**回退**通道；默认 Stream 消费可内嵌或以 `python -m app.worker` 独立部署，需补齐 worker 监控与死信处置流程。
 4. `/health` 只能说明 HTTP 进程活着，不等于所有依赖都健康。
-5. 生产级审计、限流、细粒度权限控制还不完整。
+5. 生产级审计、限流、细粒度权限控制与事件可观测性还不完整。
 
 ### 6.3 如果面试官问“那你会怎么继续做”
 
 可以按这个顺序回答：
 
-1. 先补鉴权和会话归属校验。
-2. 再把任务队列从进程内任务升级为独立 worker。
-3. 再补限流、审计日志、CORS 白名单和更完整的健康检查。
+1. 先补细粒度授权、密钥轮换和审计。
+2. 再把 Stream worker 作为独立部署单元，并接入 PEL/死信/Inbox 指标告警。
+3. 再补限流、CORS 白名单和更完整的健康检查。
 4. 最后再考虑更细的画像治理、删除用户数据闭环和可观测性。
 
 ## 7. 高频面试问答
@@ -230,9 +246,11 @@ sequenceDiagram
 
 答：用户体验更好，可以边生成边返回；同时也更符合大模型输出是流式 token 的特点。这个项目里 SSE 还顺手把 `X-Conversation-ID` 作为续聊契约显式暴露出来。
 
-### Q4. 为什么消息不直接存 MySQL？
+### Q4. 为什么消息同时存 MySQL 和 Redis？
 
-答：消息是高频热数据，主路径只关心最近窗口和摘要，更适合放 Redis。MySQL 主要存会话元信息和用户级 durable 数据，这样主流程更轻。
+答：两者读者不同。MySQL `messages` 是给前端回看和审计的 append-only 完整历史，
+Redis STM 是给模型的近期窗口、摘要和 TTL。写入不在 SSE 关键路径：回合结束先发布
+`turn_completed`，消费者以 `turn_id` 幂等写双轨；因此既保留历史，又不拖慢用户回答。
 
 ### Q5. 为什么删会话要清 Redis 和 Milvus，但不删画像？
 
@@ -244,7 +262,7 @@ sequenceDiagram
 
 ### Q7. 为什么上传后不能立刻保证问得到？
 
-答：因为上传成功只代表文件已经校验、落盘并提交了后台任务，不代表解析、切分、向量化和入库都完成了。真正能问到，要等索引任务完成。
+答：因为上传成功只代表文件已经校验、落盘并发布了带 `task_id` 的索引事件，不代表解析、切分、向量化和入库都完成了。真正能问到，要等任务状态完成；若消费者在 ACK 前崩溃，Stream 会重放且同一 task 不会重复索引。
 
 ### Q8. 为什么用户画像里的 facts 要版本化？
 
@@ -260,11 +278,11 @@ sequenceDiagram
 
 ### Q11. 这个项目最大的不足是什么？
 
-答：如果按生产标准看，当前最大的不足不是“模型不够强”，而是鉴权、授权、独立任务 worker、可观测性和更完整的数据治理还需要继续补。
+答：如果按生产标准看，当前最大的不足不是“模型不够强”，而是细粒度授权、独立 worker 的监控与死信处置、可观测性和更完整的数据治理还需要继续补。
 
 ### Q12. 如果面试官问“你怎么证明你真的看过源码”
 
-答：最好的方式不是背目录，而是能把一条真实链路讲通，比如 `/api/langgraph/query` 怎么进主图、`conversation_id` 怎么变成 `thread_id`、`after_response` 怎么写回记忆、上传为什么返回 `task_id` 而不是同步等结果。
+答：最好的方式不是背目录，而是能把一条真实链路讲通，比如 `/api/langgraph/query` 怎么进主图、`conversation_id` 怎么变成 `thread_id`、`after_response` 如何发布带 `turn_id` 的事件、Inbox 如何让重放不重复写记忆，以及上传为什么返回 `task_id` 而不是同步等结果。
 
 ## 8. 现场演示时怎么讲
 
@@ -274,7 +292,7 @@ sequenceDiagram
 2. 再发起 SSE 问答：说明流式输出和 `X-Conversation-ID`。
 3. 再上传一个文档：说明为什么返回的是 `task_id`。
 4. 再继续追问：说明为什么系统能利用上下文和知识源继续回答。
-5. 最后补一句系统边界：比如当前没有 JWT、任务队列仍是进程内任务。
+5. 最后补一句系统边界：Stream 是至少一次投递，必须依赖 Inbox 与落点事件 ID；生产上还要完善 worker 监控和死信处置。
 
 ## 9. 面试前最后一轮怎么复习
 

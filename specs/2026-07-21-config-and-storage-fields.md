@@ -1,8 +1,7 @@
-# 配置参数与数据字段全览（可提交副本）
+# 配置参数与数据字段摘要（可提交副本）
 
-完整版维护在本机：`docs/配置参数与数据字段全览.md`（`docs/` 默认 gitignore）。
-
-本文件为 **可入库摘要 + 指针**，避免仓库无入口。
+完整版见仓库内 [docs/modules/07-配置参数与数据字段全览.md](../docs/modules/07-配置参数与数据字段全览.md)。
+本文件保留为可提交摘要，方便从仓库根目录快速确认存储和事件语义。
 
 ## 配置分层
 
@@ -26,6 +25,18 @@
 | 画像缓存 | 1800s |
 | 任务 key | `task:doc_parse:{id}` TTL 24h |
 
+## 事件与后台执行
+
+- 默认执行通道是 Redis Streams：`agent:events` / 消费组 `core`，承载
+  `turn_completed` 和 `document_index_requested`；`EVENTS_INLINE_CONSUMER=1` 时由
+  app 进程内嵌消费，设为 `0` 时用 `python -m app.worker` 独立消费。
+- Streams 只提供**至少一次投递**：消息在 ACK 前崩溃会留在 PEL，随后由
+  `XAUTOCLAIM` 重放；超过 3 次投递的失败消息进入死信流。
+- MySQL `processed_events` 是消费 Inbox，按 `(event_type, event_id)` 认领并记录
+  租约/状态/错误。业务 handler 成功后先标记 `completed`，再 `XACK`。
+- `background_tasks` 只保留 Redis 任务状态协议和事件基础设施不可用时的进程内回退，
+  不是分布式队列。
+
 ## Collection 对照
 
 | 用途 | Collection |
@@ -35,18 +46,29 @@
 
 ## MySQL 核心表
 
-- `users` / `conversations`（消息在 Redis）
+- `users` / `conversations` / `messages`：`messages` 保存给用户查看和审计的完整历史；
+  `messages.turn_event_id` 配合 `(conversation_id, turn_event_id, sender)` 唯一键防止
+  `turn_completed` 重放时重复追加。
 - `user_profiles` / `user_facts`
 - `user_documents`（doc_id ↔ 文件名/version/hash）
+- `processed_events`：Redis Stream 消费 Inbox（事件类型、稳定事件 ID、payload hash、
+  处理租约、状态、失败/死信审计）
+
+已有 MySQL 数据库升级时须运行
+`configs/mysql-init/migration_stream_idempotency.sql`；Compose 的 `init.sql` 仅在新建
+数据卷时自动执行。
 
 ## Redis STM keys
 
 ```text
-agent:stm:{tenant}:{user}:{session}:messages|summary|meta|lock
+agent:stm:{tenant}:{user}:{session}:messages|summary|meta|lock|turns
+agent:events                         # Redis Stream；group=core，含 PEL / :dead
+task:doc_parse:{task_id}             # 仅任务状态，不是待执行队列
 ```
 
 ## 详见
 
-打开仓库内（若已生成本机 docs）：
-
-- `docs/配置参数与数据字段全览.md` — 全字段表、调参建议、源码索引
+- [docs/modules/07-配置参数与数据字段全览.md](../docs/modules/07-配置参数与数据字段全览.md)
+  — 全字段表、调参建议、源码索引
+- [docs/superpowers/specs/2026-07-28-redis-stream-idempotency-design.md](../docs/superpowers/specs/2026-07-28-redis-stream-idempotency-design.md)
+  — Inbox 幂等设计、失败重放与迁移语义

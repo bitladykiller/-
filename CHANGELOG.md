@@ -16,7 +16,9 @@
 - `document_index_requested` 复用 `task_id`：任务索引 chunk ID 稳定化，并以
   Milvus upsert 与已有任务版本检测抵抗 ACK 前重放。
 - 新增 `configs/mysql-init/migration_stream_idempotency.sql`，同时更新 fresh
-  install 的 `init.sql` 与系统模块文档。
+  install 的 `init.sql`；既有数据卷需手动迁移。
+- 同步补齐根 README、应用 README、全流程图、API、对话、记忆、索引、画像、配置、
+  文档索引与面试手册，统一说明「至少一次投递 + Inbox + 事件 ID 落点防重」。
 
 ## [v3.35.2] - 2026-07-26
 

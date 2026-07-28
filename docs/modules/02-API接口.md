@@ -12,7 +12,7 @@
 1. 一个"身份由令牌推导"的 API 层是怎么组织的（对比"自报 user_id"的旧世界）
 2. 四类接口契约：鉴权 / 会话+历史 / 文档上传管理 / SSE 流式问答
 3. 三个横切机制：统一错误映射（404/500）、并发限流（429）、请求追踪（X-Request-ID）
-4. 长耗时任务如何经 Redis Streams 异步化且崩溃可续跑
+4. 长耗时任务如何经 Redis Streams 异步化、崩溃可续跑且业务幂等
 
 **前置**：无。这是读整套文档的最佳入口——每个接口背后指向哪个域，本文都给了跳转。
 
@@ -51,10 +51,12 @@ flowchart TB
     A5 --> MR[MessageRepository → MySQL messages]
     U1 --> META[DocumentService → user_documents]
     U1 -->|publish| EV[["Redis Streams<br/>document_index_requested"]]
+    EV --> INBOX[(MySQL processed_events Inbox)]
     U2 --> TS[(Redis 任务状态)]
     D1 & D2 --> META
     L1 -->|限流+会话解析| AQS[agent_query_service → LangGraph]
     AQS -->|回合结束 publish| EV2[["turn_completed"]]
+    EV2 --> INBOX
 ```
 
 ---
@@ -103,7 +105,7 @@ app/
 | `chat/application/conversation_service.py` | conversations、langgraph（ensure_conversation） |
 | `chat/application/agent_query_service.py` | langgraph 路由 |
 | `knowledge/application/document_service.py` | upload / documents 路由 |
-| `platform/events.py` + `shared/streams.py` | upload 发布索引事件；SSE 回合结束发布记忆事件 |
+| `shared/streams.py` + `platform/events.py` + `platform/event_inbox.py` | Redis Stream 发布/消费、业务 handler 路由，以及 Inbox 认领、完成标记与 ACK 顺序 |
 | `shared/background_tasks.py` | 任务状态读写（stream 与回退路径共用协议） |
 | `shared/core/rate_limit.py` | langgraph 的每用户并发限流 |
 
@@ -159,7 +161,7 @@ async def run_api_action(action_name, operation, *, logger, **context) -> ApiRes
 | `read_upload_content` | 读全文件；超限 400；pdf/docx 魔数校验（md 无魔数） |
 | `_store_upload` | 目录 `{UPLOAD_DIR}/{uuid5(user_id)}/{时间戳}/`；算 `content_hash` |
 | `_resolve_owner` | `visibility=global\|private` → chunk 的 owner 标识（global 值取自配置） |
-| `_submit_indexing` | **优先发布 Redis Streams 事件**（崩溃可续跑），失败回退进程内任务 |
+| `_submit_indexing` | **优先发布 Redis Streams 事件**（崩溃可续跑）；`task_id` 同时是稳定事件 ID，失败才回退进程内任务 |
 
 会话/上传/文档接口普遍用 `run_api_action`；SSE **自行 try/except**（见 §8.5）。
 
@@ -283,6 +285,7 @@ sequenceDiagram
 | 读者 | **人**（前端历史、审计） | **模型**（P0 上下文） |
 | 生命周期 | 永久（随会话删除级联） | 16 条窗口 + 24h TTL |
 | 本端点 | ✅ 读这里 | ❌ 不暴露 |
+| Stream 重放防重 | `(conversation_id, turn_event_id, sender)` 唯一键 | session `turns` 标记 + 原子 `append_turn_once` |
 
 > 产品意义：v3.35 之前消息只在 STM，切回昨天的会话一片空白
 > （"隔天失忆"）。现在会话列表承诺的历史真的能兑现。
@@ -308,7 +311,7 @@ sequenceDiagram
         Repo-->>API: ResourceNotFoundError → 404
     else 校验通过
         Repo->>MySQL: DELETE messages / DELETE conversations
-        Service->>STM: clear_session（messages/summary/meta/lock）
+        Service->>STM: clear_session（messages/summary/meta/lock/turns/turn_lock）
         Service->>LTM: soft_delete_session_memories（is_deleted=true）
         Note over Service,LTM: 记忆清理失败只记日志，不回滚 MySQL——<br/>避免「库删了但接口 500」导致前端反复重试
         Service-->>Client: {"message": "会话已删除"}
@@ -345,6 +348,7 @@ sequenceDiagram
     participant API as upload.py
     participant DocSvc as DocumentService (MySQL)
     participant EV as Redis Streams<br/>document_index_requested
+    participant Inbox as MySQL processed_events
     participant W as 事件消费者<br/>(app 内嵌 或 独立 worker)
     participant Indexer as IndexingService
     participant Milvus as Milvus
@@ -364,11 +368,21 @@ sequenceDiagram
 
         Note over EV,W: —— 异步，进程崩溃后 XAUTOCLAIM 认领续跑 ——
         EV->>W: 消费事件
-        W->>W: 状态 → RUNNING
-        W->>Indexer: process_file（解析→切分→embedding）
-        Indexer->>Milvus: index / reindex（软删旧版+写新 version，带 owner_id）
-        W->>DocSvc: apply_indexing_result（回写 version/chunks/status）
-        W->>W: 状态 → COMPLETED / FAILED
+            W->>W: resolve event_id = task_id
+            W->>Inbox: claim(type, event_id, payload_hash)
+        alt 该事件已完成
+            Inbox-->>W: SKIP_COMPLETED
+            W->>EV: XACK（不再执行索引）
+        else 新事件 / 过期租约
+            Inbox-->>W: PROCESS
+            W->>W: 状态 → RUNNING
+            W->>Indexer: process_file（解析→切分→embedding，event_id=task_id）
+            Indexer->>Milvus: 稳定 chunk ID + upsert / reindex 已写版本检测
+            W->>DocSvc: apply_indexing_result（回写 version/chunks/status）
+            W->>W: 状态 → COMPLETED / FAILED
+            W->>Inbox: mark_completed
+            W->>EV: XACK
+        end
     end
 ```
 
@@ -377,6 +391,11 @@ sequenceDiagram
 > 启动时的孤儿回收会把"别的进程留下的 pending/running"标成
 > `interrupted`——但 stream 任务崩溃后会被自动认领**重跑**，标它是误报。
 > `origin` 字段就是让孤儿回收认得出"这条不用你管"。
+
+> **幂等边界**：Redis Streams 仍是“至少一次投递”，不能把 `XACK` 当成业务
+> 去重。消费者先在 MySQL Inbox 以 `(event_type, task_id)` 认领；成功后先写
+> `completed` 再 `XACK`。若进程恰好在这两个动作之间退出，索引层仍以 `task_id`
+> 派生 chunk ID 并使用 Milvus upsert / 版本检测收敛重放。
 
 ### 6.3 任务状态查询
 
@@ -477,7 +496,7 @@ sequenceDiagram
             alt 流中途异常
                 EP-->>U: event: error + data: "生成过程中出现异常，请重试。"
             end
-            G->>EV: after_response 发布 turn_completed（异步写扩散）
+            G->>EV: after_response 发布 turn_completed<br/>{turn_id,event_id,...}
             EP->>RL: release(user_id)（finally 保证）
             EP->>EP: 记录 llm_usage（in/out/total tokens）
         end
@@ -548,7 +567,7 @@ thread_id ≡ str(conversation_id) ≡ STM/LTM 的 session_id
 | GET | `/api/documents` | Bearer | 同步 | MySQL user_documents |
 | GET | `/api/documents/{doc_id}` | Bearer | 同步 | MySQL user_documents |
 | DELETE | `/api/documents/{doc_id}` | Bearer | 同步 | MySQL 删行 + Milvus 软删 |
-| POST | `/api/langgraph/query` | Bearer | SSE 长连接 | 限流 + LangGraph 全栈 + 事件发布 |
+| POST | `/api/langgraph/query` | Bearer | SSE 长连接 | 限流 + LangGraph 全栈 + `turn_completed` 事件发布 |
 
 ---
 
@@ -557,7 +576,8 @@ thread_id ≡ str(conversation_id) ≡ STM/LTM 的 session_id
 1. **信任边界清晰**：身份只来自 JWT；`get_current_user` 是唯一入口，业务层拿到的 user_id 天然可信。
 2. **分层克制**：API 只做协议转换与错误映射；SQL、检索、图编排都不在这层。
 3. **错误语义分级**：401（身份）/ 404（归属，统一文案防枚举）/ 429（并发护栏）/ 500（真异常，带 request_id 可追）。
-4. **长耗时事件化**：上传立即返回 task_id，索引经 Redis Streams 执行——重启不丢任务，这比"进程内异步"高一个可靠性等级。
+4. **长耗时事件化**：上传立即返回 task_id，索引经 Redis Streams 执行；Inbox
+   与 task_id/Milvus 落点共同抵抗 ACK 前重放——既能续跑，也不会重复索引。
 5. **流式契约完整**：SSE 除了 data 帧还有 error 帧；响应头前置回传会话键与追踪键。
 
 ### 面试式追问
@@ -766,7 +786,7 @@ curl -N -X POST http://localhost:8000/api/langgraph/query \
 | `_store_upload` | `async (file, user_id, *, doc_id=None, mode='create') -> StoredUploadFileInfo` | 目录 `{UPLOAD_DIR}/{uuid5(user_id)}/{ts}/`；sha256 content_hash；⚠️ UPLOAD_DIR 必须绝对路径且对齐卷挂载点 |
 | `_register_document_metadata` | `async (file_info) -> StoredUploadFileInfo` | create→prepare_create / replace→prepare_replace（归属+hash 幂等）；ValueError→400；unchanged 时带回 version/chunk_count |
 | `_resolve_owner` | `(visibility, user_id) -> str` | global→配置 `rag_visibility.global_owner`（与检索过滤同源）；private→str(user_id)；非法 400 |
-| 📌 `_submit_indexing` | `async (file_info: dict) -> str` | **get_container_if_initialized 机会型访问**：容器在→写 PENDING(origin="stream")+publish 事件；否则/失败→回退 task_manager.submit。返回 12 位 task_id |
+| 📌 `_submit_indexing` | `async (file_info: dict) -> str` | **get_container_if_initialized 机会型访问**：容器在→写 PENDING(origin="stream")+发布携带 `task_id` 的事件；消费者将其解析为 `event_id` 后由 Inbox 认领。否则/失败→回退 task_manager.submit。返回 12 位 task_id |
 | 📌 `_run_upload` | `async (file, user_id, doc_id, mode, visibility='global') -> UploadAcceptedResponse` | 主编排：校验→owner→落盘→注册元数据→unchanged 短路（task_id=""）→提交→bind_task_id |
 | `upload_file` | handler | CurrentUser 提供 user_id；run_api_action 包装 |
 | `get_upload_status / _run_get_upload_status` | `async (task_id, current_user)` | 读状态；None→404「任务不存在」。需登录；task_id 随机不可枚举故暂不做归属绑定 |
@@ -797,5 +817,6 @@ curl -N -X POST http://localhost:8000/api/langgraph/query \
 |---|---|
 | 全部 401 | `deps.get_current_user`（SECRET_KEY 是否与签发端一致） |
 | 上传后永远 pending | `_submit_indexing`（事件是否投递成功）→ events.handle_document_index_requested |
+| 上传/重放后 chunk 重复 | `processed_events` 是否 completed、`task_id` 是否被解析并透传为 `event_id`、Milvus chunk_id 是否为 `evt_{task_id}_*` |
 | SSE 只断流无错误帧 | `langgraph_query` 内层 except 是否被改掉 |
 | 删除报 500 而非 404 | Service/Repo 是否抛了裸异常而非 ResourceNotFoundError |

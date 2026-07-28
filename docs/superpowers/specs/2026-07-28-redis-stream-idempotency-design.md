@@ -56,4 +56,15 @@
 
 ## 文档同步
 
-README、系统总览、对话主图、知识检索模块、配置字段全览与 CHANGELOG 需要明确：Redis Streams 仍是至少一次投递；业务幂等由 MySQL Inbox 与落点事件 ID 共同保证。
+以下文档必须使用同一口径：Redis Streams 仍是**至少一次投递**；业务幂等由
+MySQL Inbox 与落点事件 ID 共同保证，成功顺序是 `claim → handler → completed → XACK`。
+
+- 根 `README`、`app/README`、`app/shared/README`：架构边界、迁移与回退通道。
+- `00-全流程图集`：事件状态机、上传链路、写扩散与数据落点图。
+- `01-系统总览`：平台组件、数据双轨、Inbox 函数手册与迁移。
+- `02-API接口`：上传/SSE 时序、任务状态、排障入口。
+- `03-对话与Agent主图`、`04-记忆系统`：`turn_id` 生成、历史/STM/LTM 的重放收敛。
+- `05-知识检索与文档解析`、doc_parser README：`task_id`、稳定 chunk ID 与 Milvus upsert/reindex。
+- `06-用户与画像`：画像写入仅在 Inbox 认领后的消费者链执行。
+- `07-配置参数与数据字段全览`、`app/scripts/README`：表、Redis key、Milvus 字段和既有库迁移。
+- 文档索引、面试手册与 `CHANGELOG`：对外说明及版本记录。

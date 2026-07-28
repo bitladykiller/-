@@ -33,15 +33,16 @@ flowchart TB
             Router["Router\n(意图识别 0.1)"] --> Guard["Guardrails\n(安全拦截)"]
             Guard --> Plan["RetrievalPlan\n(路径决策)"]
             Plan --> Exec["Execution Pipeline\n(KG / RAG / ReAct)"]
-            Exec --> After["after_response\n(记忆同步/画像刷新)"]
+            Exec --> After["after_response\n(发布 turn_completed 事件)"]
         end
 
-        TQ["进程内后台任务 (background_tasks)\nRedis 仅存状态，非分布式队列"]
+        EQ["持久化事件管线\nRedis Streams + MySQL Inbox\n至少一次投递 + 业务幂等"]
+        TQ["进程内后台任务 (background_tasks)\n事件基础设施不可用时的回退；Redis 仅存状态"]
     end
 
     subgraph Infrastructure["基础设施 (Infra)"]
-        MY[(MySQL 8.0\n元数据/画像)]
-        RD[(Redis 7.0\nSTM/任务/缓存)]
+        MY[(MySQL 8.0\n元数据/历史/画像/Inbox)]
+        RD[(Redis 7.0\nSTM/任务状态/缓存/Streams)]
         NJ[(Neo4j 5.x\n知识图谱)]
         MV[(Milvus 2.6\nLTM/向量块)]
         LLM[DeepSeek / Ollama LLM]
@@ -50,11 +51,14 @@ flowchart TB
     FE --> API
     API --> CAPI & UAPI & LAPI
     CAPI --> CS --> MY
-    UAPI --> TQ --> KS
+    UAPI --> EQ
     LAPI --> CS --> AgentGraph
     AgentGraph --> LLM
     Exec --> NJ & MV
-    After --> KS & US
+    After --> EQ
+    EQ --> CS
+    EQ --> KS
+    KS --> US
     KS --> RD & MV
     US --> MY & RD
     TQ --> RD
@@ -102,7 +106,8 @@ flowchart TB
 - 会话创建 / 列表 / 删除 / 改名 / **历史消息**（MySQL `messages` append-only，切回旧会话可见）；全部按令牌身份做归属校验（不符 404）
 - **删除会话会联动清理记忆**：
   - MySQL：删除 `conversations` 元信息，并兼容清理历史 `messages` 表数据
-  - Redis STM：删除该 `session_id` 下 messages/summary/meta/lock
+  - Redis STM：删除该 `session_id` 下 messages/summary/meta/lock，及幂等用的
+    `turns`/`turn_lock`
   - Milvus LTM：软删除带 `session_id` 的长期记忆（`is_deleted=true`）
 
 ### 7. 事件管线与后台执行（v3.35.0）
@@ -112,9 +117,19 @@ flowchart TB
   `processed_events` Inbox 以 `(event_type,event_id)` 认领/完成事件；已完成
   事件重放只 ACK，不重复写历史、STM 或文档索引。payload hash 不一致会拒绝执行并
   最终进入死信流。
-- 既有 MySQL 环境部署前执行
-  `configs/mysql-init/migration_stream_idempotency.sql`；新环境已由
-  `init.sql` 自动建表。
+- 成功路径严格按 **Inbox claim → 业务 handler → Inbox completed → XACK**
+  执行；若完成标记或 ACK 前进程崩溃，后续重放由业务落点的事件 ID 再次收敛。
+  `turn_completed` 使用稳定的 `turn_id`：MySQL 历史以
+  `(conversation_id, turn_event_id, sender)` 唯一键、Redis STM 以会话级
+  `turns` 集合防重；`document_index_requested` 复用 `task_id`，以稳定
+  chunk ID 和 Milvus upsert/reindex 检测防止重复索引。
+- **既有 MySQL 环境**必须在发布前手工执行：
+
+  ```bash
+  mysql -u <user> -p <database> < configs/mysql-init/migration_stream_idempotency.sql
+  ```
+
+  MySQL 容器的 `init.sql` 只会在新建数据卷时自动执行；新环境已自动建表。
 - 默认 app 进程内嵌消费；可 `EVENTS_INLINE_CONSUMER=0` + `python -m app.worker` 拆分部署
 - SSE 按用户并发限流（429）；LLM 按角色超时；`X-Request-ID` 贯穿全链路日志
 - RAG 离线评测：`make eval`（hit@k / MRR，golden set 24 条）
@@ -293,8 +308,12 @@ deepseek_agent/
 │   ├── shared/                  # 唯一全局共享内核
 │   │   ├── core/                #   配置 / 日志 / DB / async_bridge / degradation / embeddings
 │   │   ├── retrieval/           #   Milvus 混合检索公共核
-│   │   └── background_tasks.py  #   进程内后台任务 + Redis 状态上报
-│   ├── platform/                # 应用容器
+│   │   ├── streams.py           #   Redis Streams 消费组 / 重放 / 死信
+│   │   └── background_tasks.py  #   任务状态协议 + 进程内回退
+│   ├── platform/                # 应用容器 / 事件路由 / MySQL Inbox
+│   │   ├── container.py          #   生命周期与消费者装配
+│   │   ├── event_inbox.py        #   Inbox 租约 / 完成状态
+│   │   └── events.py             #   事件 handler 路由
 │   └── scripts/                 # Compose 内部脚本
 ├── configs/                     # Docker 初始化配置
 ├── docs/                        # 模块详细文档 (00–07 及面试手册)
@@ -318,6 +337,7 @@ deepseek_agent/
 - [docs/modules/07-配置参数与数据字段全览.md](docs/modules/07-配置参数与数据字段全览.md) — **环境变量 / AppConfig / STM·LTM / MySQL·Redis·Milvus 字段（调参必看）**
 - [specs/2026-07-21-config-and-storage-fields.md](specs/2026-07-21-config-and-storage-fields.md) — 配置与存储字段摘要（可提交）
 - [docs/modules/00-全流程图集.md](docs/modules/00-全流程图集.md) — **Mermaid 全流程图集（强烈推荐）**
+- [docs/superpowers/specs/2026-07-28-redis-stream-idempotency-design.md](docs/superpowers/specs/2026-07-28-redis-stream-idempotency-design.md) — Redis Stream Inbox 幂等设计与故障语义
 - [specs/2026-07-20-domain-skeleton-align-design.md](specs/2026-07-20-domain-skeleton-align-design.md) — 域骨架对齐设计
 - [CHANGELOG.md](CHANGELOG.md) — 版本更新日志
 - [app/README.md](app/README.md) — 当前主代码树说明
