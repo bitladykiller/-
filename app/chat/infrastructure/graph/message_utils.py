@@ -30,9 +30,7 @@ def _message_role(message: Any) -> str:
     """统一读取消息角色，兼容 dict 与 LangChain Message。"""
     if isinstance(message, dict):
         return str(message.get("role", "") or "")
-    return str(
-        getattr(message, "type", None) or getattr(message, "role", None) or ""
-    )
+    return str(getattr(message, "type", None) or getattr(message, "role", None) or "")
 
 
 def build_safe_messages(
@@ -47,7 +45,9 @@ def build_safe_messages(
             content = str(message.get("content", "") or "")
         else:
             content = str(getattr(message, "content", "") or "")
-        if role == "user":
+        # LangChain 的 HumanMessage 使用 "human"，语义上同样是不可信用户输入。
+        # 统一输出为 OpenAI 兼容的 user 角色，确保两种消息表示都经过 XML 隔离。
+        if role in {"user", "human"}:
             wrapped, _ = wrap_user_message(content)
             safe.append({"role": "user", "content": wrapped})
             continue

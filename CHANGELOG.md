@@ -7,6 +7,20 @@
 
 ## [Unreleased]
 
+### 统一路由决策
+
+- LangGraph 主图将原先连续的 Router 与 RetrievalPlan 合并为
+  `route_and_plan_query`：一次低温结构化调用同时输出顶层 `type` 与检索能力
+  标签，知识查询少一次 LLM 调用和一次状态跳转。
+- 新增统一状态 `routing_decision`；`resolved_plan` 仍由代码中的
+  `resolve_execution_plan` 确定，Guardrails 保持独立的安全/经营范围硬门，
+  放行后直接进入已解析的 `execute_*` 节点。
+- Prompt YAML 覆盖键收敛为 `routing_decision`；旧的 `router_system` 与
+  `retrieval_plan_router` 已移除，升级时须提供完整的新统一 Prompt。
+- 修正 LangChain `HumanMessage` 的 `human` 角色未进入 XML 隔离的问题；字典
+  `user` 消息与 `HumanMessage` 现在都会规范为 `user` 并经
+  `<user_message>` 包裹后送入决策/生成模型。
+
 ### Redis Stream 幂等消费
 
 - 新增 MySQL `processed_events` Inbox：按 `(event_type,event_id)` 管理处理租约、

@@ -18,6 +18,7 @@ from app.chat.infrastructure.graph.state import (
     ReactJudgeDecision,
     RetrievalComplexity,
     RetrievalMode,
+    RoutingKind,
 )
 from app.shared.core.config import settings
 from app.shared.core.config_models import ServiceType
@@ -29,7 +30,6 @@ logger = get_logger(__name__)
 ModelRole = Literal[
     "agent",
     "router",
-    "retrieval_plan",
     "guardrails",
     "cypher",
     "react",
@@ -41,7 +41,6 @@ ModelResolver: TypeAlias = Callable[[ModelRole, float], Any]
 MODEL_TEMPERATURES: dict[ModelRole, float] = {
     "agent": 0.7,
     "router": 0.1,
-    "retrieval_plan": 0.1,
     "guardrails": 0.1,
     "cypher": 0.2,
     "react": 0.4,
@@ -51,13 +50,12 @@ MODEL_TEMPERATURES: dict[ModelRole, float] = {
 
 #: 按角色的请求超时（秒）。
 #: WHY 分级：一次问答最多串 6+ 次 LLM 调用，此前没有任何超时——上游 API
-#: 挂起时请求会无限等待。决策类角色（路由/守卫/计划/裁判）输出只有几十
+#: 挂起时请求会无限等待。决策类角色（统一路由决策/守卫/裁判）输出只有几十
 #: token，10s 等不到就该失败让降级逻辑接管；生成类角色（回答/摘要/抽取）
 #: 要流式输出长文，给到 60s。
 MODEL_TIMEOUTS_SECONDS: dict[ModelRole, float] = {
     "agent": 60.0,
     "router": 10.0,
-    "retrieval_plan": 10.0,
     "guardrails": 10.0,
     "cypher": 20.0,
     "react": 60.0,
@@ -173,7 +171,6 @@ def create_llm_for_role(role: ModelRole) -> Any:
 # 模块级模型入口（懒加载代理）
 agent_model = LazyModelProxy("agent", MODEL_TEMPERATURES["agent"], _get_model)
 router_model = LazyModelProxy("router", MODEL_TEMPERATURES["router"], _get_model)
-retrieval_plan_model = LazyModelProxy("retrieval_plan", MODEL_TEMPERATURES["retrieval_plan"], _get_model)
 guardrails_model = LazyModelProxy("guardrails", MODEL_TEMPERATURES["guardrails"], _get_model)
 cypher_model = LazyModelProxy("cypher", MODEL_TEMPERATURES["cypher"], _get_model)
 react_model = LazyModelProxy("react", MODEL_TEMPERATURES["react"], _get_model)
@@ -185,15 +182,18 @@ react_judge_model = LazyModelProxy("react_judge", MODEL_TEMPERATURES["react_judg
 # ================================================================== #
 
 
-class RetrievalPlanOutput(BaseModel):
-    """检索计划路由器的输出：能力标签 + 编排，而非互斥五选一。
+class RoutingDecisionOutput(BaseModel):
+    """统一路由决策的输出：类型 + 能力标签 + 编排，而非互斥五选一。
 
     执行路径由代码根据字段组合解析（见 resolve_execution_plan）。
     """
 
     logic: str = Field(description="选择该能力组合的理由")
-    need_graph: bool = Field(description="是否需要查询 Neo4j 结构化知识图谱")
-    need_rag: bool = Field(description="是否需要查询文档 RAG 知识库")
+    type: RoutingKind = Field(
+        description="general=直接回复；rag_doc-query=需要进入 Guardrails 后执行知识检索"
+    )
+    need_graph: bool = Field(default=False, description="是否需要查询 Neo4j 结构化知识图谱")
+    need_rag: bool = Field(default=False, description="是否需要查询文档 RAG 知识库")
     mode: RetrievalMode = Field(
         default="single",
         description=(
@@ -227,13 +227,12 @@ __all__ = [
     "MODEL_TEMPERATURES",
     "ModelRole",
     "ReactAnswerCheckOutput",
-    "RetrievalPlanOutput",
+    "RoutingDecisionOutput",
     "agent_model",
     "cypher_model",
     "guardrails_model",
     "react_judge_model",
     "react_model",
-    "retrieval_plan_model",
     "router_model",
     "create_llm_for_role",
 ]

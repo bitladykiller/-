@@ -12,7 +12,7 @@
 如果你面试投的是 AI 应用 / Agent / 后端方向，这一章通常是最值得深挖的部分，因为它回答的是：
 
 1. 为什么系统不是一次 LLM 调用就结束。
-2. 为什么要有 Router、Guardrails、Retrieval Plan 和 ReAct。
+2. 为什么要有统一 RoutingDecision、Guardrails、执行器和 ReAct。
 3. 为什么主图要把“决策”和“执行”拆开。
 
 ### 读这一章前最好先知道什么
@@ -25,7 +25,7 @@
 
 1. 能画出主图状态机。
 2. 能讲清 `general`、`GRAPH_ONLY`、`RAG_ONLY`、`PARALLEL`、`GRAPH_THEN_RAG`、`AGENT_REACT` 的差异。
-3. 能解释 Router、Guardrails、Plan 的先后顺序。
+3. 能解释一次 RoutingDecision、Guardrails 与确定性执行路径的先后顺序。
 4. 能说明为什么 ReAct 要做双层限制和安全过滤。
 
 ### 推荐阅读方法
@@ -45,15 +45,13 @@
 
 ```mermaid
 flowchart TD
-    START([START]) --> A[analyze_and_route_query]
-    A --> RQ{router.type}
+    START([START]) --> A[route_and_plan_query<br/>一次结构化决策]
+    A --> RQ{routing_decision.type}
     RQ -->|general| GEN[respond_to_general_query]
     GEN --> AFTER[after_response]
     RQ -->|rag_doc-query| GRD[guardrails_node]
     GRD -->|end| AFTER
-    GRD -->|continue| PLAN[retrieval_plan_route<br/>能力标签 need_* / mode / complexity]
-    PLAN --> RES[resolve_execution_plan<br/>→ resolved_plan]
-    RES --> PE{retrieval_plan_edge}
+    GRD -->|continue| PE{routing_decision_execution_edge<br/>resolved_plan}
     PE -->|GRAPH_ONLY| E1[execute_graph_only]
     PE -->|RAG_ONLY| E2[execute_rag_only]
     PE -->|PARALLEL| E3[execute_parallel]
@@ -71,7 +69,7 @@ sequenceDiagram
     participant MM as MemoryMiddleware
     API->>AQS: stream_agent_query
     AQS->>G: InputState + configurable
-    G->>N: Router→Guard→能力Plan→resolve→Execute
+    G->>N: RoutingDecision（一次）→Guardrails→按 resolved_plan 执行
     N->>MM: before 读 / after 写
     G-->>API: message chunks
     API-->>API: 过滤后 SSE
@@ -174,9 +172,9 @@ app/chat/
 
 | 文件 | 用处 |
 |---|---|
-| `graph/state.py` | `InputState` / `AgentState` / Router / RetrievalPlan 类型 |
+| `graph/state.py` | `InputState` / `AgentState` / RoutingDecision 类型 |
 | `graph/builder.py` | `StateGraph` 组边编译，导出模块级 `graph` |
-| `graph/decision_nodes.py` | 路由、闲聊回复、守卫、检索计划节点与边 |
+| `graph/decision_nodes.py` | 统一路由决策、闲聊回复、守卫与执行边 |
 | `graph/retrieval_nodes.py` | `execute_graph_only/rag_only/parallel/then` |
 | `graph/execution_pipeline.py` | 检索执行管道（enrich→search→summarize） |
 | `graph/execution_utils.py` | query 改写、`search_retriever`、摘要响应 |
@@ -365,30 +363,29 @@ stream_agent_query(query, user_id, thread_id)
 | 类型 | 字段 | 含义 |
 |---|---|---|
 | `InputState` | `messages` | 入口消息（add_messages 归约） |
-| `AgentState` | + `router` | `{logic, type}` type∈{general, rag_doc-query} |
+| `AgentState` | + `routing_decision` | `{logic, type, need_graph, need_rag, mode, complexity, resolved_plan}` |
 | | + `next_action` | guardrails：`continue` / `end` |
-| | + `retrieval_plan` | `{logic, need_graph, need_rag, mode, complexity, resolved_plan}` |
 | | + `memory_state` | 请求内缓存的 AgentMemoryState |
+
+`type=general` 时，能力标签会被代码固定为 `false / false / single / simple`，
+且 `resolved_plan=None`；只有 `rag_doc-query` 能通过 Guardrails 后进入执行器。
 
 ### 4.2 节点与边（完整）
 
 ```text
 START
-  → analyze_and_route_query
-       │ route_query
+  → route_and_plan_query                 # 一次 router_model 结构化调用
+       │ routing_decision_edge
        ├─ general ──────────→ respond_to_general_query ──→ after_response → END
        └─ rag_doc-query ────→ guardrails_node
                                   │ guardrails_edge
                                   ├─ end ──→ after_response → END
-                                  └─ continue → retrieval_plan_route
-                                       │ 写 need_graph/need_rag/mode/complexity
-                                       │ + resolve_execution_plan → resolved_plan
-                                       └─ retrieval_plan_edge(resolved_plan)
-                                            ├─ execute_graph_only ─┐
-                                            ├─ execute_rag_only ───┤
-                                            ├─ execute_parallel ───┼→ after_response → END
-                                            ├─ execute_then ───────┤
-                                            └─ execute_react ──────┘
+                                  └─ continue → routing_decision_execution_edge(resolved_plan)
+                                       ├─ execute_graph_only ─┐
+                                       ├─ execute_rag_only ───┤
+                                       ├─ execute_parallel ───┼→ after_response → END
+                                       ├─ execute_then ───────┤
+                                       └─ execute_react ──────┘
 ```
 
 编译产物：模块级 `graph = StateGraph(...).compile()`。
@@ -398,25 +395,23 @@ START
 文件：`graph/builder.py`
 
 ```text
-START → analyze_and_route_query
-analyze_and_route_query --route_query-->
+START → route_and_plan_query
+route_and_plan_query --routing_decision_edge-->
     "respond_to_general_query" → respond_to_general_query
-    "retrieval_plan_router"    → guardrails_node     # 注意映射名≠节点名
+    "guardrails_node"          → guardrails_node
 
 respond_to_general_query → after_response → END
 
 guardrails_node --guardrails_edge-->
-    "retrieval_plan_route" → retrieval_plan_route
-    "after_response"       → after_response
-
-retrieval_plan_route --retrieval_plan_edge-->
-    execute_graph_only | execute_rag_only | execute_parallel
-    | execute_then | execute_react
+    "after_response" | "execute_graph_only" | "execute_rag_only"
+    | "execute_parallel" | "execute_then" | "execute_react"
 
 上述 5 个 execute_* 均 → after_response → END
 ```
 
-**易错点：** `route_query` 返回的路径键是 `retrieval_plan_router`，实际进的是 **`guardrails_node`**（先守卫再计划）。
+**要点：** Guardrails 的 `continue` 不再经过另一个规划节点；它直接调用
+`routing_decision_execution_edge`，从已写入的 `routing_decision.resolved_plan`
+选择执行节点。
 
 ---
 
@@ -432,26 +427,32 @@ async def some_node(state: AgentState, *, config: RunnableConfig) -> dict[str, o
 
 边函数：`def some_edge(state: AgentState) -> Literal[...]`，只读 `state` 路由。
 
-### 5.1 `analyze_and_route_query`
+### 5.1 `route_and_plan_query`
 
 ```python
-async def analyze_and_route_query(state, *, config) -> dict[str, object]
-# 返回 {"router": {type, logic}}  type ∈ {general, rag_doc-query}
+async def route_and_plan_query(state, *, config) -> dict[str, object]
+# 返回 {"routing_decision": RoutingDecision}
 ```
 
 ```text
-build_safe_messages(ROUTER_SYSTEM_PROMPT, state.messages)
-  → router_model.with_structured_output(Router).ainvoke
-  → return {"router": {type, logic}}
+build_safe_messages(ROUTING_DECISION_PROMPT, state.messages)
+  → router_model.with_structured_output(RoutingDecisionOutput).ainvoke
+  → _build_routing_decision：归一化能力标签
+  → resolve_execution_plan：确定 resolved_plan
+  → return {"routing_decision": {...}}
 ```
 
-- 模型：`router_model`（低温，见 modeling）  
-- 输出类型：`Router`  
+- 模型：`router_model`（0.1；同时承担原顶层分流与能力规划）
+- 输出类型：`RoutingDecisionOutput`；状态类型：`RoutingDecision`
+- 字段：`logic`、`type`、`need_graph`、`need_rag`、`mode`、`complexity`、
+  `resolved_plan`。最后一项只由代码写入，LLM 不直接五选一。
+- `general` 会清空所有检索能力标签；未知或缺失的检索组合由代码回退到
+  `AGENT_REACT`，不产生未映射的图边。
 
-### 5.2 `route_query`
+### 5.2 `routing_decision_edge`
 
-- `type == "general"` → `respond_to_general_query`  
-- 否则 → `guardrails_node`（图中映射名 `retrieval_plan_router` 实际进守卫）  
+- `routing_decision.type == "general"` → `respond_to_general_query`
+- `routing_decision.type == "rag_doc-query"` → `guardrails_node`
 
 ### 5.3 `respond_to_general_query`
 
@@ -487,17 +488,18 @@ else:
 
 | 维度 | 说明 |
 |---|---|
-| **要它的理由** | 挡住明显超经营范围与注入试探，避免白跑 KG/RAG/REACT；拒答文案统一；structured 输出可测 |
-| **可砍的理由** | 与 Router 有重叠（general 已分流闲聊）；多一次 LLM 调用（延迟+费用）；误杀边界题 |
-| **更好形态（演进）** | ① 轻量规则/关键词预过滤 → ② 仅可疑流量走 LLM 守卫；或并入 Router 的第三类 `out_of_scope` |
+| **要它的理由** | 独立挡住超经营范围与恶意知识问题，避免白跑 KG/RAG/REACT；拒答文案统一；structured 输出可测 |
+| **代价** | `rag_doc-query` 仍有一次守卫调用，可能误杀边界题；但原先额外的能力规划调用已被统一决策移除 |
+| **更好形态（演进）** | ① 轻量规则/关键词预过滤 → ② 仅可疑流量走 LLM 守卫；或在保留硬门语义的前提下加入 `out_of_scope` 分类 |
 | **现在别做的** | 直接删节点却不补替代防护（安全与成本都会变差） |
 
-**结论：** 主图「Router → Guardrails → Plan」对客服场景仍合理；优化方向是**降调用次数**，不是立刻删除。
+**结论：** 当前主图是「RoutingDecision → Guardrails → Execute」：知识问题的两个
+决策职责已在一次结构化调用内完成，Guardrails 仍独立承担安全/业务范围硬门。
 
 
-### 5.5 `retrieval_plan_route` / `retrieval_plan_edge`（能力标签方案 A）
+### 5.5 `routing_decision_execution_edge`（能力标签方案）
 
-**LLM 输出（能力标签，非五选一）：**
+统一决策的 LLM 输出能力标签（非五选一）：
 
 | 字段 | 含义 |
 |---|---|
@@ -518,7 +520,9 @@ both + parallel/single            → PARALLEL
 neither                           → AGENT_REACT（兜底）
 ```
 
-**边：** `retrieval_plan_edge` 读 `resolved_plan` → 对应 `execute_*`；缺失 → `execute_react`。
+**边：** Guardrails 放行后，`routing_decision_execution_edge` 读
+`routing_decision.resolved_plan` → 对应 `execute_*`；若路径缺失，则按能力标签
+重算，仍不合法时回退 `execute_react`。
 
 ---
 
@@ -602,7 +606,7 @@ get_retriever(name)
 
 ### 7.1 何时进入
 
-RetrievalPlan = `AGENT_REACT`，或未知 plan 默认。
+`routing_decision.resolved_plan = AGENT_REACT`，或能力标签无法解析时的默认路径。
 
 ### 7.2 执行流程
 
@@ -706,7 +710,7 @@ execute_react(state, config):
 （`app/chat/infrastructure/graph/timing.py`）：
 
 ```text
-2026-.. | INFO | a1b2c3d4e5f6 | app.chat.graph.timing | node=analyze_and_route_query elapsed=812.4ms
+2026-.. | INFO | a1b2c3d4e5f6 | app.chat.graph.timing | node=route_and_plan_query elapsed=812.4ms
 2026-.. | INFO | a1b2c3d4e5f6 | app.chat.graph.timing | node=execute_rag_only elapsed=2310.7ms
 ```
 
@@ -761,7 +765,7 @@ publish turn_completed {turn_id, event_id, tenant, user, session, user_msg, assi
 ## 9. Prompt 安全
 
 文件：`app/shared/security/__init__.py`  
-使用点：guardrails / retrieval_plan 的用户问题包裹；message_utils 也可包裹。
+使用点：`route_and_plan_query` 的消息隔离、Guardrails 的问题包裹；`message_utils` 也可包裹。
 
 ```mermaid
 flowchart TD
@@ -776,6 +780,10 @@ flowchart TD
 html.escape(raw) → <user_message>\n...\n</user_message>
 返回 (wrapped_for_prompt, original_for_display)
 ```
+
+`build_safe_messages` 同时识别字典消息的 `user` 与 LangChain
+`HumanMessage` 的 `human`，两者均规范成 `user` 后再包裹；不能因为消息表示
+不同而绕过这层边界。
 
 配合 structured output，降低“指令逃逸”概率（仍非完整安全方案）。
 
@@ -796,11 +804,10 @@ html.escape(raw) → <user_message>\n...\n</user_message>
 POST /api/langgraph/query
   agent_query_service.stream_agent_query
     graph.astream
-      analyze_and_route_query          # LLM 路由
+      route_and_plan_query             # 一次 LLM 路由 + 能力规划 + resolve
       [general 分支] respond_to_general_query (+memory)
       [业务 分支] guardrails_node      # 范围守卫
-      retrieval_plan_route             # 能力标签 + resolve
-      execute_* / execute_react        # 检索+生成
+      routing_decision_execution_edge → execute_* / execute_react
       after_response                   # 发布 turn_completed；消费者写 STM/LTM/画像
     SSE 过滤输出
 ```
@@ -864,8 +871,7 @@ summarize_and_build_response(...)
 
 | 角色 | 温度 | 用途 |
 |---|---|---|
-| router | 0.1 | 顶层分流 |
-| retrieval_plan | 0.1 | 能力标签计划 |
+| router | 0.1 | 一次完成顶层分流与能力标签规划 |
 | guardrails | 0.1 | 范围/安全 |
 | react_judge | 0.1 | 充分性 |
 | cypher | 0.2 | Text2Cypher/摘要 |
@@ -888,14 +894,17 @@ DEFAULT_PROMPTS（代码硬编码）
   文件缺失/坏格式 → 打日志并用默认
 ```
 
-可覆盖键：`router_system` / `retrieval_plan_router` / `general_query` / `guardrails` / `react_system` / `react_answer_check`。
+可覆盖键：`routing_decision` / `general_query` / `guardrails` / `react_system` /
+`react_answer_check` / `summarize`。
+
+> **迁移提醒：** `router_system` 与 `retrieval_plan_router` 已移除，不能把两个
+> 旧值拼接后继续使用。需要自定义时，请用 `routing_decision` 提供完整的统一 Prompt。
 
 ### 16.4 各 Prompt 职责摘要
 
 | Prompt | 要点 |
 |---|---|
-| Router | general vs rag_doc-query；攻击归 general |
-| Plan | 五策略规则与示例（指代→GRAPH_THEN_RAG 等） |
+| RoutingDecision | 一次输出 general/rag_doc-query 与能力标签；攻击归 general |
 | General | 亲～/emoji/简短/不泄露系统提示 |
 | Guardrails | continue/end；范围外与劫持 end |
 | ReAct | 工具 neo4j_query/rag_search 使用规则 |
@@ -903,7 +912,7 @@ DEFAULT_PROMPTS（代码硬编码）
 
 ### 16.5 结构化输出类型
 
-`RetrievalPlanOutput` / `GuardrailsDecision` / `ReactAnswerCheckOutput`。
+`RoutingDecisionOutput` / `GuardrailsDecision` / `ReactAnswerCheckOutput`。
 
 
 
@@ -911,11 +920,13 @@ DEFAULT_PROMPTS（代码硬编码）
 
 ## 面试深挖：Agent 与主图
 
-### Q1. 为什么先 Router 再 Guardrails，而不是反过来？
+### Q1. 为什么先 RoutingDecision 再 Guardrails，而不是反过来？
 
 - **general**（闲聊/攻击）不必过业务范围守卫，直接客服语气回复  
 - **rag_doc-query** 才需要判断是否在经营范围内  
-- 攻击类在 Router Prompt 里已要求归 `general`，降低 Guardrails 负担  
+- 攻击类在 RoutingDecision Prompt 里已要求归 `general`，降低 Guardrails 负担
+- 同一个低温结构化调用已经同时生成能力标签，Guardrails 放行后可以直接进入
+  已解析的执行器，避免再调一个规划模型
 
 **追问：攻击归 general 会不会被当正常闲聊泄露信息？**  
 General Prompt 明确：不输出系统提示、不执行用户指令、只答标签内内容。
@@ -973,9 +984,9 @@ judge 返回 `handoff` 时**没有**单独提前结束分支，只是把 `insuff
 
 MySQL 主键是 int；LangGraph configurable 是 str。前端应把 `X-Conversation-ID` **原样回传**。若混用随机 uuid 与 MySQL id，STM session 会分裂。
 
-### Q10. 温度为什么 Router 0.1、Agent 0.7？
+### Q10. 温度为什么 RoutingDecision 0.1、Agent 0.7？
 
-- 路由/守卫/计划/judge：要**稳定离散标签** → 低温度  
+- 统一路由决策/守卫/judge：要**稳定离散标签** → 低温度
 - Cypher：要可执行字符串 → 较低  
 - ReAct：要探索但别疯 → 中  
 - 闲聊：要亲和 → 较高  
@@ -987,7 +998,7 @@ MySQL 主键是 int；LangGraph configurable 是 str。前端应把 `X-Conversat
 
 ## 学习自测
 
-1. 为什么这里不是“一个 Prompt + 两个工具”就结束，而要显式分出 Router、Guardrails、Plan、Execute？
+1. 为什么这里不是“一个 Prompt + 两个工具”就结束，而要显式分出 RoutingDecision、Guardrails、Execute？
 2. `PARALLEL` 和 `GRAPH_THEN_RAG` 的差异，不看文档你能口头讲清吗？
 3. 为什么 `after_response` 失败通常不该影响用户已生成的回答？
 4. 为什么 SSE 输出要过滤 `tool_calls` 和中间研究痕迹？
@@ -1005,11 +1016,11 @@ MySQL 主键是 int；LangGraph configurable 是 str。前端应把 `X-Conversat
 POST /api/langgraph/query (Form: query, user_id, conversation_id?)
   → thread_id = conversation_id or uuid4()
   → stream_agent_query → graph.astream(stream_mode="messages", configurable={thread_id,user_id})
-  → analyze_and_route_query  # Router: general | rag_doc-query
+  → route_and_plan_query     # RoutingDecision: type + 能力标签 + resolved_plan
        ├ general → respond_to_general_query → after_response → END
        └ rag_doc-query → guardrails_node
             ├ end → after_response → END          # 超范围拒答
-            └ continue → retrieval_plan_route     # 能力标签→路径
+            └ continue → routing_decision_execution_edge(resolved_plan)
                  → execute_* / execute_react → after_response → END
   → SSE 过滤 tool_calls / research_plan / 空 content
   → Header X-Conversation-ID = thread_id（创建 StreamingResponse 时就有）
@@ -1028,18 +1039,17 @@ POST /api/langgraph/query (Form: query, user_id, conversation_id?)
 
 | 函数 | 写回 state 的关键字段 | 模型温度角色 |
 |---|---|---|
-| `analyze_and_route_query` | `router.type/logic` | router 0.1 |
+| `route_and_plan_query` | `routing_decision.{type,logic,need_*,mode,complexity,resolved_plan}` | router 0.1 |
 | `respond_to_general_query` | `messages` AIMessage | agent 0.7 + 记忆注入 |
 | `guardrails_node` | `next_action` continue/end；可能拒答 message | guardrails 0.1 |
-| `retrieval_plan_route` | `need_graph/need_rag/mode/complexity` + `resolved_plan` | retrieval_plan 0.1 |
 
 边：
 
 | 边函数 | 读 | 去向 |
 |---|---|---|
-| `route_query` | router.type | general 节点 / guardrails |
-| `guardrails_edge` | next_action | after_response / plan |
-| `retrieval_plan_edge` | resolved_plan | 五 execute_*；缺失→execute_react |
+| `routing_decision_edge` | routing_decision.type | general 节点 / guardrails |
+| `guardrails_edge` | next_action | after_response / 五 execute_* |
+| `routing_decision_execution_edge` | resolved_plan 与能力标签 | 五 execute_*；缺失时重算，仍异常→execute_react |
 
 ### A2.3 执行节点
 
@@ -1082,13 +1092,14 @@ POST /api/langgraph/query (Form: query, user_id, conversation_id?)
 | both + sequential | GRAPH_THEN_RAG | 先订单产品再保修 |
 | multi_hop / 两侧都 false | AGENT_REACT | 模糊多跳 / 兜底 |
 
-执行层仍是五类 `execute_*` 节点，只是**计划语义**从互斥枚举改为标签编排。
+执行层仍是五类 `execute_*` 节点；能力标签与顶层类型由一次统一决策产生，
+路径仍由代码确定。
 
 ## A4. 温度表（MODEL_TEMPERATURES）
 
 | 角色 | 温度 | WHY |
 |---|---|---|
-| router / retrieval_plan / guardrails / react_judge | 0.1 | 离散标签要稳 |
+| router / guardrails / react_judge | 0.1 | 离散标签要稳 |
 | cypher | 0.2 | 可执行字符串 |
 | memory_extractor | 0.3 | 略创造但可控 |
 | react | 0.4 | 探索与稳定折中 |
@@ -1097,7 +1108,7 @@ POST /api/langgraph/query (Form: query, user_id, conversation_id?)
 ## A5. Prompt 四层防线（面试安全题）
 
 1. **XML 隔离**：`wrap_user_message` → html.escape + `<user_message>`  
-2. **Structured output**：Router/Guardrails/Plan/Judge 用 Pydantic/Typed 结构  
+2. **Structured output**：RoutingDecision/Guardrails/Judge 用 Pydantic/Typed 结构
 3. **Guardrails 经营范围**：非智能家居 → end + 拒答  
 4. **Cypher 禁写**：校验层拦截 CREATE/MERGE/DELETE/SET…（详见 06）  
 
@@ -1121,7 +1132,7 @@ POST /api/langgraph/query (Form: query, user_id, conversation_id?)
 
 ## A7. 口述演示脚本（2 分钟）
 
-「用户问保修政策：Router 判 rag_doc-query → Guard 确认在智能家居范围 → Plan 标 need_rag → resolved RAG_ONLY → enrich_question 注入 P0–P3 → MilvusDocRetriever 混合检索 → summarize 成自然语言 → after_response 发布带 turn_id 的事件；消费者幂等写 STM 和历史。若问题是订单号查物流：Plan need_graph → GRAPH_ONLY 走 Text2Cypher。若问题又模糊又要多跳：AGENT_REACT，最多 5 轮充分性检查。」
+「用户问保修政策：RoutingDecision 一次判为 rag_doc-query 并标 need_rag → Guard 确认在智能家居范围 → 代码已解析为 RAG_ONLY → enrich_question 注入 P0–P3 → MilvusDocRetriever 混合检索 → summarize 成自然语言 → after_response 发布带 turn_id 的事件；消费者幂等写 STM 和历史。若问题是订单号查物流：同一次决策标 need_graph → GRAPH_ONLY 走 Text2Cypher。若问题又模糊又要多跳：complexity=multi_hop → AGENT_REACT，最多 5 轮充分性检查。」
 
 ---
 
@@ -1172,25 +1183,24 @@ rollback 后重载对象）→删行；非本人 ResourceNotFoundError 统一文
 
 ### G.4 `infrastructure/graph/state.py`
 
-`Router{type, logic}` / `RetrievalPlan{logic, need_graph, need_rag, mode,
-complexity, resolved_plan}` / `InputState{messages}` /
-`AgentState`（+router/retrieval_plan/next_action/memory_state——
-memory_state 是**请求内缓存**，见 load_memory_state）。
+`RoutingDecision{logic, type, need_graph, need_rag, mode, complexity,
+resolved_plan}` / `InputState{messages}` / `AgentState`（+
+routing_decision/next_action/memory_state——memory_state 是**请求内缓存**，
+见 load_memory_state）。
 
 ### G.5 `infrastructure/graph/decision_nodes.py`
 
 | 函数 | 要点 |
 |---|---|
 | `resolve_execution_plan(*, need_graph, need_rag, mode, complexity) -> ExecutionPlanType` | 纯函数决策表：multi_hop→AGENT_REACT；双真∧sequential→GRAPH_THEN_RAG；双真→PARALLEL；单真→对应 ONLY；全假→REACT 兜底 |
-| `_normalize_retrieval_mode/_normalize_complexity` | 白名单归一（LLM 输出防脏）；⚠️ 曾与上传模式校验同名 `_normalize_mode` 跨文件看串 |
-| `build_general_query_system_prompt(*, state, config, general_query_system_prompt)` | 模板 format(router.logic) + 记忆上下文追加（load 失败仅用基础模板） |
-| 📌 `analyze_and_route_query(state, *, config)` | build_safe_messages→router_model 结构化输出 Router |
-| `route_query(state) -> GeneralRouteName` | general→通用回复；否则→guardrails（path map 键，builder 里映射真实节点） |
+| `_normalize_routing_kind/_normalize_retrieval_mode/_normalize_complexity` | 白名单归一（LLM 输出防脏）；⚠️ 曾与上传模式校验同名 `_normalize_mode` 跨文件看串 |
+| `build_general_query_system_prompt(*, state, config, general_query_system_prompt)` | 模板 format(routing_decision.logic) + 记忆上下文追加（load 失败仅用基础模板） |
+| 📌 `route_and_plan_query(state, *, config)` | build_safe_messages→router_model 结构化输出 RoutingDecisionOutput→归一化→resolve→存 RoutingDecision |
+| `routing_decision_edge(state) -> RoutingDecisionEdgeName` | general→通用回复；rag_doc-query→guardrails |
 | `respond_to_general_query(state, *, config)` | 记忆增强 system + agent_model.ainvoke |
 | `guardrails_node(state, *, config)` | wrap_user_message 后判定 end/continue；end→固定拒答文案 + next_action="end" |
-| `guardrails_edge(state)` | end→after_response（跳过检索直接收尾） |
-| `retrieval_plan_route(state, *, config)` | 结构化输出 RetrievalPlanOutput→归一化→resolve→存 RetrievalPlan（含 resolved_plan） |
-| `retrieval_plan_edge(state) -> RetrievalEdgeName` | 读 resolved_plan；缺失→读 legacy plan→再缺→按能力重算；全兜底 REACT |
+| `guardrails_edge(state)` | end→after_response；continue→routing_decision_execution_edge |
+| `routing_decision_execution_edge(state) -> RetrievalEdgeName` | 读 resolved_plan；缺失→按能力重算；全兜底 REACT |
 
 ### G.6 `infrastructure/graph/execution_pipeline.py` / `retrieval_nodes.py`
 
@@ -1330,7 +1340,7 @@ structured_invoke=None)`——`asyncio.wait_for(timeout=3s)` 包 LLM 结构化
 ### G.14 `infrastructure/modeling/`
 
 **models.py**：
-- `MODEL_TEMPERATURES`（agent .7/router .1/plan .1/guardrails .1/
+- `MODEL_TEMPERATURES`（agent .7/router .1/guardrails .1/
   cypher .2/react .4/judge .1/extractor .3）+
   `MODEL_TIMEOUTS_SECONDS`（决策类 10s/cypher 20s/生成类 60s）+
   重试 1 次——⚠️ v3.35 前无任何超时，上游挂起即无限等待
@@ -1341,12 +1351,12 @@ structured_invoke=None)`——`asyncio.wait_for(timeout=3s)` 包 LLM 结构化
 - `_create_model`：按 AGENT_SERVICE 分支 ChatDeepSeek（timeout+
   max_retries）/ ChatOllama（client_kwargs.timeout）
 - `create_llm_for_role(role)`：容器装配用统一工厂
-- 结构化输出模型：RetrievalPlanOutput/GuardrailsDecision/
+- 结构化输出模型：RoutingDecisionOutput/GuardrailsDecision/
   ReactAnswerCheckOutput
 
 **prompts.py**：`load_prompts_from_yaml(logger, yaml_path)` 可选覆盖 +
-七个 prompt 常量（ROUTER/GENERAL/GUARDRAILS/RETRIEVAL_PLAN/REACT/
-REACT_ANSWER_CHECK/SUMMARIZE）。
+六个 prompt 常量（ROUTING_DECISION/GENERAL/GUARDRAILS/REACT/
+REACT_ANSWER_CHECK/SUMMARIZE）；旧 ROUTER / RETRIEVAL_PLAN 覆盖键已移除。
 
 **utils/helpers.py**：`question_from_state(state)`（兼容多模态 content
 列表取文本）/`no_neo4j_response()`（KG 专属降级文案，与 RAG 不可用区分）。

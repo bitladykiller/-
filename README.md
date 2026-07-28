@@ -30,9 +30,11 @@ flowchart TB
         end
 
         subgraph AgentGraph["LangGraph 智能体主图"]
-            Router["Router\n(意图识别 0.1)"] --> Guard["Guardrails\n(安全拦截)"]
-            Guard --> Plan["RetrievalPlan\n(路径决策)"]
-            Plan --> Exec["Execution Pipeline\n(KG / RAG / ReAct)"]
+            Decision["RoutingDecision\n(一次路由 + 能力规划，0.1)"] -->|general| General["General Reply"]
+            Decision -->|rag_doc-query| Guard["Guardrails\n(安全 / 经营范围硬门)"]
+            Guard -->|continue| Exec["Execution Pipeline\n(KG / RAG / ReAct)"]
+            Guard -->|end| After["after_response\n(发布 turn_completed 事件)"]
+            General --> After
             Exec --> After["after_response\n(发布 turn_completed 事件)"]
         end
 
@@ -72,11 +74,11 @@ flowchart TB
 - 通过 `CHAT_SERVICE` / `REASON_SERVICE` 环境变量灵活切换
 
 ### 2. 智能 Agent (LangGraph)
-- 四层嵌套子图：主图（路由分发）→ RetrievalPlan → 执行器 / ReAct 子图 → Text2Cypher 子图
-- 检索计划（能力标签）：`need_graph` / `need_rag` / `mode` / `complexity` → 解析为执行路径 GRAPH_ONLY / RAG_ONLY / PARALLEL / GRAPH_THEN_RAG / AGENT_REACT
+- 主图由一次统一路由决策、Guardrails 与执行器组成；复杂问题再进入 ReAct 子图，KG 内部再按需进入 Text2Cypher 子图
+- 统一路由决策一次输出 `type` 与能力标签 `need_graph` / `need_rag` / `mode` / `complexity`，代码解析为 GRAPH_ONLY / RAG_ONLY / PARALLEL / GRAPH_THEN_RAG / AGENT_REACT；知识查询较旧链路少一次 LLM 调用
 - Retriever 抽象接口（依赖倒置），策略模式（Cypher 生成），注册表模式（检索器管理）
 - Prompt 注入 4 层防线：XML 隔离 + 结构化输出 + Guardrails + 写操作硬拦截
-- 温度分级体系：Router 0.1 → Cypher 0.2 → ReAct 0.4 → General 0.7
+- 温度分级体系：RoutingDecision 0.1 → Cypher 0.2 → ReAct 0.4 → General 0.7
 
 ### 3. 分层记忆系统（优先级模型 P0-P3）
 - **Redis 短期记忆**：ZSET 滑动窗口 + MsgPack 多级 Zstd 压缩 + LLM 压缩摘要

@@ -18,7 +18,7 @@ class FakeLogger:
 
 
 def test_default_prompts_expose_required_keys() -> None:
-    assert "router_system" in prompts.DEFAULT_PROMPTS
+    assert "routing_decision" in prompts.DEFAULT_PROMPTS
     assert "general_query" in prompts.DEFAULT_PROMPTS
     assert "react_system" in prompts.DEFAULT_PROMPTS
 
@@ -35,11 +35,11 @@ def test_load_prompts_from_yaml_returns_empty_for_invalid_yaml_shape(
 def test_load_prompts_from_yaml_reads_string_overrides(tmp_path: Path) -> None:
     yaml_path = tmp_path / "lg_prompts.yaml"
     yaml_path.write_text(
-        "router_system: custom router\nreact_system: custom react\ncount: 3\n",
+        "routing_decision: custom routing\nreact_system: custom react\ncount: 3\n",
         encoding="utf-8",
     )
 
     assert prompts.load_prompts_from_yaml(FakeLogger(), yaml_path) == {
-        "router_system": "custom router",
+        "routing_decision": "custom routing",
         "react_system": "custom react",
     }

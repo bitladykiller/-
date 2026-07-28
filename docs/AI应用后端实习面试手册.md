@@ -42,7 +42,7 @@
 可以按下面顺序讲：
 
 1. 先说业务目标：这是一个智能客服后端，不是普通聊天页，重点是让用户既能问通用问题，也能问商品、订单、售后政策和企业内部知识。
-2. 再说主链路：请求从 FastAPI 进来后，不会直接丢给一个模型，而是先走 Router、Guardrails、Retrieval Plan，再决定走 Neo4j、Milvus 还是 ReAct。
+2. 再说主链路：请求从 FastAPI 进来后，不会直接丢给一个模型，而是先用一次结构化 RoutingDecision 同时判断问题类型和检索能力；知识问题经过 Guardrails 后，再决定走 Neo4j、Milvus 还是 ReAct。
 3. 再说存储分工：会话元信息、完整历史、用户画像和事件 Inbox 在 MySQL，消息窗口、任务状态和 Streams 在 Redis，结构化业务关系在 Neo4j，文档向量和长期记忆在 Milvus。
 4. 最后说工程点：SSE 答案先返回；上传索引和记忆写扩散走 Redis Streams，MySQL Inbox 与事件 ID 保证崩溃重放不重复产生业务副作用。
 
@@ -53,7 +53,7 @@
 1. 项目定位：
    这是一个面向智能客服的 AI 应用后端，目标是把企业知识、结构化业务数据和多轮上下文结合起来，让回答更接近真实客服系统，而不是单纯闲聊。
 2. 请求主线：
-   用户问题进入 `/api/langgraph/query` 后，系统会先判断是一般聊天还是需要增强问答；如果需要增强，就继续做经营范围守卫、检索计划决策，再决定走图谱、文档检索、并行检索还是 ReAct 多步推理。
+   用户问题进入 `/api/langgraph/query` 后，系统用一次低温结构化决策同时判断一般聊天/知识问答，并写出图谱与文档能力标签；知识问答经过经营范围守卫后，直接按代码解析出的路径走图谱、文档检索、并行检索或 ReAct 多步推理。
 3. 知识来源：
    图谱链路适合结构化关系问题，文档链路适合政策、说明书、FAQ 这类文本问题；两条链路都统一挂在 Retriever 抽象下。
 4. 记忆系统：
@@ -84,8 +84,8 @@ sequenceDiagram
     Infra-->>Memory: 拼装上下文 Prompt
     Memory-->>Agent: 注入历史与画像状态 (AgentState)
 
-    Agent->>Agent: Router 路由 (0.1) & Guardrails 检查
-    Agent->>Agent: RetrievalPlan 决策执行路径 (RAG/KG/ReAct/Parallel)
+    Agent->>Agent: RoutingDecision 一次结构化输出 (type + need_* / mode / complexity，0.1)
+    Agent->>Agent: Guardrails 检查；continue 后按 resolved_plan 直达执行器
     Agent->>Exec: 执行知识检索与 Reasoning
     Exec->>Infra: 检索 Neo4j (Cypher) / Milvus (RAG)
     Infra-->>Exec: 返回结构化实体 / 匹配文档 Chunk
@@ -117,7 +117,7 @@ sequenceDiagram
 → POST /api/langgraph/query (或 /api/chat/stream)
 → agent_query_service.stream_agent_query
 → LangGraph 主图
-→ Router / Guardrails / Retrieval Plan
+→ RoutingDecision（一次路由 + 能力规划）/ Guardrails
 → KG / RAG / PARALLEL / GRAPH_THEN_RAG / AGENT_REACT
 → 生成答案并流式输出
 → after_response 发布 turn_completed(turn_id)
@@ -189,7 +189,7 @@ sequenceDiagram
 
 ### 5.2 如果你主要做 Agent / RAG
 
-1. 我重点梳理了 LangGraph 主图，弄清 Router、Guardrails、Retrieval Plan 和 ReAct 的边界。
+1. 我重点梳理了 LangGraph 主图，弄清统一 RoutingDecision、Guardrails、执行器和 ReAct 的边界。
 2. 我比较关注图谱检索和文档检索为什么要保留两条独立路径。
 3. 我还整理了 Text2Cypher、Hybrid Search、RRF 和 rerank 在实际链路里的作用。
 

@@ -3,7 +3,11 @@ from types import SimpleNamespace
 
 import app.chat.infrastructure.graph.decision_nodes as lg_decision_nodes
 import app.chat.infrastructure.graph.lifecycle_nodes as lg_nodes
-from app.chat.infrastructure.graph.state import AgentState
+from app.chat.infrastructure.graph.state import (
+    AgentState,
+    ExecutionPlanType,
+    RoutingDecision,
+)
 from langchain_core.messages import AIMessage, HumanMessage
 
 
@@ -36,19 +40,37 @@ def _run(awaitable):
     return asyncio.run(awaitable)
 
 
+def _routing_decision(
+    *,
+    route_type: str = "general",
+    logic: str = "",
+    need_graph: bool = False,
+    need_rag: bool = False,
+    mode: str = "single",
+    complexity: str = "simple",
+    resolved_plan: ExecutionPlanType | None = None,
+) -> RoutingDecision:
+    return {
+        "logic": logic,
+        "type": route_type,  # type: ignore[typeddict-item]
+        "need_graph": need_graph,
+        "need_rag": need_rag,
+        "mode": mode,  # type: ignore[typeddict-item]
+        "complexity": complexity,  # type: ignore[typeddict-item]
+        "resolved_plan": resolved_plan,
+    }
+
+
 def test_resolve_execution_plan_capability_matrix() -> None:
     resolve = lg_decision_nodes.resolve_execution_plan
     assert (
-        resolve(need_graph=True, need_rag=False, mode="single", complexity="simple")
-        == "GRAPH_ONLY"
+        resolve(need_graph=True, need_rag=False, mode="single", complexity="simple") == "GRAPH_ONLY"
     )
     assert (
-        resolve(need_graph=False, need_rag=True, mode="single", complexity="simple")
-        == "RAG_ONLY"
+        resolve(need_graph=False, need_rag=True, mode="single", complexity="simple") == "RAG_ONLY"
     )
     assert (
-        resolve(need_graph=True, need_rag=True, mode="parallel", complexity="simple")
-        == "PARALLEL"
+        resolve(need_graph=True, need_rag=True, mode="parallel", complexity="simple") == "PARALLEL"
     )
     assert (
         resolve(need_graph=True, need_rag=True, mode="sequential", complexity="simple")
@@ -64,56 +86,56 @@ def test_resolve_execution_plan_capability_matrix() -> None:
     )
 
 
-def test_route_edges_map_state_to_expected_node_names() -> None:
+def test_routing_edges_map_state_to_expected_node_names() -> None:
     state = AgentState(
         messages=[],
-        router={"type": "general", "logic": ""},
+        routing_decision=_routing_decision(),
         next_action="end",
-        retrieval_plan={
-            "logic": "",
-            "need_graph": True,
-            "need_rag": False,
-            "mode": "single",
-            "complexity": "simple",
-            "resolved_plan": "GRAPH_ONLY",
-        },
     )
 
-    assert lg_decision_nodes.route_query(state) == "respond_to_general_query"
+    assert lg_decision_nodes.routing_decision_edge(state) == "respond_to_general_query"
     assert lg_decision_nodes.guardrails_edge(state) == "after_response"
-    assert lg_decision_nodes.retrieval_plan_edge(state) == "execute_graph_only"
 
-    state.router = {"type": "rag_doc-query", "logic": ""}
+    state.routing_decision = _routing_decision(
+        route_type="rag_doc-query",
+        need_graph=True,
+        resolved_plan="GRAPH_ONLY",
+    )
     state.next_action = "continue"
-    state.retrieval_plan = {
-        "logic": "",
-        "need_graph": True,
-        "need_rag": True,
-        "mode": "sequential",
-        "complexity": "simple",
-        "resolved_plan": "GRAPH_THEN_RAG",
-    }
-    assert lg_decision_nodes.route_query(state) == "retrieval_plan_router"
-    assert lg_decision_nodes.guardrails_edge(state) == "retrieval_plan_route"
-    assert lg_decision_nodes.retrieval_plan_edge(state) == "execute_then"
+    assert lg_decision_nodes.routing_decision_edge(state) == "guardrails_node"
+    assert lg_decision_nodes.guardrails_edge(state) == "execute_graph_only"
 
-    state.retrieval_plan = {
-        "logic": "",
-        "need_graph": True,
-        "need_rag": True,
-        "mode": "parallel",
-        "complexity": "multi_hop",
-        "resolved_plan": "AGENT_REACT",
-    }
-    assert lg_decision_nodes.retrieval_plan_edge(state) == "execute_react"
-    state.retrieval_plan = None
-    assert lg_decision_nodes.retrieval_plan_edge(state) == "execute_react"
+    state.routing_decision = _routing_decision(
+        route_type="rag_doc-query",
+        need_graph=True,
+        need_rag=True,
+        mode="sequential",
+        resolved_plan="GRAPH_THEN_RAG",
+    )
+    assert lg_decision_nodes.guardrails_edge(state) == "execute_then"
+
+    state.routing_decision = _routing_decision(
+        route_type="rag_doc-query",
+        need_graph=True,
+        need_rag=True,
+        mode="parallel",
+        complexity="multi_hop",
+        resolved_plan="AGENT_REACT",
+    )
+    assert lg_decision_nodes.guardrails_edge(state) == "execute_react"
+
+    state.routing_decision = _routing_decision(
+        route_type="rag_doc-query",
+        need_rag=True,
+        resolved_plan=None,
+    )
+    assert lg_decision_nodes.guardrails_edge(state) == "execute_rag_only"
 
 
 def test_build_general_query_system_prompt_appends_memory_context(monkeypatch) -> None:
     state = AgentState(
         messages=[HumanMessage(content="请查一下空调")],
-        router={"type": "general", "logic": "需要结合上下文"},
+        routing_decision=_routing_decision(logic="需要结合上下文"),
     )
 
     async def fake_load_memory_state(_state, _config, user_message):
@@ -166,40 +188,48 @@ def test_guardrails_node_wraps_question_and_blocks_end(monkeypatch) -> None:
     assert result["messages"][0].content == "抱歉，我家暂时没有这方面的商品，可以在别家看看哦～"
 
 
-def test_retrieval_plan_route_wraps_question_and_returns_capability_plan(
-    monkeypatch,
-) -> None:
-    captured: dict[str, str] = {}
+def test_route_and_plan_query_makes_one_structured_decision(monkeypatch) -> None:
+    captured: dict[str, object] = {}
 
-    async def fake_ainvoke_structured_question_output(**kwargs):
-        captured["question"] = kwargs["question"]
-        return SimpleNamespace(
-            logic="先查图再查文档",
-            need_graph=True,
-            need_rag=True,
-            mode="sequential",
-            complexity="simple",
-        )
+    class FakeRouterModel:
+        def with_structured_output(self, schema):
+            captured["schema"] = schema
+            return self
 
-    monkeypatch.setattr(
-        lg_decision_nodes,
-        "ainvoke_structured_question_output",
-        fake_ainvoke_structured_question_output,
-    )
+        async def ainvoke(self, messages):
+            captured["messages"] = messages
+            return SimpleNamespace(
+                logic="先查图再查文档",
+                type="rag_doc-query",
+                need_graph=True,
+                need_rag=True,
+                mode="sequential",
+                complexity="simple",
+            )
+
+    monkeypatch.setattr(lg_decision_nodes, "router_model", FakeRouterModel())
 
     result = _run(
-        lg_decision_nodes.retrieval_plan_route(
+        lg_decision_nodes.route_and_plan_query(
             AgentState(messages=[HumanMessage(content="查订单再看保修")]),
             config={},
         )
     )
 
-    assert captured["question"].startswith("<user_message>")
-    assert "查订单再看保修" in captured["question"]
-    assert captured["question"].endswith("</user_message>")
+    assert captured["schema"] is lg_decision_nodes.RoutingDecisionOutput
+    assert any(
+        isinstance(message, dict)
+        and message
+        == {
+            "role": "user",
+            "content": "<user_message>\n查订单再看保修\n</user_message>",
+        }
+        for message in captured["messages"]
+    )
     assert result == {
-        "retrieval_plan": {
+        "routing_decision": {
             "logic": "先查图再查文档",
+            "type": "rag_doc-query",
             "need_graph": True,
             "need_rag": True,
             "mode": "sequential",
@@ -207,6 +237,29 @@ def test_retrieval_plan_route_wraps_question_and_returns_capability_plan(
             "resolved_plan": "GRAPH_THEN_RAG",
         }
     }
+
+
+def test_general_routing_decision_discards_retrieval_labels() -> None:
+    decision = lg_decision_nodes._build_routing_decision(
+        SimpleNamespace(
+            logic="闲聊",
+            type="general",
+            need_graph=True,
+            need_rag=True,
+            mode="sequential",
+            complexity="multi_hop",
+        )
+    )
+
+    assert decision == _routing_decision(logic="闲聊")
+
+
+def test_compiled_graph_has_one_route_planning_node() -> None:
+    from app.chat.infrastructure.graph.builder import graph
+
+    node_names = set(graph.get_graph().nodes)
+    assert "route_and_plan_query" in node_names
+    assert "retrieval_plan_route" not in node_names
 
 
 def test_after_response_writes_latest_user_and_final_assistant_message(monkeypatch) -> None:
@@ -270,9 +323,7 @@ def test_after_response_skips_when_missing_complete_message_pair(monkeypatch) ->
         await lg_nodes.flush_pending_memory_writes()
         return outcome
 
-    result = _run(
-        _scenario()
-    )
+    result = _run(_scenario())
 
     assert result == {}
     assert middleware.calls == []
@@ -309,9 +360,7 @@ def test_after_response_does_not_block_on_slow_memory_write(monkeypatch) -> None
     )
 
     async def _scenario() -> None:
-        state = AgentState(
-            messages=[HumanMessage(content="问题"), AIMessage(content="答案")]
-        )
+        state = AgentState(messages=[HumanMessage(content="问题"), AIMessage(content="答案")])
         # 节点必须在写入仍被阻塞时就返回（1 秒内），否则说明退回了同步等待
         await asyncio.wait_for(lg_nodes.after_response(state, config={}), timeout=1)
         assert middleware.finished is False

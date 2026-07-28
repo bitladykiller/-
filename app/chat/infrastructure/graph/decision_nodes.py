@@ -1,10 +1,10 @@
 """主图中的决策类节点实现。
 
 这个模块负责：
-- 顶层路由节点
+- 统一的路由与检索规划节点
 - general 回复节点
 - guardrails 节点
-- retrieval plan 路由节点
+- 已解析执行计划的边路由
 
 这个模块不负责：
 - KG / RAG 检索执行
@@ -31,30 +31,27 @@ from app.chat.infrastructure.graph.state import (
     ExecutionPlanType,
     RetrievalComplexity,
     RetrievalMode,
-    RetrievalPlan,
-    Router,
+    RoutingDecision,
+    RoutingKind,
 )
 from app.chat.infrastructure.modeling.models import (
     GuardrailsDecision,
-    RetrievalPlanOutput,
+    RoutingDecisionOutput,
     agent_model,
     guardrails_model,
-    retrieval_plan_model,
     router_model,
 )
 from app.chat.infrastructure.modeling.prompts import (
     GENERAL_QUERY_SYSTEM_PROMPT,
     GUARDRAILS_SYSTEM_PROMPT,
-    RETRIEVAL_PLAN_ROUTER_PROMPT,
-    ROUTER_SYSTEM_PROMPT,
+    ROUTING_DECISION_PROMPT,
 )
 from app.chat.infrastructure.utils.helpers import question_from_state
 from app.shared.security import wrap_user_message
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
 
-GeneralRouteName = Literal["respond_to_general_query", "retrieval_plan_router"]
-GuardrailsEdgeName = Literal["retrieval_plan_route", "after_response"]
+RoutingDecisionEdgeName = Literal["respond_to_general_query", "guardrails_node"]
 RetrievalEdgeName = Literal[
     "execute_graph_only",
     "execute_rag_only",
@@ -62,6 +59,7 @@ RetrievalEdgeName = Literal[
     "execute_then",
     "execute_react",
 ]
+GuardrailsEdgeName = RetrievalEdgeName | Literal["after_response"]
 _GUARDRAILS_BLOCK_MESSAGE = "抱歉，我家暂时没有这方面的商品，可以在别家看看哦～"
 _RETRIEVAL_EDGE_MAP: dict[ExecutionPlanType, RetrievalEdgeName] = {
     "GRAPH_ONLY": "execute_graph_only",
@@ -119,6 +117,14 @@ def _normalize_complexity(raw: object) -> RetrievalComplexity:
         return raw  # pyright: ignore[reportReturnType]
     return "simple"
 
+
+def _normalize_routing_kind(raw: object) -> RoutingKind:
+    """归一化顶层路由类型，结构化输出异常时保守走 general。"""
+    if raw in ("general", "rag_doc-query"):
+        return raw  # pyright: ignore[reportReturnType]
+    return "general"
+
+
 SCOPE_DESCRIPTION = """
 个人电商经营范围：智能家居产品（智能照明/安防/控制/音箱/厨电/清洁）。
 不包含：服装、鞋类、体育用品、化妆品、食品等。
@@ -132,7 +138,7 @@ async def build_general_query_system_prompt(
     general_query_system_prompt: str,
 ) -> str:
     """构造 general 节点的系统提示词，并按需注入记忆上下文。"""
-    system_prompt = general_query_system_prompt.format(logic=state.router["logic"])
+    system_prompt = general_query_system_prompt.format(logic=state.routing_decision["logic"])
     user_message = question_from_state(state)
     memory_state = await load_memory_state(state, config, user_message)
     if memory_state is None:
@@ -149,28 +155,61 @@ async def build_general_query_system_prompt(
     return system_prompt + memory_context
 
 
-async def analyze_and_route_query(
-    state: AgentState, *, config: RunnableConfig
-) -> dict[str, object]:
-    """分析用户输入，路由到通用回复或知识库检索。"""
+def _build_routing_decision(output: RoutingDecisionOutput) -> RoutingDecision:
+    """把统一模型输出规整为状态，并由代码解析实际执行路径。"""
+    route_type = _normalize_routing_kind(getattr(output, "type", "general"))
+    logic = str(getattr(output, "logic", "") or "")
+    if route_type == "general":
+        return {
+            "logic": logic,
+            "type": "general",
+            "need_graph": False,
+            "need_rag": False,
+            "mode": "single",
+            "complexity": "simple",
+            "resolved_plan": None,
+        }
+
+    mode = _normalize_retrieval_mode(getattr(output, "mode", "single"))
+    complexity = _normalize_complexity(getattr(output, "complexity", "simple"))
+    need_graph = bool(getattr(output, "need_graph", False))
+    need_rag = bool(getattr(output, "need_rag", False))
+    return {
+        "logic": logic,
+        "type": "rag_doc-query",
+        "need_graph": need_graph,
+        "need_rag": need_rag,
+        "mode": mode,
+        "complexity": complexity,
+        "resolved_plan": resolve_execution_plan(
+            need_graph=need_graph,
+            need_rag=need_rag,
+            mode=mode,
+            complexity=complexity,
+        ),
+    }
+
+
+async def route_and_plan_query(state: AgentState, *, config: RunnableConfig) -> dict[str, object]:
+    """一次结构化调用完成顶层路由和检索能力规划。"""
     _ = config
-    messages = build_safe_messages(ROUTER_SYSTEM_PROMPT, state.messages)
-    response: Router = await router_model.with_structured_output(Router).ainvoke(
-        messages
-    )
-    return {"router": response}
+    messages = build_safe_messages(ROUTING_DECISION_PROMPT, state.messages)
+    output: RoutingDecisionOutput = await router_model.with_structured_output(
+        RoutingDecisionOutput
+    ).ainvoke(messages)
+    return {"routing_decision": _build_routing_decision(output)}
 
 
-def route_query(state: AgentState) -> GeneralRouteName:
-    """根据路由结果选择下一个节点。
+def routing_decision_edge(state: AgentState) -> RoutingDecisionEdgeName:
+    """根据统一决策选择 general 回复或独立 Guardrails。
 
     返回值是 path map 的键，不是最终节点展示名：
     - general → respond_to_general_query
-    - 其它 → retrieval_plan_router（builder 映射到 guardrails_node）
+    - rag_doc-query → guardrails_node
     """
-    if state.router["type"] == "general":
+    if state.routing_decision["type"] == "general":
         return "respond_to_general_query"
-    return "retrieval_plan_router"
+    return "guardrails_node"
 
 
 async def respond_to_general_query(
@@ -214,63 +253,21 @@ async def guardrails_node(
 
 
 def guardrails_edge(state: AgentState) -> GuardrailsEdgeName:
-    """守卫后的路由：continue → 检索计划，end → 直接回复。"""
+    """守卫后的路由：continue → 已解析执行计划，end → 直接回复。"""
     if state.next_action == "end":
         return "after_response"
-    return "retrieval_plan_route"
+    return routing_decision_execution_edge(state)
 
 
-async def retrieval_plan_route(
-    state: AgentState,
-    *,
-    config: RunnableConfig,
-) -> dict[str, object]:
-    """根据问题输出能力标签，并解析为执行路径。"""
-    _ = config
-    wrapped_question, _ = wrap_user_message(question_from_state(state))
-    output = await ainvoke_structured_question_output(
-        system_prompt=RETRIEVAL_PLAN_ROUTER_PROMPT,
-        human_prompt="问题：{question}",
-        model=retrieval_plan_model,
-        output_schema=RetrievalPlanOutput,
-        question=wrapped_question,
-    )
-
-    mode = _normalize_retrieval_mode(getattr(output, "mode", "single"))
-    complexity = _normalize_complexity(getattr(output, "complexity", "simple"))
-    need_graph = bool(getattr(output, "need_graph", False))
-    need_rag = bool(getattr(output, "need_rag", False))
-    resolved = resolve_execution_plan(
-        need_graph=need_graph,
-        need_rag=need_rag,
-        mode=mode,
-        complexity=complexity,
-    )
-    plan: RetrievalPlan = {
-        "logic": str(getattr(output, "logic", "") or ""),
-        "need_graph": need_graph,
-        "need_rag": need_rag,
-        "mode": mode,
-        "complexity": complexity,
-        "resolved_plan": resolved,
-    }
-    return {"retrieval_plan": plan}
-
-
-def retrieval_plan_edge(state: AgentState) -> RetrievalEdgeName:
-    """根据已解析的 resolved_plan 路由到执行节点；缺失则 REACT 兜底。"""
-    raw = state.retrieval_plan
-    if not raw:
+def routing_decision_execution_edge(state: AgentState) -> RetrievalEdgeName:
+    """按统一决策的 resolved_plan 进入执行节点；异常状态回退 REACT。"""
+    raw = state.routing_decision
+    if raw.get("type") != "rag_doc-query":
         return "execute_react"
 
     resolved = raw.get("resolved_plan")
     if isinstance(resolved, str) and resolved in _RETRIEVAL_EDGE_MAP:
         return _RETRIEVAL_EDGE_MAP[resolved]  # pyright: ignore[reportArgumentType]
-
-    # 兼容：旧状态仅有 plan 字段，或 resolved 丢失时按能力重算
-    legacy = raw.get("plan")  # pyright: ignore[reportGeneralTypeIssues]
-    if isinstance(legacy, str) and legacy in _RETRIEVAL_EDGE_MAP:
-        return _RETRIEVAL_EDGE_MAP[legacy]  # pyright: ignore[reportArgumentType]
 
     recomputed = resolve_execution_plan(
         need_graph=bool(raw.get("need_graph")),
@@ -282,13 +279,12 @@ def retrieval_plan_edge(state: AgentState) -> RetrievalEdgeName:
 
 
 __all__ = [
-    "analyze_and_route_query",
     "build_general_query_system_prompt",
     "guardrails_edge",
     "guardrails_node",
+    "route_and_plan_query",
     "resolve_execution_plan",
     "respond_to_general_query",
-    "retrieval_plan_edge",
-    "retrieval_plan_route",
-    "route_query",
+    "routing_decision_edge",
+    "routing_decision_execution_edge",
 ]

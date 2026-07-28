@@ -7,7 +7,7 @@
 - 问答请求/响应的业务字段含义
 
 明确仍在 infrastructure 的原因：
-- AgentState / Router / RetrievalPlan：依赖 LangGraph 消息类型与图执行
+- AgentState / RoutingDecision：依赖 LangGraph 消息类型与图执行
 - LLM 代理与 Prompt 组装：依赖具体模型 SDK
 - Neo4j / Retriever 实现：技术适配器
 
