@@ -13,6 +13,7 @@ from app.chat.infrastructure.models.message import (
     Message,
 )
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -27,23 +28,54 @@ class MessageRepository:
         conversation_id: int,
         user_content: str,
         assistant_content: str,
+        *,
+        turn_event_id: str | None = None,
     ) -> None:
-        """追加一轮对话（user + assistant 两条，一次提交）。"""
+        """追加一轮对话（user + assistant 两条，一次提交）。
+
+        turn_event_id 非空时由数据库唯一键兜底：Stream 在 XACK 前崩溃并重放，
+        也不会再追加同一回合的两条历史消息。
+        """
+        if turn_event_id and await self._turn_exists(conversation_id, turn_event_id):
+            return
+
         self._session.add_all(
             [
                 Message(
                     conversation_id=conversation_id,
                     sender=MESSAGE_SENDER_USER,
                     content=user_content,
+                    turn_event_id=turn_event_id,
                 ),
                 Message(
                     conversation_id=conversation_id,
                     sender=MESSAGE_SENDER_ASSISTANT,
                     content=assistant_content,
+                    turn_event_id=turn_event_id,
                 ),
             ]
         )
-        await self._session.commit()
+        try:
+            await self._session.commit()
+        except IntegrityError:
+            # 并发消费者可能在查询与插入之间完成了同一 event；唯一键是最终裁决。
+            await self._session.rollback()
+            if turn_event_id and await self._turn_exists(conversation_id, turn_event_id):
+                return
+            raise
+
+    async def _turn_exists(self, conversation_id: int, turn_event_id: str) -> bool:
+        """判断该回合的 user/assistant 历史是否已经完整持久化。"""
+        result = await self._session.execute(
+            select(Message.sender).where(
+                Message.conversation_id == conversation_id,
+                Message.turn_event_id == turn_event_id,
+            )
+        )
+        return {str(sender) for sender in result.scalars().all()} >= {
+            MESSAGE_SENDER_USER,
+            MESSAGE_SENDER_ASSISTANT,
+        }
 
     async def list_by_conversation(self, conversation_id: int) -> list[dict[str, str]]:
         """按时间正序返回会话全部消息。"""

@@ -52,14 +52,24 @@ class HybridSearcher:
         version: int = 1,
         content_hash: str = "",
         owner_id: str = "global",
+        idempotency_key: str = "",
     ) -> int:
         """将 DocumentChunk 列表写入 Milvus 检索集合（新建）。"""
-        count = await self.milvus.insert_chunks(
-            chunks,
-            version=version,
-            content_hash=content_hash,
-            owner_id=owner_id,
-        )
+        if idempotency_key:
+            count = await self.milvus.insert_chunks(
+                chunks,
+                version=version,
+                content_hash=content_hash,
+                owner_id=owner_id,
+                idempotency_key=idempotency_key,
+            )
+        else:
+            count = await self.milvus.insert_chunks(
+                chunks,
+                version=version,
+                content_hash=content_hash,
+                owner_id=owner_id,
+            )
         logger.info("混合索引完成: %s 条记录 | version=%s", count, version)
         return count
 
@@ -70,14 +80,24 @@ class HybridSearcher:
         *,
         content_hash: str = "",
         owner_id: str = "global",
+        idempotency_key: str = "",
     ) -> dict[str, int]:
         """文档动态更新：软删旧 chunk，再写入新 version。"""
-        result = await self.milvus.reindex_document(
-            doc_id,
-            chunks,
-            content_hash=content_hash,
-            owner_id=owner_id,
-        )
+        if idempotency_key:
+            result = await self.milvus.reindex_document(
+                doc_id,
+                chunks,
+                content_hash=content_hash,
+                owner_id=owner_id,
+                idempotency_key=idempotency_key,
+            )
+        else:
+            result = await self.milvus.reindex_document(
+                doc_id,
+                chunks,
+                content_hash=content_hash,
+                owner_id=owner_id,
+            )
         logger.info(
             "混合 reindex 完成 | doc_id=%s soft_deleted=%s version=%s chunks=%s",
             doc_id,

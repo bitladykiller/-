@@ -1,4 +1,5 @@
 """数据库维护脚本共享 helper。"""
+
 from __future__ import annotations
 
 import importlib
@@ -10,6 +11,7 @@ def prepare_db_models() -> None:
     importlib.import_module("app.chat.infrastructure.models.conversation")
     importlib.import_module("app.chat.infrastructure.models.message")
     importlib.import_module("app.knowledge.infrastructure.models.user_document")
+    importlib.import_module("app.platform.event_inbox")
 
 
 async def run_metadata_operations(*operation_names: str) -> None:

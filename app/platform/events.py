@@ -44,11 +44,20 @@ async def handle_turn_completed(payload: dict[str, Any]) -> None:
     session_id = str(payload.get("session_id") or "")
     user_message = str(payload.get("user_message") or "")
     assistant_message = str(payload.get("assistant_message") or "")
+    turn_id = str(payload.get("turn_id") or payload.get("event_id") or "")
     if not (user_id and session_id and user_message and assistant_message):
         logger.warning("turn_completed 载荷不完整，丢弃 | payload_keys=%s", sorted(payload))
         return
 
-    await _persist_turn_history(session_id, user_message, assistant_message)
+    if turn_id:
+        await _persist_turn_history(
+            session_id,
+            user_message,
+            assistant_message,
+            turn_event_id=turn_id,
+        )
+    else:
+        await _persist_turn_history(session_id, user_message, assistant_message)
 
     from app.platform.container import get_container
 
@@ -57,19 +66,27 @@ async def handle_turn_completed(payload: dict[str, Any]) -> None:
     if middleware is None:
         logger.warning("记忆中间件未初始化，跳过记忆写入 | session=%s", session_id)
         return
-    await middleware.after_agent(
-        tenant_id=tenant_id,
-        user_id=user_id,
-        session_id=session_id,
-        user_message=user_message,
-        assistant_message=assistant_message,
-    )
+    memory_kwargs: dict[str, Any] = {
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+        "session_id": session_id,
+        "user_message": user_message,
+        "assistant_message": assistant_message,
+    }
+    if turn_id:
+        memory_kwargs["turn_id"] = turn_id
+    event_created_at = payload.get("event_created_at")
+    if isinstance(event_created_at, (int, str)) and str(event_created_at).isdigit():
+        memory_kwargs["event_created_at"] = int(event_created_at)
+    await middleware.after_agent(**memory_kwargs)
 
 
 async def _persist_turn_history(
     session_id: str,
     user_message: str,
     assistant_message: str,
+    *,
+    turn_event_id: str | None = None,
 ) -> None:
     """把一轮对话写入 MySQL messages（失败降级，不阻断记忆写入）。
 
@@ -89,6 +106,7 @@ async def _persist_turn_history(
                 int(session_id),
                 user_message,
                 assistant_message,
+                turn_event_id=turn_event_id,
             )
     except Exception as exc:
         log_degradation(logger, "events.persist_turn_history", exc, session=session_id)
@@ -118,12 +136,13 @@ async def handle_document_index_requested(payload: dict[str, Any]) -> None:
     if manager is None:
         raise RuntimeError("task_manager 未初始化，无法回写任务状态")
 
+    indexed_file_info = {**file_info, "event_id": str(payload.get("event_id") or task_id)}
     await run_task_with_status_updates(
         manager._redis,  # noqa: SLF001 — 平台层与任务层同属基础设施内核
         logger,
         task_id,
         run_document_indexing_job_with_task,
-        file_info,
+        indexed_file_info,
         task_id,
         origin="stream",
     )

@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import asyncio
+import time
+import uuid
 
 from app.chat.infrastructure.graph.memory_context import _get_memory_middleware, configurable_scope
 from app.chat.infrastructure.graph.message_utils import (
@@ -34,19 +36,36 @@ async def _write_turn_memory(
     session_id: str,
     user_message: str,
     assistant_message: str,
+    turn_id: str,
+    event_created_at: int,
 ) -> None:
     """实际执行记忆写入；失败只打 warning，绝不上抛。"""
     middleware = await _get_memory_middleware()
     if middleware is None:
         return
     try:
-        await middleware.after_agent(
-            tenant_id=tenant_id,
-            user_id=user_id,
-            session_id=session_id,
-            user_message=user_message,
-            assistant_message=assistant_message,
-        )
+        memory_kwargs = {
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "session_id": session_id,
+            "user_message": user_message,
+            "assistant_message": assistant_message,
+            "turn_id": turn_id,
+            "event_created_at": event_created_at,
+        }
+        try:
+            await middleware.after_agent(**memory_kwargs)
+        except TypeError as exc:
+            # 兼容测试替身和第三方旧实现；真实 MemoryMiddleware 支持事件字段。
+            if "turn_id" not in str(exc) and "event_created_at" not in str(exc):
+                raise
+            await middleware.after_agent(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                session_id=session_id,
+                user_message=user_message,
+                assistant_message=assistant_message,
+            )
     except Exception:
         logger.warning("[memory] after_response 记忆写入失败，本轮对话可能丢失", exc_info=True)
 
@@ -82,9 +101,7 @@ async def _publish_turn_completed(payload: dict[str, str]) -> bool:
         return False
 
 
-async def after_response(
-    state: AgentState, *, config: RunnableConfig
-) -> dict[str, object]:
+async def after_response(state: AgentState, *, config: RunnableConfig) -> dict[str, object]:
     """响应后处理：发布回合完成事件（首选）或调度进程内写入（回退）。
 
     WHY 不在本节点同步 await 记忆写入：
@@ -103,8 +120,13 @@ async def after_response(
     if not (user_message and assistant_message):
         return {}
 
+    turn_id = f"turn_{uuid.uuid4().hex}"
+    event_created_at = int(time.time())
     published = await _publish_turn_completed(
         {
+            "event_id": turn_id,
+            "turn_id": turn_id,
+            "event_created_at": str(event_created_at),
             "tenant_id": tenant_id,
             "user_id": user_id,
             "session_id": session_id,
@@ -122,6 +144,8 @@ async def after_response(
             session_id=session_id,
             user_message=user_message,
             assistant_message=assistant_message,
+            turn_id=turn_id,
+            event_created_at=event_created_at,
         ),
         name=f"memory_write:{session_id}",
     )

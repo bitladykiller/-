@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.shared.core.database import Base
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 #: sender 列的取值（历史 schema 用 sender，语义即 role）
@@ -26,6 +26,14 @@ class Message(Base):
     """messages 表（append-only 对话历史）。"""
 
     __tablename__ = "messages"
+    __table_args__ = (
+        UniqueConstraint(
+            "conversation_id",
+            "turn_event_id",
+            "sender",
+            name="uk_messages_turn_event_sender",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     conversation_id: Mapped[int] = mapped_column(
@@ -36,6 +44,7 @@ class Message(Base):
     sender: Mapped[str] = mapped_column(String(50), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     message_type: Mapped[str] = mapped_column(String(20), default="text")
+    turn_event_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         server_default=func.now(),

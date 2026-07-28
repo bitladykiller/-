@@ -68,9 +68,7 @@ class AppContainer:
     # ---- 检索器运行时（替代 retriever_runtime 中的全局变量） ----
     retriever_registry: Any = None
     retriever_registry_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    kg_components: KnowledgeGraphComponents = field(
-        default_factory=KnowledgeGraphComponents
-    )
+    kg_components: KnowledgeGraphComponents = field(default_factory=KnowledgeGraphComponents)
 
     # ---- KG Neo4j 连接缓存（替代 kg_neo4j_conn 中的全局变量） ----
     neo4j_graph: Any = None
@@ -126,6 +124,7 @@ class AppContainer:
     async def _init_event_infrastructure(self, config: Any) -> None:
         """事件队列与并发限流共用一个二进制安全 Redis 客户端。"""
         import redis.asyncio as aioredis
+        from app.platform.event_inbox import EventInbox
         from app.platform.events import EVENT_GROUP, EVENT_STREAM
         from app.shared.core.config import settings as app_settings
         from app.shared.core.rate_limit import SseConcurrencyLimiter
@@ -136,6 +135,7 @@ class AppContainer:
             self._events_redis,
             stream=EVENT_STREAM,
             group=EVENT_GROUP,
+            event_inbox=EventInbox(),
         )
         limits = app_settings.app_config.limits
         self.sse_limiter = SseConcurrencyLimiter(

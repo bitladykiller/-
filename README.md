@@ -108,7 +108,13 @@ flowchart TB
 ### 7. 事件管线与后台执行（v3.35.0）
 - Redis Streams 消费组：`turn_completed`（历史落库+记忆写入）、
   `document_index_requested`（文档索引）
-- **进程崩溃自动续跑**（XAUTOCLAIM 认领 + 重试上限 + 死信流）
+- **进程崩溃自动续跑且业务幂等**：Streams 保持“至少一次投递”，MySQL
+  `processed_events` Inbox 以 `(event_type,event_id)` 认领/完成事件；已完成
+  事件重放只 ACK，不重复写历史、STM 或文档索引。payload hash 不一致会拒绝执行并
+  最终进入死信流。
+- 既有 MySQL 环境部署前执行
+  `configs/mysql-init/migration_stream_idempotency.sql`；新环境已由
+  `init.sql` 自动建表。
 - 默认 app 进程内嵌消费；可 `EVENTS_INLINE_CONSUMER=0` + `python -m app.worker` 拆分部署
 - SSE 按用户并发限流（429）；LLM 按角色超时；`X-Request-ID` 贯穿全链路日志
 - RAG 离线评测：`make eval`（hit@k / MRR，golden set 24 条）

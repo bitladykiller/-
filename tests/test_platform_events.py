@@ -114,6 +114,46 @@ async def test_turn_completed_history_failure_does_not_block_memory(
     assert len(fake_container.calls) == 1
 
 
+async def test_turn_completed_passes_event_id_to_history_and_memory(
+    monkeypatch, fake_container
+) -> None:
+    persisted: list[dict[str, str]] = []
+
+    async def fake_persist(
+        session_id,
+        user_message,
+        assistant_message,
+        *,
+        turn_event_id=None,
+    ) -> None:
+        persisted.append(
+            {
+                "session_id": session_id,
+                "user_message": user_message,
+                "assistant_message": assistant_message,
+                "turn_event_id": turn_event_id,
+            }
+        )
+
+    monkeypatch.setattr(events_module, "_persist_turn_history", fake_persist)
+
+    await handle_turn_completed(
+        {
+            "event_id": "turn-99",
+            "turn_id": "turn-99",
+            "event_created_at": "123",
+            "user_id": "7",
+            "session_id": "11",
+            "user_message": "问",
+            "assistant_message": "答",
+        }
+    )
+
+    assert persisted[0]["turn_event_id"] == "turn-99"
+    assert fake_container.calls[0]["turn_id"] == "turn-99"
+    assert fake_container.calls[0]["event_created_at"] == 123
+
+
 def test_core_handler_registry_covers_all_event_types() -> None:
     handlers = build_core_handlers()
 

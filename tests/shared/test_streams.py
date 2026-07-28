@@ -5,6 +5,12 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from app.platform.event_inbox import (
+    InboxClaim,
+    InboxClaimAction,
+    resolve_event_id,
+    stable_payload_hash,
+)
 from app.shared.streams import RedisStreamQueue, decode_event, encode_event
 
 
@@ -75,6 +81,32 @@ class FakeStreamRedis:
         return [{"message_id": min, "times_delivered": meta["deliveries"]}]
 
 
+class FakeEventInbox:
+    """只模拟队列接入需要的 Inbox 状态，不依赖真实 MySQL。"""
+
+    def __init__(self) -> None:
+        self.records: dict[tuple[str, str], dict[str, str]] = {}
+
+    async def claim(self, *, event_type, event_id, payload_hash, **_kwargs) -> InboxClaim:
+        key = (event_type, event_id)
+        record = self.records.get(key)
+        if record is None:
+            self.records[key] = {"hash": payload_hash, "status": "processing"}
+            return InboxClaim(InboxClaimAction.PROCESS, event_id, "test-owner", attempts=1)
+        if record["hash"] != payload_hash:
+            return InboxClaim(InboxClaimAction.PAYLOAD_CONFLICT, event_id, "test-owner")
+        if record["status"] == "completed":
+            return InboxClaim(InboxClaimAction.SKIP_COMPLETED, event_id, "test-owner")
+        return InboxClaim(InboxClaimAction.PROCESS, event_id, "test-owner", attempts=2)
+
+    async def mark_completed(self, *, event_type, event_id, **_kwargs) -> None:
+        self.records[(event_type, event_id)]["status"] = "completed"
+
+    async def mark_failed(self, *, event_type, event_id, error, **_kwargs) -> None:
+        self.records[(event_type, event_id)]["status"] = "failed"
+        self.records[(event_type, event_id)]["error"] = error
+
+
 def _queue(redis: FakeStreamRedis, **kwargs) -> RedisStreamQueue:
     return RedisStreamQueue(
         redis,
@@ -83,6 +115,7 @@ def _queue(redis: FakeStreamRedis, **kwargs) -> RedisStreamQueue:
         consumer_name="test-consumer",
         block_ms=1,
         max_deliveries=kwargs.pop("max_deliveries", 3),
+        event_inbox=kwargs.pop("event_inbox", None),
         **kwargs,
     )
 
@@ -110,6 +143,24 @@ def test_decode_event_rejects_malformed_fields() -> None:
     assert decode_event({}) is None
     assert decode_event({"type": "x", "data": "not-json"}) is None
     assert decode_event({"type": "x", "data": "[1,2]"}) is None
+
+
+def test_event_id_fallback_is_stable_and_payload_hash_is_order_independent() -> None:
+    first = resolve_event_id(
+        event_type="turn_completed",
+        payload={},
+        stream="agent:events",
+        entry_id="1-0",
+    )
+    second = resolve_event_id(
+        event_type="turn_completed",
+        payload={},
+        stream="agent:events",
+        entry_id="1-0",
+    )
+
+    assert first == second
+    assert stable_payload_hash({"a": 1, "b": 2}) == stable_payload_hash({"b": 2, "a": 1})
 
 
 async def test_consumer_processes_and_acks_published_events() -> None:
@@ -181,3 +232,39 @@ async def test_ensure_group_is_idempotent() -> None:
 
     await queue.ensure_group()
     await queue.ensure_group()  # BUSYGROUP 被吞掉，不抛
+
+
+async def test_inbox_skips_duplicate_business_event_and_acks_both_entries() -> None:
+    """不同 Stream entry 携带相同 event_id 时，handler 只执行一次。"""
+    redis = FakeStreamRedis()
+    inbox = FakeEventInbox()
+    queue = _queue(redis, event_inbox=inbox)
+    handled: list[str] = []
+
+    async def handler(payload: dict) -> None:
+        handled.append(payload["event_id"])
+
+    payload = {"event_id": "turn-42", "session_id": "11"}
+    await queue.publish("turn_completed", payload)
+    await queue.publish("turn_completed", payload)
+    await _run_one_cycle(queue, {"turn_completed": handler})
+
+    assert handled == ["turn-42"]
+    assert redis.groups[("agent:events", "core")]["pending"] == {}
+
+
+async def test_inbox_rejects_same_event_id_with_different_payload() -> None:
+    redis = FakeStreamRedis()
+    inbox = FakeEventInbox()
+    queue = _queue(redis, event_inbox=inbox, max_deliveries=1)
+    handled: list[dict] = []
+
+    async def handler(payload: dict) -> None:
+        handled.append(payload)
+
+    await queue.publish("turn_completed", {"event_id": "turn-43", "session_id": "11"})
+    await queue.publish("turn_completed", {"event_id": "turn-43", "session_id": "12"})
+    await _run_one_cycle(queue, {"turn_completed": handler})
+
+    assert handled == [{"event_id": "turn-43", "session_id": "11"}]
+    assert len(redis.entries["agent:events:dead"]) == 1

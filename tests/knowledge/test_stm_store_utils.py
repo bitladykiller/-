@@ -21,6 +21,8 @@ def test_build_session_keys_uses_consistent_suffixes() -> None:
         "summary": "stm:tenant-1:user-1:session-1:summary",
         "meta": "stm:tenant-1:user-1:session-1:meta",
         "lock": "stm:tenant-1:user-1:session-1:lock",
+        "turns": "stm:tenant-1:user-1:session-1:turns",
+        "turn_lock": "stm:tenant-1:user-1:session-1:turn_lock",
     }
 
 

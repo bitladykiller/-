@@ -83,6 +83,7 @@ class RedisStreamQueue:
         block_ms: int = DEFAULT_BLOCK_MS,
         claim_idle_ms: int = DEFAULT_CLAIM_IDLE_MS,
         max_deliveries: int = DEFAULT_MAX_DELIVERIES,
+        event_inbox: Any | None = None,
     ) -> None:
         self._redis = redis_client
         self.stream = stream
@@ -92,6 +93,8 @@ class RedisStreamQueue:
         self._block_ms = block_ms
         self._claim_idle_ms = claim_idle_ms
         self._max_deliveries = max_deliveries
+        # Inbox 由容器注入；单元测试和独立使用者可以保持原有的纯 Stream 行为。
+        self._event_inbox = event_inbox
         self.dead_letter_stream = f"{stream}:dead"
 
     # ------------------------------------------------------------------ #
@@ -110,9 +113,7 @@ class RedisStreamQueue:
     async def ensure_group(self) -> None:
         """确保消费组存在（幂等）。"""
         try:
-            await self._redis.xgroup_create(
-                self.stream, self.group, id="0", mkstream=True
-            )
+            await self._redis.xgroup_create(self.stream, self.group, id="0", mkstream=True)
         except Exception as exc:
             # BUSYGROUP = 已存在，属正常路径
             if "BUSYGROUP" not in str(exc):
@@ -141,9 +142,80 @@ class RedisStreamQueue:
             await self._redis.xack(self.stream, self.group, entry_id)
             return
 
+        event_id = ""
+        claim_owner = ""
+        payload_conflict = False
+        if self._event_inbox is not None:
+            from app.platform.event_inbox import (
+                InboxClaimAction,
+                resolve_event_id,
+                stable_payload_hash,
+            )
+
+            event_id = resolve_event_id(
+                event_type=event_type,
+                payload=payload,
+                stream=self.stream,
+                entry_id=eid,
+            )
+            # 把解析结果交给业务 handler：旧 PEL 同样能获得稳定的派生 event_id。
+            payload = {**payload, "event_id": event_id}
+            claim = await self._event_inbox.claim(
+                event_type=event_type,
+                event_id=event_id,
+                payload_hash=stable_payload_hash(payload),
+                stream=self.stream,
+                entry_id=eid,
+            )
+            claim_owner = claim.owner
+            if claim.action is InboxClaimAction.SKIP_COMPLETED:
+                logger.info(
+                    "幂等跳过已完成事件 | type=%s event_id=%s stream_id=%s",
+                    event_type,
+                    event_id,
+                    eid,
+                )
+                await self._redis.xack(self.stream, self.group, entry_id)
+                return
+            if claim.action is InboxClaimAction.BUSY:
+                logger.info(
+                    "事件仍由其他消费者处理，保留 PEL | type=%s event_id=%s",
+                    event_type,
+                    event_id,
+                )
+                return
+            if claim.action is InboxClaimAction.PAYLOAD_CONFLICT:
+                payload_conflict = True
+
         try:
+            if payload_conflict:
+                raise ValueError(f"event_id payload 冲突: {event_id}")
             await handler(payload)
+            if self._event_inbox is not None:
+                # 必须先落 completed 再 ACK。此处失败时保留 PEL，重放由业务侧
+                # event_id 幂等保障收敛。
+                await self._event_inbox.mark_completed(
+                    event_type=event_type,
+                    event_id=event_id,
+                    owner=claim_owner,
+                )
         except Exception as exc:
+            if self._event_inbox is not None and event_id:
+                try:
+                    await self._event_inbox.mark_failed(
+                        event_type=event_type,
+                        event_id=event_id,
+                        owner=claim_owner,
+                        error=str(exc),
+                        dead_lettered=deliveries >= self._max_deliveries,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Inbox 失败状态回写失败 | type=%s event_id=%s",
+                        event_type,
+                        event_id,
+                        exc_info=True,
+                    )
             log_degradation(
                 logger,
                 "streams.handle_event",
@@ -189,9 +261,7 @@ class RedisStreamQueue:
         entries = result[1] if isinstance(result, (list, tuple)) and len(result) >= 2 else []
         for entry_id, fields in entries:
             deliveries = await self._delivery_count(entry_id)
-            await self._handle_entry(
-                handlers, entry_id, fields, deliveries=deliveries
-            )
+            await self._handle_entry(handlers, entry_id, fields, deliveries=deliveries)
 
     async def _delivery_count(self, entry_id: Any) -> int:
         """查询消息的投递次数；失败按 1 处理。"""

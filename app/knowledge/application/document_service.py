@@ -102,7 +102,9 @@ class DocumentService:
         last_task_id: str = "",
     ) -> DocumentSummary:
         """首次上传：分配/校验 doc_id 并写入 pending 记录。"""
-        resolved = validate_doc_id(doc_id) if doc_id and str(doc_id).strip() else build_doc_id(user_id)
+        resolved = (
+            validate_doc_id(doc_id) if doc_id and str(doc_id).strip() else build_doc_id(user_id)
+        )
         display = (title or original_name or resolved).strip() or resolved
         async with self._session_factory() as db:
             repo = UserDocumentRepository(db)
@@ -215,6 +217,14 @@ class DocumentService:
                 row = await repo.get_by_doc_id(safe)
                 if row is None:
                     logger.warning("apply_indexing_result 未找到 doc_id=%s", safe)
+                    return
+                if task_id and row.last_task_id and row.last_task_id != task_id:
+                    logger.info(
+                        "跳过过期索引任务结果 | doc_id=%s task_id=%s current_task_id=%s",
+                        safe,
+                        task_id,
+                        row.last_task_id,
+                    )
                     return
                 await repo.apply_index_result(
                     row,

@@ -15,6 +15,7 @@
 的方法，直接使用实例上的 client / config，不再把 logger、写入函数这类
 恒定依赖当参数层层下传。
 """
+
 from __future__ import annotations
 
 import time
@@ -89,11 +90,7 @@ def entity_to_memory(entity: Mapping[str, Any]) -> LongTermMemory:
         "is_deleted": False,
     }
     payload.update(
-        {
-            key: value
-            for key, value in entity.items()
-            if key in payload and value is not None
-        }
+        {key: value for key, value in entity.items() if key in payload and value is not None}
     )
     return LongTermMemory(**payload)
 
@@ -209,9 +206,7 @@ def build_hit_update_plan(
     """根据命中更新策略生成 partial upsert payload。"""
     last_hit_at = now_ts if update_config.update_last_hit_at else memory.last_hit_at
     hit_count = (
-        (memory.hit_count or 0) + 1
-        if update_config.increase_hit_count
-        else memory.hit_count
+        (memory.hit_count or 0) + 1 if update_config.increase_hit_count else memory.hit_count
     )
     return {
         "hit_count": hit_count,
@@ -270,11 +265,7 @@ def preview_text(text: str, limit: int) -> str:
 
 def extract_ids(rows: Sequence[Any], field: str) -> list[str]:
     """从 Milvus query 结果里提取非空主键，跳过异常行。"""
-    return [
-        str(row[field])
-        for row in rows
-        if isinstance(row, dict) and row.get(field)
-    ]
+    return [str(row[field]) for row in rows if isinstance(row, dict) and row.get(field)]
 
 
 # ---------------------------------------------------------------------- #
@@ -407,6 +398,7 @@ class SimpleLongTermMemory:
         content: str,
         *,
         session_id: str = "",
+        memory_id: str | None = None,
     ) -> str | None:
         """保存长期记忆。
 
@@ -429,6 +421,7 @@ class SimpleLongTermMemory:
                 )
                 return None
 
+            is_idempotent_write = memory_id is not None
             memory_id, record = build_new_memory_insert_record(
                 tenant_id=tenant_id,
                 user_id=user_id,
@@ -437,8 +430,12 @@ class SimpleLongTermMemory:
                 embedding=embedding,
                 now_ts=self._now_ts(),
                 session_id=session_id,
+                memory_id=memory_id,
             )
-            await insert_records(self.milvus_client, self.collection_name, [record])
+            if is_idempotent_write:
+                await upsert_records(self.milvus_client, self.collection_name, [record])
+            else:
+                await insert_records(self.milvus_client, self.collection_name, [record])
             return memory_id
         except Exception as exc:
             log_degradation(
@@ -545,14 +542,12 @@ class SimpleLongTermMemory:
         检索失败时返回空列表——长期记忆是增强项，不应让主对话链路失败。
         """
         try:
-            filter_expr, resolved_top_k, resolved_score_threshold = (
-                resolve_active_search_request(
-                    self.search_config,
-                    tenant_id,
-                    user_id,
-                    top_k,
-                    score_threshold,
-                )
+            filter_expr, resolved_top_k, resolved_score_threshold = resolve_active_search_request(
+                self.search_config,
+                tenant_id,
+                user_id,
+                top_k,
+                score_threshold,
             )
             hits = await self.retrieval_core.search_hybrid(
                 query,

@@ -7,9 +7,11 @@
 - mode=create：insert version=1
 - mode=replace：soft_delete 旧 chunk → insert 新 version
 """
+
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
@@ -104,6 +106,26 @@ def _resolve_doc_id(
     return validate_doc_id(doc_id_factory(user_id))
 
 
+def normalize_chunks_for_event(chunks: Sequence[object], event_id: str) -> None:
+    """把一次索引任务的 chunk 主键固定为 event_id 派生值。
+
+    PDF/DOCX 表格切分会产生随机 chunk_id；若 Stream 在写入 Milvus 后、ACK 前
+    重放，随机 ID 会把同一批内容再插一次。这里在入库边界统一覆写为稳定 ID。
+    """
+    safe_event = "".join(ch for ch in event_id if ch.isalnum() or ch in {"-", "_"})[:64]
+    if not safe_event:
+        return
+    for index, chunk in enumerate(chunks):
+        chunk_id = f"evt_{safe_event}_{index}"
+        if isinstance(chunk, dict):
+            chunk["chunk_id"] = chunk_id
+        else:
+            try:
+                chunk.chunk_id = chunk_id  # type: ignore[attr-defined]
+            except (AttributeError, TypeError):
+                continue
+
+
 # NOTE: 索引器统一遵循 `ChunkIndexer` 协议（index + reindex，签名固定）。
 # 这里曾经有一层"兼容层"：用 `except TypeError` 嗅探 index 的签名、
 # 用 getattr 探测 reindex 是否存在，并在缺失时退化成全量 index。
@@ -160,6 +182,7 @@ class IndexingService:
             return {"status": STATUS_ERROR, "message": str(exc)}
 
         content_hash = str(file_info.get("content_hash") or "")
+        event_id = str(file_info.get("event_id") or file_info.get("task_id") or "").strip()
         from app.shared.core.config import settings as app_settings
 
         default_owner = app_settings.app_config.rag_visibility.global_owner
@@ -176,11 +199,25 @@ class IndexingService:
                     "doc_id": doc_id,
                     "mode": mode,
                 }
+            if event_id:
+                normalize_chunks_for_event(chunks, event_id)
 
             if mode == _MODE_REPLACE:
-                result = await searcher.reindex(
-                    doc_id, chunks, content_hash=content_hash, owner_id=owner_id
-                )
+                if event_id:
+                    result = await searcher.reindex(
+                        doc_id,
+                        chunks,
+                        content_hash=content_hash,
+                        owner_id=owner_id,
+                        idempotency_key=event_id,
+                    )
+                else:
+                    result = await searcher.reindex(
+                        doc_id,
+                        chunks,
+                        content_hash=content_hash,
+                        owner_id=owner_id,
+                    )
                 return {
                     "status": STATUS_SUCCESS,
                     "chunks": int(result.get("chunks") or 0),
@@ -191,11 +228,25 @@ class IndexingService:
                     "soft_deleted": int(result.get("soft_deleted") or 0),
                 }
 
-            count = int(
-                await searcher.index(
-                    chunks, version=1, content_hash=content_hash, owner_id=owner_id
+            if event_id:
+                count = int(
+                    await searcher.index(
+                        chunks,
+                        version=1,
+                        content_hash=content_hash,
+                        owner_id=owner_id,
+                        idempotency_key=event_id,
+                    )
                 )
-            )
+            else:
+                count = int(
+                    await searcher.index(
+                        chunks,
+                        version=1,
+                        content_hash=content_hash,
+                        owner_id=owner_id,
+                    )
+                )
             return {
                 "status": STATUS_SUCCESS,
                 "chunks": count,
@@ -219,4 +270,5 @@ __all__ = [
     "IndexingService",
     "load_pipeline_dependencies",
     "normalize_upload_mode",
+    "normalize_chunks_for_event",
 ]

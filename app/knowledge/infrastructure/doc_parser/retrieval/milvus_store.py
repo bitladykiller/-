@@ -58,9 +58,7 @@ class MilvusStore:
         """
         self.config = config
         self.embedding_model = self._resolve_embedding_model(embedding_model)
-        self.client = MilvusClient(
-            uri=f"http://{config.milvus_host}:{config.milvus_port}"
-        )
+        self.client = MilvusClient(uri=f"http://{config.milvus_host}:{config.milvus_port}")
         self._create_collection_if_not_exists()
         self.retrieval_core = MilvusHybridSearchCore(
             milvus_client=self.client,
@@ -279,6 +277,7 @@ class MilvusStore:
         version: int = 1,
         content_hash: str = "",
         owner_id: str = "global",
+        idempotency_key: str = "",
     ) -> int:
         """批量插入 DocumentChunk 到 Milvus。
 
@@ -320,8 +319,9 @@ class MilvusStore:
             for chunk, vector in zip(chunks, vectors, strict=True)
         ]
 
+        write = self.client.upsert if idempotency_key else self.client.insert
         result = await run_blocking(
-            self.client.insert,
+            write,
             collection_name=self.config.milvus_collection_name,
             data=data,
         )
@@ -336,6 +336,7 @@ class MilvusStore:
         *,
         content_hash: str = "",
         owner_id: str = "global",
+        idempotency_key: str = "",
     ) -> dict[str, int]:
         """文档动态更新：软删旧版 → 插入新 version。
 
@@ -343,6 +344,14 @@ class MilvusStore:
             soft_deleted / version / chunks
         """
         safe_doc = validate_doc_id(doc_id)
+        if idempotency_key:
+            existing = await self._get_active_event_index(safe_doc, idempotency_key)
+            if existing is not None:
+                return {
+                    "soft_deleted": 0,
+                    "version": existing["version"],
+                    "chunks": existing["chunks"],
+                }
         delete_info = await self.soft_delete_by_doc_id(safe_doc)
         version = next_version(delete_info.get("max_version"))
         # 确保 chunks 上的 doc_id 一致（防止解析侧漂移）
@@ -357,12 +366,33 @@ class MilvusStore:
             version=version,
             content_hash=content_hash,
             owner_id=owner_id,
+            idempotency_key=idempotency_key,
         )
         return {
             "soft_deleted": int(delete_info.get("soft_deleted") or 0),
             "version": version,
             "chunks": inserted,
         }
+
+    async def _get_active_event_index(
+        self,
+        doc_id: str,
+        idempotency_key: str,
+    ) -> dict[str, int] | None:
+        """返回本次事件已写入的活跃版本，供 XACK 前重放快速收敛。"""
+        marker = f"evt_{idempotency_key}_"
+        try:
+            rows = await self._query(
+                doc_id_filter(doc_id, active_only=True),
+                output_fields=["chunk_id", "version"],
+            )
+        except Exception as exc:
+            logger.warning("读取事件索引状态失败 | doc_id=%s | %s", doc_id, exc)
+            return None
+        matched = [row for row in rows if str(row.get("chunk_id") or "").startswith(marker)]
+        if not matched:
+            return None
+        return {"version": _max_version_of(matched), "chunks": len(matched)}
 
     async def hard_purge_soft_deleted(
         self,

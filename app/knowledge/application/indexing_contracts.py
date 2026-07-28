@@ -19,6 +19,8 @@ class UploadFileInfo(TypedDict, total=False):
     mode: str
     # 可选内容哈希，用于审计/后续幂等
     content_hash: str
+    # Redis Stream / 后台任务的稳定幂等事件 ID
+    event_id: str
 
 
 class IndexingResult(TypedDict, total=False):
@@ -54,6 +56,7 @@ class ChunkIndexer(Protocol):
         version: int = 1,
         content_hash: str = "",
         owner_id: str = "global",
+        idempotency_key: str = "",
     ) -> int: ...
 
     async def reindex(
@@ -63,6 +66,7 @@ class ChunkIndexer(Protocol):
         *,
         content_hash: str = "",
         owner_id: str = "global",
+        idempotency_key: str = "",
     ) -> ReindexResult: ...
 
 

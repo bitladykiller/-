@@ -721,6 +721,8 @@ execute_react(state, config):
 > 消费者做"MySQL 历史落库 + after_agent 记忆链"。收益：崩溃可重放、
 > 失败有重试与死信、SSE 关键路径零等待。事件基础设施不可用时回退为
 > 进程内后台协程（`flush_pending_memory_writes()` 供测试等待）。
+> 每轮事件都会带稳定的 `turn_id/event_id`：MySQL history 以该 ID 唯一约束，
+> STM 以会话级回合集合防重；因此 ACK 前崩溃重放不会重复追加同一轮对话。
 > 全景见 [00-全流程图集.md](00-全流程图集.md) §24-25、[04](04-记忆系统.md) §2.5。
 
 ### 原第 8 节内容

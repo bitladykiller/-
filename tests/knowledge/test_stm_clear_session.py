@@ -22,10 +22,12 @@ def test_clear_session_deletes_all_session_keys() -> None:
 
     deleted = asyncio.run(stm.clear_session("default", "7", "42"))
 
-    assert deleted == 4
+    assert deleted == 6
     assert redis_client.deleted_keys == [
         "agent:stm:default:7:42:messages",
         "agent:stm:default:7:42:summary",
         "agent:stm:default:7:42:meta",
         "agent:stm:default:7:42:lock",
+        "agent:stm:default:7:42:turns",
+        "agent:stm:default:7:42:turn_lock",
     ]

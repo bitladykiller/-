@@ -6,10 +6,12 @@
 
 本文件重点做流程编排，不把 Redis / Milvus / 画像服务的细节分散到多个调用点。
 """
+
 from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TypeAlias
 
@@ -102,8 +104,8 @@ class MemoryMiddleware:
         profile_task = self._read_user_profile(user_id)
         ltm_task = self._read_long_term(tenant_id, user_id, user_input)
 
-        (session_summary, recent_messages), user_profile, long_term_memories = (
-            await asyncio.gather(stm_task, profile_task, ltm_task)
+        (session_summary, recent_messages), user_profile, long_term_memories = await asyncio.gather(
+            stm_task, profile_task, ltm_task
         )
 
         memory_state = AgentMemoryState()
@@ -177,6 +179,9 @@ class MemoryMiddleware:
         user_message: str,
         assistant_message: str,
         long_term_memories: list[MemorySearchResult] | None = None,
+        *,
+        turn_id: str = "",
+        event_created_at: int | None = None,
     ) -> None:
         """Agent 回复后写记忆。
 
@@ -185,39 +190,51 @@ class MemoryMiddleware:
         2) 达阈值则压缩；压缩成功且 ltm_enabled 再 extract → LTM/画像
         3) 可选刷新本轮命中的 LTM hit 统计
         """
-        now_ts = int(time.time())
+        now_ts = int(event_created_at or time.time())
         # ---- 1) 短期记忆落盘 ----
         meta: SessionMeta | None = None
         try:
-            meta = await self.redis_stm.get_meta(tenant_id, user_id, session_id)
-            meta.total_turns += 1
-            meta.last_updated_at = now_ts
+            if turn_id and hasattr(self.redis_stm, "append_turn_once"):
+                _inserted, meta = await self.redis_stm.append_turn_once(
+                    tenant_id,
+                    user_id,
+                    session_id,
+                    turn_id=turn_id,
+                    user_message=user_message,
+                    assistant_message=assistant_message,
+                    created_at=now_ts,
+                )
+                await self.redis_stm.refresh_ttl(tenant_id, user_id, session_id)
+            else:
+                meta = await self.redis_stm.get_meta(tenant_id, user_id, session_id)
+                meta.total_turns += 1
+                meta.last_updated_at = now_ts
 
-            # 一轮对话的 user + assistant 两条消息合并成一次 Redis 往返
-            await self.redis_stm.append_messages(
-                tenant_id,
-                user_id,
-                session_id,
-                [
-                    MessageRecord(
-                        message_id=f"msg_u_{now_ts}",
-                        role="user",
-                        content=user_message,
-                        created_at=now_ts,
-                        turn_index=meta.total_turns,
-                    ),
-                    MessageRecord(
-                        message_id=f"msg_a_{now_ts}",
-                        role="assistant",
-                        content=assistant_message,
-                        created_at=now_ts,
-                        turn_index=meta.total_turns,
-                    ),
-                ],
-            )
+                # 一轮对话的 user + assistant 两条消息合并成一次 Redis 往返
+                await self.redis_stm.append_messages(
+                    tenant_id,
+                    user_id,
+                    session_id,
+                    [
+                        MessageRecord(
+                            message_id=f"msg_u_{now_ts}",
+                            role="user",
+                            content=user_message,
+                            created_at=now_ts,
+                            turn_index=meta.total_turns,
+                        ),
+                        MessageRecord(
+                            message_id=f"msg_a_{now_ts}",
+                            role="assistant",
+                            content=assistant_message,
+                            created_at=now_ts,
+                            turn_index=meta.total_turns,
+                        ),
+                    ],
+                )
 
-            await self.redis_stm.save_meta(tenant_id, user_id, session_id, meta)
-            await self.redis_stm.refresh_ttl(tenant_id, user_id, session_id)
+                await self.redis_stm.save_meta(tenant_id, user_id, session_id, meta)
+                await self.redis_stm.refresh_ttl(tenant_id, user_id, session_id)
         except Exception as exc:
             self._degrade_once(
                 "redis_stm_write",
@@ -246,6 +263,7 @@ class MemoryMiddleware:
                 meta.last_compressed_turn,
                 msg_count,
             ):
+
                 async def summary_compressor(
                     old_summary_str: str,
                     old_messages: list[MessageRecord],
@@ -281,12 +299,20 @@ class MemoryMiddleware:
                     )
                     if not should_save_memory:
                         continue
+                    save_kwargs: dict[str, str] = {"session_id": session_id}
+                    if turn_id:
+                        save_kwargs["memory_id"] = str(
+                            uuid.uuid5(
+                                uuid.NAMESPACE_URL,
+                                f"{turn_id}:{memory.memory_type}:{memory.content}",
+                            )
+                        )
                     await self.milvus_ltm.save_memory(
                         tenant_id,
                         user_id,
                         memory.memory_type,
                         memory.content,
-                        session_id=session_id,
+                        **save_kwargs,
                     )
 
                 uid = _parse_numeric_user_id(user_id)
@@ -298,9 +324,7 @@ class MemoryMiddleware:
                             getattr(self.redis_stm, "redis", None),
                         )
                     except Exception as exc:
-                        log_degradation(
-                            logger, "memory.write_user_profile", exc, user=user_id
-                        )
+                        log_degradation(logger, "memory.write_user_profile", exc, user=user_id)
         except Exception as exc:
             self._degrade_once(
                 "compress",

@@ -1,7 +1,10 @@
 import asyncio
 from pathlib import Path
 
-from app.knowledge.application.indexing_service import IndexingService
+from app.knowledge.application.indexing_service import (
+    IndexingService,
+    normalize_chunks_for_event,
+)
 
 
 class FakeChunkIndexer:
@@ -48,9 +51,7 @@ def test_process_file_returns_error_for_unsupported_extension(tmp_path: Path) ->
     file_path.write_text("hello", encoding="utf-8")
 
     service = IndexingService()
-    result = _run(
-        service.process_file({"path": str(file_path), "user_id": 1})
-    )
+    result = _run(service.process_file({"path": str(file_path), "user_id": 1}))
 
     assert result == {"status": "error", "message": "不支持的文件类型: .txt"}
 
@@ -76,7 +77,6 @@ def test_process_file_accepts_markdown_extension(tmp_path: Path) -> None:
     assert result["doc_id"] == "doc-2"
     assert result["mode"] == "create"
     assert result["version"] == 1
-
 
 
 def test_process_file_returns_warning_when_dependency_missing(tmp_path: Path) -> None:
@@ -110,9 +110,7 @@ def test_process_file_returns_empty_document_result(tmp_path: Path) -> None:
         pipeline_loader=load_pipeline,
         doc_id_factory=lambda user_id: f"doc-{user_id}",
     )
-    result = _run(
-        service.process_file({"path": str(file_path), "user_id": 8})
-    )
+    result = _run(service.process_file({"path": str(file_path), "user_id": 8}))
 
     assert result == {
         "status": "success",
@@ -137,9 +135,7 @@ def test_process_file_indexes_parsed_chunks(tmp_path: Path) -> None:
         pipeline_loader=load_pipeline,
         doc_id_factory=lambda user_id: f"doc-{user_id}",
     )
-    result = _run(
-        service.process_file({"path": f"  {file_path}  ", "user_id": "9"})
-    )
+    result = _run(service.process_file({"path": f"  {file_path}  ", "user_id": "9"}))
 
     assert indexer.indexed_chunks == chunks
     assert result == {
@@ -168,9 +164,7 @@ def test_process_file_uses_default_doc_id_factory(tmp_path: Path) -> None:
         return parse_document, indexer
 
     service = IndexingService(pipeline_loader=load_pipeline)
-    result = _run(
-        service.process_file({"path": f" {file_path} ", "user_id": "5"})
-    )
+    result = _run(service.process_file({"path": f" {file_path} ", "user_id": "5"}))
 
     assert len(captured_doc_ids) == 1
     assert captured_doc_ids[0].startswith("upload_5_")
@@ -192,11 +186,7 @@ def test_process_file_replace_requires_doc_id(tmp_path: Path) -> None:
     service = IndexingService(
         pipeline_loader=lambda: (lambda path, *, doc_id: [], FakeChunkIndexer(0)),
     )
-    result = _run(
-        service.process_file(
-            {"path": str(file_path), "user_id": 1, "mode": "replace"}
-        )
-    )
+    result = _run(service.process_file({"path": str(file_path), "user_id": 1, "mode": "replace"}))
     assert result["status"] == "error"
     assert "doc_id" in result["message"]
 
@@ -233,3 +223,11 @@ def test_process_file_replace_calls_reindex(tmp_path: Path) -> None:
         "version": 2,
         "soft_deleted": 3,
     }
+
+
+def test_normalize_chunks_for_event_makes_retry_ids_deterministic() -> None:
+    chunks = [{"chunk_id": "random-a"}, {"chunk_id": "random-b"}]
+
+    normalize_chunks_for_event(chunks, "task-42")
+
+    assert [chunk["chunk_id"] for chunk in chunks] == ["evt_task-42_0", "evt_task-42_1"]

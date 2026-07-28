@@ -8,6 +8,7 @@ STM = Short-Term Memory，短期记忆。
 - 维护消息滑动窗口
 - 在需要时触发对话压缩
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -66,6 +67,8 @@ class SessionKeys(TypedDict):
     summary: str
     meta: str
     lock: str
+    turns: str
+    turn_lock: str
 
 
 def build_session_keys(
@@ -80,6 +83,8 @@ def build_session_keys(
         "summary": f"{key_prefix}:{tenant_id}:{user_id}:{session_id}:summary",
         "meta": f"{key_prefix}:{tenant_id}:{user_id}:{session_id}:meta",
         "lock": f"{key_prefix}:{tenant_id}:{user_id}:{session_id}:lock",
+        "turns": f"{key_prefix}:{tenant_id}:{user_id}:{session_id}:turns",
+        "turn_lock": f"{key_prefix}:{tenant_id}:{user_id}:{session_id}:turn_lock",
     }
 
 
@@ -406,9 +411,7 @@ class RedisShortTermMemory:
             return
         try:
             key = self._build_session_keys(tenant_id, user_id, session_id)["messages"]
-            scored = {
-                compress_message(message): message_score(message) for message in messages
-            }
+            scored = {compress_message(message): message_score(message) for message in messages}
             async with self.redis.pipeline(transaction=False) as pipe:
                 pipe.zadd(key, scored)
                 queue_window_pruning(pipe, key, self.settings)
@@ -416,13 +419,81 @@ class RedisShortTermMemory:
         except Exception as exc:
             log_degradation(logger, "stm.append_messages", exc, session=session_id)
 
+    async def append_turn_once(
+        self,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        *,
+        turn_id: str,
+        user_message: str,
+        assistant_message: str,
+        created_at: int,
+    ) -> tuple[bool, SessionMeta]:
+        """原子地追加一个回合；同一 turn_id 重放时不重复写入。
+
+        先获取 session 级短锁，再用 Redis transaction 一次提交消息、meta 和
+        已处理回合标记。这样进程在 EXEC 前退出不会留下半标记，EXEC 后重放则能
+        看到完整的 turn_id 记录。
+        """
+        keys = self._build_session_keys(tenant_id, user_id, session_id)
+        token = f"turn-{time.time_ns()}"
+        acquired = await self.redis.set(
+            keys["turn_lock"],
+            token,
+            ex=self.settings.lock_ttl_seconds,
+            nx=True,
+        )
+        if not acquired:
+            # 与同 session 的在途回合同步时不抢写；Stream 会在 PEL 中重试。
+            raise RuntimeError(f"STM 回合锁忙: {session_id}")
+
+        try:
+            existing = await self.redis.hget(keys["turns"], turn_id)  # type: ignore[misc]
+            meta = await self.get_meta(tenant_id, user_id, session_id)
+            if existing is not None:
+                return False, meta
+
+            meta.total_turns += 1
+            meta.last_updated_at = created_at
+            messages = [
+                MessageRecord(
+                    message_id=f"msg_u_{turn_id}",
+                    role="user",
+                    content=user_message,
+                    created_at=created_at,
+                    turn_index=meta.total_turns,
+                ),
+                MessageRecord(
+                    message_id=f"msg_a_{turn_id}",
+                    role="assistant",
+                    content=assistant_message,
+                    created_at=created_at,
+                    turn_index=meta.total_turns,
+                ),
+            ]
+            scored = {compress_message(message): message_score(message) for message in messages}
+            async with self.redis.pipeline(transaction=True) as pipe:
+                pipe.zadd(keys["messages"], scored)
+                queue_window_pruning(pipe, keys["messages"], self.settings)
+                pipe.set(keys["meta"], meta.model_dump_json(), ex=self.settings.ttl_seconds)
+                pipe.hset(keys["turns"], turn_id, str(meta.total_turns))
+                pipe.expire(keys["turns"], self.settings.ttl_seconds)
+                await pipe.execute()
+            return True, meta
+        except Exception as exc:
+            log_degradation(logger, "stm.append_turn_once", exc, session=session_id)
+            raise
+        finally:
+            await self.redis.delete(keys["turn_lock"])
+
     async def get_recent_messages(
         self,
         tenant_id: str,
         user_id: str,
         session_id: str,
         limit: int | None = None,
-        ) -> list[MessageRecord]:
+    ) -> list[MessageRecord]:
         """按时间顺序返回最近消息。"""
         try:
             key = self._build_session_keys(tenant_id, user_id, session_id)["messages"]
@@ -607,6 +678,8 @@ class RedisShortTermMemory:
                 keys["summary"],
                 keys["meta"],
                 keys["lock"],
+                keys["turns"],
+                keys["turn_lock"],
             )
             return int(deleted or 0)
         except Exception as exc:

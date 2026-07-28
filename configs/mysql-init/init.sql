@@ -39,9 +39,11 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     message_type VARCHAR(20) DEFAULT 'text',
+    turn_event_id VARCHAR(128) NULL COMMENT 'Redis Stream turn_completed 幂等事件 ID',
     FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
     INDEX idx_conversation_id (conversation_id),
-    INDEX idx_sender (sender)
+    INDEX idx_sender (sender),
+    UNIQUE KEY uk_messages_turn_event_sender (conversation_id, turn_event_id, sender)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 插入示例用户数据（演示密码统一为 demo1234，bcrypt 哈希；生产部署请删除种子用户）
@@ -141,3 +143,29 @@ CREATE TABLE IF NOT EXISTS user_documents (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='用户 RAG 文档元信息';
+
+-- ============================================================ --
+-- Redis Streams 消费端 Inbox：至少一次投递下的业务幂等控制
+-- ============================================================ --
+
+CREATE TABLE IF NOT EXISTS processed_events (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    event_type VARCHAR(128) NOT NULL,
+    event_id VARCHAR(128) NOT NULL,
+    stream_name VARCHAR(128) NOT NULL DEFAULT '',
+    stream_entry_id VARCHAR(64) NOT NULL DEFAULT '',
+    payload_hash CHAR(64) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'processing',
+    attempts INT NOT NULL DEFAULT 0,
+    lease_owner VARCHAR(128) NOT NULL DEFAULT '',
+    lease_expires_at DATETIME NULL,
+    last_error TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at DATETIME NULL,
+    dead_lettered_at DATETIME NULL,
+    UNIQUE KEY uk_processed_event (event_type, event_id),
+    INDEX idx_processed_events_status (status),
+    INDEX idx_processed_events_type (event_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Redis Stream 消费端幂等收件箱';

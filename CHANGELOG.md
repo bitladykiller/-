@@ -5,6 +5,19 @@
 本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### Redis Stream 幂等消费
+
+- 新增 MySQL `processed_events` Inbox：按 `(event_type,event_id)` 管理处理租约、
+  payload hash、完成与失败状态；已完成消息重放仅 ACK。
+- `turn_completed` 增加稳定 `turn_id`：MySQL messages 唯一键和 Redis STM 回合
+  集合共同防止重复历史/上下文写入；LTM 使用事件派生的确定性主键 upsert。
+- `document_index_requested` 复用 `task_id`：任务索引 chunk ID 稳定化，并以
+  Milvus upsert 与已有任务版本检测抵抗 ACK 前重放。
+- 新增 `configs/mysql-init/migration_stream_idempotency.sql`，同时更新 fresh
+  install 的 `init.sql` 与系统模块文档。
+
 ## [v3.35.2] - 2026-07-26
 
 第五轮审查：清剿残余的事件循环阻塞热点 + 注册竞态。
