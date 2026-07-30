@@ -203,6 +203,8 @@ def _build_compression_task_recorder(
     session_id: str,
     tenant_id: str,
     user_id: str,
+    from_turn: int = 0,
+    to_turn: int = 0,
 ) -> Callable[[str], Awaitable[None]]:
     """构造压缩任务完成回调。
 
@@ -221,7 +223,7 @@ def _build_compression_task_recorder(
                         "INSERT INTO compression_tasks "
                         "(compression_id, session_id, tenant_id, user_id, "
                         "from_turn, to_turn, status, completed_at) "
-                        "VALUES (:cid, :sid, :tid, :uid, 0, 0, 'completed', NOW()) "
+                        "VALUES (:cid, :sid, :tid, :uid, :ft, :tt, 'completed', NOW()) "
                         "ON DUPLICATE KEY UPDATE "
                         "status = 'completed', completed_at = NOW()"
                     ),
@@ -230,12 +232,14 @@ def _build_compression_task_recorder(
                         "sid": session_id,
                         "tid": tenant_id,
                         "uid": user_id,
+                        "ft": from_turn,
+                        "tt": to_turn,
                     },
                 )
                 await db.commit()
         except Exception:
             logger.warning(
-                "记录压缩任���完成状态失败 | compression_id=%s session=%s",
+                "记录压缩任务完成状态失败 | compression_id=%s session=%s",
                 cid,
                 session_id,
                 exc_info=True,
@@ -706,7 +710,9 @@ class RedisShortTermMemory:
                 save_meta=lambda meta: self.save_meta(tenant_id, user_id, session_id, meta),
                 compression_id=compression_id,
                 on_complete=_build_compression_task_recorder(
-                    compression_id, session_id, tenant_id, user_id
+                    compression_id, session_id, tenant_id, user_id,
+                    from_turn=meta.last_compressed_turn,
+                    to_turn=meta.total_turns,
                 ) if compression_id else None,
             )
         except Exception as exc:

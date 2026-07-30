@@ -312,6 +312,9 @@ class MemoryMiddleware:
                     compression_id=compression_id,
                 )
 
+            # 写入 LTM 语义记忆
+            ltm_saved_count = 0
+
             if compressed and self.ltm_enabled:
                 new_summary = await self.redis_stm.get_summary(tenant_id, user_id, session_id)
                 semantic_memories, profile = await self.memory_extractor.extract(
@@ -319,9 +322,6 @@ class MemoryMiddleware:
                     assistant_message,
                     new_summary,
                 )
-
-                # 写入 LTM 语义记忆
-                ltm_saved_count = 0
                 for memory in semantic_memories:
                     should_save_memory = await self.milvus_ltm.deduplicate_memory(
                         tenant_id,
@@ -372,7 +372,15 @@ class MemoryMiddleware:
                 else:
                     report.record(ViewName.PROFILE.value, ViewStatus.SKIPPED)
 
-            report.record(ViewName.COMPRESSION.value, ViewStatus.COMPLETED)
+            if compressed:
+                report.record(ViewName.COMPRESSION.value, ViewStatus.COMPLETED)
+                if not self.ltm_enabled:
+                    report.record(ViewName.LTM.value, ViewStatus.SKIPPED)
+                    report.record(ViewName.PROFILE.value, ViewStatus.SKIPPED)
+            else:
+                report.record(ViewName.COMPRESSION.value, ViewStatus.SKIPPED)
+                report.record(ViewName.LTM.value, ViewStatus.SKIPPED)
+                report.record(ViewName.PROFILE.value, ViewStatus.SKIPPED)
         except Exception as exc:
             self._degrade_once(
                 "compress",

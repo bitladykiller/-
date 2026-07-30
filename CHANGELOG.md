@@ -31,7 +31,7 @@
 - **LTM 接入**：`long_term_memory_ids` 从 before_agent 透传到 event payload，
   打通命中统计主链路。
 
-- **faFB 监控**：`_fallback_counter` 计数器 + warning 日志，可观测回退路径使用频率。
+- **回退监控**：`_fallback_counter` 计数器 + warning 日志，可观测 fire-and-forget 回退路径使用频率。
 
 **表变更**：新表 `turn_view_status` / `compression_tasks` / `memory_hit_events`；
 `user_facts` 新增 `source_turn_id` + `source_memory_id` + `uk_user_fact_source`。
@@ -44,8 +44,8 @@
 - `app/knowledge/infrastructure/stm/redis_short_term_memory.py` — compression_id 支持
 - `app/knowledge/infrastructure/ltm/simple_long_term_memory.py` — update_memory_hit_infos_deduped
 - `app/user/application/user_profile_service.py` / repository — source_turn_id 透传
-- `app/platform/events.py` — TurnMemoryReport 处理 + faFB 计数器
-- `app/chat/infrastructure/graph/lifecycle_nodes.py` — LTM 透传 + faFB 监控
+- `app/platform/events.py` — TurnMemoryReport 处理 + 回退计数器
+- `app/chat/infrastructure/graph/lifecycle_nodes.py` — LTM 透传 + 回退监控
 - `configs/mysql-init/` — 新迁移 + 更新 init.sql + user_facts 字段扩展
 - `docs/modules/04-记忆系统.md` — v3.36 可补偿机制文档
 

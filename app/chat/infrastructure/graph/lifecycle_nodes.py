@@ -203,7 +203,7 @@ async def after_response(state: AgentState, *, config: RunnableConfig) -> dict[s
 def _record_fallback(session_id: str) -> None:
     """记录 fire-and-forget 回退路径使用事件。
 
-    生产上应监控此计数器的增长速率——faFB 比例升高说明
+    生产上应监控此计数器的增长速率——回退比例升高说明
     Redis Stream 基础设施不稳定，需排查。
     """
     try:

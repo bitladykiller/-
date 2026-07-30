@@ -531,6 +531,11 @@ class SimpleLongTermMemory:
         v3.36+: 通过 memory_hit_events (turn_id, memory_id) 唯一索引去重——
         同一 turn 同一条记忆命中，只有首次 INSERT 成功才增加 hit_count。
         MySQL 不可用时静默回退到无去重模式（原有行为）。
+
+        重要：Milvus partial upsert 不支持原子递增，hit_count 需要
+        在内存对象上算好再覆盖。如果 memories 来自 event payload 重建
+        （hit_count=0），必须先从 Milvus 读出真实值，否则会把已有
+        计数覆盖为 1。
         """
         if not self.update_on_hit_config.enabled or not memories:
             return True
@@ -547,7 +552,56 @@ class SimpleLongTermMemory:
         if not new_memories:
             return True
 
+        # payload 重建的 memory 对象 hit_count=0，需从 Milvus 读真实值
+        if any(getattr(m, "hit_count", 0) == 0 for m in new_memories):
+            reloaded = await self._reload_hit_counts(new_memories)
+            if reloaded:
+                new_memories = reloaded
+
         return await self.update_memory_hit_infos(new_memories)
+
+    async def _reload_hit_counts(
+        self,
+        memories: list[LongTermMemory],
+    ) -> list[LongTermMemory] | None:
+        """从 Milvus 读出每条记忆的真实 hit_count，返回更新后的列表。
+
+        Milvus 不可用时返回 None，调用方使用原对象（容错降级）。
+        """
+        try:
+            memory_ids = [m.memory_id for m in memories]
+            id_filter = ", ".join(f'"{mid}"' for mid in memory_ids)
+            rows = await query_records(
+                self.milvus_client,
+                self.collection_name,
+                f"memory_id in [{id_filter}]",
+                limit=len(memory_ids),
+                output_fields=["memory_id", "hit_count", "last_hit_at"],
+            )
+            id_to_hit: dict[str, tuple[int, int]] = {}
+            for row in rows:
+                if isinstance(row, dict):
+                    mid = str(row.get("memory_id", ""))
+                    id_to_hit[mid] = (
+                        int(row.get("hit_count", 0)),
+                        int(row.get("last_hit_at", 0)),
+                    )
+            result: list[LongTermMemory] = []
+            for m in memories:
+                if m.memory_id in id_to_hit:
+                    hc, lha = id_to_hit[m.memory_id]
+                    m.hit_count = hc
+                    m.last_hit_at = lha
+                result.append(m)
+            return result
+        except Exception as exc:
+            log_degradation(
+                logger,
+                "ltm.reload_hit_counts",
+                exc,
+                count=len(memories),
+            )
+            return None
 
     @staticmethod
     async def _try_record_hit_event_dedup(turn_id: str, memory_id: str) -> bool:
