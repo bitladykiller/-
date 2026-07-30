@@ -6,17 +6,21 @@
     agent:events / group "core"
     ├── turn_completed            对话回合完成
     │     ├── MySQL messages 表落一轮历史（给人看的记录）
-    │     └── MemoryMiddleware.after_agent（STM/压缩/LTM/画像）
+    │     └── MemoryMiddleware.after_agent（STM/压缩/LTM/画像/命中）
     └── document_index_requested  文档索引请求
           └── run_document_indexing_job + Redis 任务状态流转
 
 WHY 记忆写入走事件而不是 fire-and-forget 协程：
 协程随进程共存亡且没有重试；事件在 Redis 里有 PEL 兜底——
 进程崩溃后由 XAUTOCLAIM 认领重放，失败有次数上限和死信可查。
+
+v3.36+: after_agent 返回 TurnMemoryReport，全部视图完成才 mark_completed；
+任一视图失败则 mark_failed 触发整回合重放（各视图自带幂等，重放安全）。
 """
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 from app.shared.core.degradation import log_degradation
@@ -31,13 +35,21 @@ EVENT_GROUP = "core"
 EVENT_TURN_COMPLETED = "turn_completed"
 EVENT_DOCUMENT_INDEX_REQUESTED = "document_index_requested"
 
+#: fire-and-forget 回退路径使用计数器（指标暴露）
+_fallback_counter: Counter[str] = Counter()
+
+
+def get_fallback_metrics() -> dict[str, int]:
+    """导出 fire-and-forget 回退路径使用统计。"""
+    return dict(_fallback_counter)
+
 
 async def handle_turn_completed(payload: dict[str, Any]) -> None:
     """对话回合完成：持久化历史 + 写记忆。
 
-    两步各自容错：历史落库失败不阻断记忆写入，反之亦然。
-    整个 handler 抛出才会触发 stream 重试，因此只有"两步都想重试"
-    的系统性故障（如 Redis/DB 全挂）才向上抛。
+    v3.36+: after_agent 返回 TurnMemoryReport。
+    全部视图完成 → mark_completed 正���流程；
+    任一视图失败 → mark_failed 触发 Stream 重试（各视图自带幂等，安全）。
     """
     tenant_id = str(payload.get("tenant_id") or "default")
     user_id = str(payload.get("user_id") or "")
@@ -49,15 +61,38 @@ async def handle_turn_completed(payload: dict[str, Any]) -> None:
         logger.warning("turn_completed 载荷不完整，丢弃 | payload_keys=%s", sorted(payload))
         return
 
+    # 记录 history 视图状态
+    history_ok = True
     if turn_id:
-        await _persist_turn_history(
-            session_id,
-            user_message,
-            assistant_message,
-            turn_event_id=turn_id,
-        )
+        try:
+            await _persist_turn_history(
+                session_id, user_message, assistant_message, turn_event_id=turn_id
+            )
+        except Exception as exc:
+            log_degradation(logger, "events.persist_turn_history", exc, session=session_id)
+            history_ok = False
     else:
-        await _persist_turn_history(session_id, user_message, assistant_message)
+        try:
+            await _persist_turn_history(session_id, user_message, assistant_message)
+        except Exception as exc:
+            log_degradation(logger, "events.persist_turn_history", exc, session=session_id)
+            history_ok = False
+
+    # 记录 history 视图完成
+    if turn_id:
+        try:
+            from app.knowledge.infrastructure.orchestration.turn_view_tracker import (
+                ViewName,
+                ViewStatus,
+                record_view_status,
+            )
+            await record_view_status(
+                turn_id,
+                ViewName.HISTORY.value,
+                ViewStatus.COMPLETED.value if history_ok else ViewStatus.FAILED.value,
+            )
+        except Exception:
+            pass
 
     from app.platform.container import get_container
 
@@ -66,19 +101,68 @@ async def handle_turn_completed(payload: dict[str, Any]) -> None:
     if middleware is None:
         logger.warning("记忆中间件未初始化，跳过记忆写入 | session=%s", session_id)
         return
+
+    # 构造 LTM 命中列表：从 before_agent 读取的 long_term_memories
+    # v3.36+: 由 event payload 中的 long_term_memory_ids 字段传递
+    long_term_memories = _parse_ltm_memories_from_payload(payload)
+
     memory_kwargs: dict[str, Any] = {
         "tenant_id": tenant_id,
         "user_id": user_id,
         "session_id": session_id,
         "user_message": user_message,
         "assistant_message": assistant_message,
+        "long_term_memories": long_term_memories,
     }
     if turn_id:
         memory_kwargs["turn_id"] = turn_id
     event_created_at = payload.get("event_created_at")
     if isinstance(event_created_at, (int, str)) and str(event_created_at).isdigit():
         memory_kwargs["event_created_at"] = int(event_created_at)
-    await middleware.after_agent(**memory_kwargs)
+
+    report = await middleware.after_agent(**memory_kwargs)
+
+    # 判断是否需要重试
+    if report.all_completed and history_ok:
+        return  # handler 成功 → stream 层 mark_completed + XACK
+
+    # 有视图失败 → 上抛异常触发 stream 重试
+    failed_views = report.failed_views
+    if not history_ok:
+        failed_views.append("history")
+    error_msg = f"after_agent 部分视图失败: {failed_views} | errors={report.errors}"
+    logger.warning(error_msg)
+    raise RuntimeError(error_msg)
+
+
+def _parse_ltm_memories_from_payload(payload: dict[str, Any]) -> list[Any]:
+    """从 event payload 中恢复 LTM 记忆引用（轻量传递 memory_id 列表）。"""
+    from app.knowledge.domain.schemas import LongTermMemory, MemorySearchResult
+
+    memory_ids = payload.get("long_term_memory_ids")
+    if not memory_ids:
+        return []
+    if isinstance(memory_ids, str):
+        memory_ids = [mid.strip() for mid in memory_ids.split(",") if mid.strip()]
+    if not isinstance(memory_ids, list):
+        return []
+
+    results: list[Any] = []
+    for mid in memory_ids:
+        if isinstance(mid, str) and mid:
+            results.append(
+                MemorySearchResult(
+                    memory=LongTermMemory(
+                        memory_id=str(mid),
+                        tenant_id=str(payload.get("tenant_id", "default")),
+                        user_id=str(payload.get("user_id", "")),
+                        memory_type="issue_history",
+                        content="",
+                    ),
+                    score=0.0,
+                )
+            )
+    return results
 
 
 async def _persist_turn_history(

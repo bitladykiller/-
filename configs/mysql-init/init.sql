@@ -100,12 +100,15 @@ CREATE TABLE IF NOT EXISTS user_facts (
     version INT DEFAULT 1 COMMENT '版本号（冲突更新 +1）',
     is_active BOOLEAN DEFAULT TRUE COMMENT '当前有效版本',
     superseded_by INT DEFAULT NULL COMMENT '被哪个 id 替代',
+    source_turn_id VARCHAR(128) NULL COMMENT '来源 turn 事件 ID',
+    source_memory_id VARCHAR(128) NULL COMMENT '来源语义记忆 ID',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_user_fact (user_id, fact_key),
+    UNIQUE KEY uk_user_fact_source (user_id, fact_key, source_turn_id),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='用户事实（key-value，支持版本追踪和冲突解决）';
+COMMENT='用户事实（key-value，支持版本追踪、来源追溯和事件级幂等）';
 
 -- 示例用户画像数据
 INSERT INTO user_profiles (user_id, preferred_brand, budget_range, preferred_category, tags) VALUES
@@ -143,6 +146,52 @@ CREATE TABLE IF NOT EXISTS user_documents (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='用户 RAG 文档元信息';
+
+-- ============================================================ --
+-- v3.36+: after_agent 可补偿机制 + 压缩/画像/命中幂等强化
+-- ============================================================ --
+
+CREATE TABLE IF NOT EXISTS turn_view_status (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    turn_id VARCHAR(128) NOT NULL COMMENT '关联 turn_id',
+    view_name VARCHAR(32) NOT NULL COMMENT '视图名: history|stm|compression|ltm|profile|hits',
+    status VARCHAR(32) NOT NULL DEFAULT 'pending' COMMENT 'pending|completed|failed|skipped',
+    attempts INT NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_turn_view (turn_id, view_name),
+    INDEX idx_turn_view_status (status),
+    INDEX idx_turn_id (turn_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='回合各物化视图写入状态，支持失败视图独立补偿';
+
+CREATE TABLE IF NOT EXISTS compression_tasks (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    compression_id CHAR(64) NOT NULL COMMENT 'SHA256(session_id:from_turn:to_turn)',
+    session_id VARCHAR(128) NOT NULL,
+    tenant_id VARCHAR(128) NOT NULL DEFAULT '',
+    user_id VARCHAR(128) NOT NULL DEFAULT '',
+    from_turn INT NOT NULL,
+    to_turn INT NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'processing' COMMENT 'processing|completed|failed',
+    attempts INT NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    completed_at DATETIME NULL,
+    UNIQUE KEY uk_compression_id (compression_id),
+    INDEX idx_compression_session (session_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='STM 压缩任务幂等状态';
+
+CREATE TABLE IF NOT EXISTS memory_hit_events (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    turn_id VARCHAR(128) NOT NULL,
+    memory_id VARCHAR(128) NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_hit_event (turn_id, memory_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='LTM 命中事件去重';
 
 -- ============================================================ --
 -- Redis Streams 消费端 Inbox：至少一次投递下的业务幂等控制

@@ -5,6 +5,13 @@
 - `after_agent`：写入短期记忆、触发压缩、抽取长期记忆、刷新命中信息
 
 本文件重点做流程编排，不把 Redis / Milvus / 画像服务的细节分散到多个调用点。
+
+v3.36+:
+- after_agent 返回 TurnMemoryReport，handler 据此决定补偿策略
+- 各视图独立追踪状态到 turn_view_status 表
+- 压缩使用 compression_id 显式幂等键
+- hit_count 通过 memory_hit_events 表去重
+- 画像写支持 source_turn_id 传递
 """
 
 from __future__ import annotations
@@ -25,7 +32,14 @@ from app.knowledge.domain.schemas import (
 )
 from app.knowledge.infrastructure.orchestration.profile_adapter import (
     load_user_profile,
-    save_user_profile,
+    save_user_profile_with_source,
+)
+from app.knowledge.infrastructure.orchestration.turn_view_tracker import (
+    TurnMemoryReport,
+    ViewName,
+    ViewStatus,
+    build_compression_id,
+    record_view_status,
 )
 from app.shared.core.config import settings
 from app.shared.core.degradation import log_degradation
@@ -43,7 +57,9 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 ProfileReader: TypeAlias = Callable[[int, Any | None], Awaitable[UserProfileData]]
-ProfileWriter: TypeAlias = Callable[[int, UserProfileData, Any | None], Awaitable[bool]]
+ProfileWriter: TypeAlias = Callable[
+    [int, UserProfileData, Any | None, str | None], Awaitable[bool]
+]
 
 
 def _parse_numeric_user_id(user_id: str) -> int:
@@ -60,7 +76,7 @@ class MemoryMiddleware:
         milvus_ltm: SimpleLongTermMemory,
         memory_extractor: MemoryExtractor,
         profile_reader: ProfileReader = load_user_profile,
-        profile_writer: ProfileWriter = save_user_profile,
+        profile_writer: ProfileWriter = save_user_profile_with_source,
     ):
         self.redis_stm = redis_stm
         self.milvus_ltm = milvus_ltm
@@ -140,7 +156,7 @@ class MemoryMiddleware:
         return None, []
 
     async def _read_user_profile(self, user_id: str) -> UserProfileData | None:
-        """读取用户画像；非数字 user_id 视为匿名，直接跳过。"""
+        """读取用户画像；非数字 user_id 视为匿���，直接跳过。"""
         uid = _parse_numeric_user_id(user_id)
         if uid <= 0:
             return None
@@ -182,15 +198,22 @@ class MemoryMiddleware:
         *,
         turn_id: str = "",
         event_created_at: int | None = None,
-    ) -> None:
+        persist_view_status: bool = True,
+    ) -> TurnMemoryReport:
         """Agent 回复后写记忆。
 
         阶段：
         1) 写 STM 本轮 user/assistant + meta + 刷新 TTL
         2) 达阈值则压缩；压缩成功且 ltm_enabled 再 extract → LTM/画像
         3) 可选刷新本轮命中的 LTM hit 统计
+
+        v3.36+: 返回 TurnMemoryReport，handler 据此决定补偿策略。
+        persist_view_status=False 用于 fire-and-forget 回退路径（MySQL 不可用）。
         """
+        report = TurnMemoryReport(turn_id=turn_id)
+
         now_ts = int(event_created_at or time.time())
+
         # ---- 1) 短期记忆落盘 ----
         meta: SessionMeta | None = None
         try:
@@ -210,7 +233,6 @@ class MemoryMiddleware:
                 meta.total_turns += 1
                 meta.last_updated_at = now_ts
 
-                # 一轮对话的 user + assistant 两条消息合并成一次 Redis 往返
                 await self.redis_stm.append_messages(
                     tenant_id,
                     user_id,
@@ -235,6 +257,8 @@ class MemoryMiddleware:
 
                 await self.redis_stm.save_meta(tenant_id, user_id, session_id, meta)
                 await self.redis_stm.refresh_ttl(tenant_id, user_id, session_id)
+
+            report.record(ViewName.STM.value, ViewStatus.COMPLETED)
         except Exception as exc:
             self._degrade_once(
                 "redis_stm_write",
@@ -244,12 +268,13 @@ class MemoryMiddleware:
                 user=user_id,
                 session=session_id,
             )
+            report.record(ViewName.STM.value, ViewStatus.FAILED, str(exc))
 
         # ---- 2) 压缩 + 抽取（仅 should_compress 为真时）----
         # WHY 不在每轮 extract：控 LLM 成本，压缩点语义更完整
+        compressed = False
+        semantic_memories: list[Any] = []
         try:
-            # 复用第 1 段刚写回的 meta，省一次 Redis 往返；
-            # 只有第 1 段失败（meta 为 None）时才回源重读。
             if meta is None:
                 meta = await self.redis_stm.get_meta(tenant_id, user_id, session_id)
             msg_count = await self.redis_stm.get_message_count(
@@ -257,13 +282,11 @@ class MemoryMiddleware:
                 user_id,
                 session_id,
             )
-            compressed = False
             if self.redis_stm.should_compress(
                 meta.total_turns,
                 meta.last_compressed_turn,
                 msg_count,
             ):
-
                 async def summary_compressor(
                     old_summary_str: str,
                     old_messages: list[MessageRecord],
@@ -277,12 +300,18 @@ class MemoryMiddleware:
                     content = getattr(response, "content", response)
                     return content if isinstance(content, str) else str(content)
 
+                # v3.36+: 传递 compression_id 给压缩方法
+                compression_id = build_compression_id(
+                    session_id, meta.last_compressed_turn, meta.total_turns
+                )
                 compressed = await self.redis_stm.compress_session_memory(
                     tenant_id,
                     user_id,
                     session_id,
                     summary_compressor,
+                    compression_id=compression_id,
                 )
+
             if compressed and self.ltm_enabled:
                 new_summary = await self.redis_stm.get_summary(tenant_id, user_id, session_id)
                 semantic_memories, profile = await self.memory_extractor.extract(
@@ -290,6 +319,9 @@ class MemoryMiddleware:
                     assistant_message,
                     new_summary,
                 )
+
+                # 写入 LTM 语义记忆
+                ltm_saved_count = 0
                 for memory in semantic_memories:
                     should_save_memory = await self.milvus_ltm.deduplicate_memory(
                         tenant_id,
@@ -314,7 +346,14 @@ class MemoryMiddleware:
                         memory.content,
                         **save_kwargs,
                     )
+                    ltm_saved_count += 1
 
+                report.record(
+                    ViewName.LTM.value,
+                    ViewStatus.COMPLETED if ltm_saved_count > 0 else ViewStatus.SKIPPED,
+                )
+
+                # 写入用户画像（v3.36+: 带 source_turn_id）
                 uid = _parse_numeric_user_id(user_id)
                 if uid > 0 and profile and isinstance(profile, dict):
                     try:
@@ -322,9 +361,18 @@ class MemoryMiddleware:
                             uid,
                             profile,
                             getattr(self.redis_stm, "redis", None),
+                            turn_id if turn_id else None,
                         )
+                        report.record(ViewName.PROFILE.value, ViewStatus.COMPLETED)
                     except Exception as exc:
-                        log_degradation(logger, "memory.write_user_profile", exc, user=user_id)
+                        log_degradation(
+                            logger, "memory.write_user_profile", exc, user=user_id
+                        )
+                        report.record(ViewName.PROFILE.value, ViewStatus.FAILED, str(exc))
+                else:
+                    report.record(ViewName.PROFILE.value, ViewStatus.SKIPPED)
+
+            report.record(ViewName.COMPRESSION.value, ViewStatus.COMPLETED)
         except Exception as exc:
             self._degrade_once(
                 "compress",
@@ -334,14 +382,19 @@ class MemoryMiddleware:
                 user=user_id,
                 session=session_id,
             )
+            report.record(ViewName.COMPRESSION.value, ViewStatus.FAILED, str(exc))
+            report.record(ViewName.LTM.value, ViewStatus.FAILED, str(exc))
+            report.record(ViewName.PROFILE.value, ViewStatus.FAILED, str(exc))
 
-        # ---- 3) 命中统计（旁路逻辑，失败不影响主路径）----
-        # 一次 upsert 刷完全部命中，避免逐条往返 Milvus
+        # ---- 3) 命中统计（旁路逻辑，去重写入）----
         if long_term_memories:
             try:
-                await self.milvus_ltm.update_memory_hit_infos(
-                    [result.memory for result in long_term_memories]
+                # v3.36+: 使用带去重的命中更新方法
+                await self.milvus_ltm.update_memory_hit_infos_deduped(
+                    [result.memory for result in long_term_memories],
+                    turn_id=turn_id,
                 )
+                report.record(ViewName.HITS.value, ViewStatus.COMPLETED)
             except Exception as exc:
                 self._degrade_once(
                     "ltm_hit_update",
@@ -350,3 +403,22 @@ class MemoryMiddleware:
                     tenant=tenant_id,
                     user=user_id,
                 )
+                report.record(ViewName.HITS.value, ViewStatus.FAILED, str(exc))
+        else:
+            report.record(ViewName.HITS.value, ViewStatus.SKIPPED)
+
+        # 持久化视图状态到 MySQL（仅事件路径）
+        if persist_view_status and turn_id:
+            try:
+                from app.knowledge.infrastructure.orchestration.turn_view_tracker import (
+                    record_all_view_statuses,
+                )
+                await record_all_view_statuses(turn_id, report)
+            except Exception:
+                logger.warning(
+                    "记录视图状态失败 | turn=%s",
+                    turn_id,
+                    exc_info=True,
+                )
+
+        return report

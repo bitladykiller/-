@@ -90,8 +90,13 @@ class UserProfileService:
         user_id: int,
         profile: UserProfileData,
         redis_client: ProfileCache | None = None,
+        source_turn_id: str | None = None,
     ) -> bool:
-        """批量回写结构化画像，统一处理主字段和 facts。"""
+        """批量回写结构化画像，统一处理主字段和 facts。
+
+        v3.36+: source_turn_id 透传到 repository 层，写入
+        user_facts.source_turn_id，配合唯一索引实现事件级幂等。
+        """
         if not profile:
             return True
 
@@ -102,6 +107,7 @@ class UserProfileService:
                     db,
                     user_id=user_id,
                     profile=profile,
+                    source_turn_id=source_turn_id,
                 )
                 if data_changed:
                     await db.commit()

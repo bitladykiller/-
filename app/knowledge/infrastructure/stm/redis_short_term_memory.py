@@ -198,6 +198,52 @@ def build_runtime_settings(
     )
 
 
+def _build_compression_task_recorder(
+    compression_id: str,
+    session_id: str,
+    tenant_id: str,
+    user_id: str,
+) -> Callable[[str], Awaitable[None]]:
+    """构造压缩任务完成回调。
+
+    v3.36+: 压缩 pipeline 成功完成后，记录到 compression_tasks 表。
+    ON DUPLICATE KEY UPDATE 语义——无论重放多少次，只留一条 completed 记录。
+    """
+
+    async def _record(cid: str) -> None:
+        try:
+            from app.shared.core.database import AsyncSessionLocal
+            from sqlalchemy import text
+
+            async with AsyncSessionLocal() as db:
+                await db.execute(
+                    text(
+                        "INSERT INTO compression_tasks "
+                        "(compression_id, session_id, tenant_id, user_id, "
+                        "from_turn, to_turn, status, completed_at) "
+                        "VALUES (:cid, :sid, :tid, :uid, 0, 0, 'completed', NOW()) "
+                        "ON DUPLICATE KEY UPDATE "
+                        "status = 'completed', completed_at = NOW()"
+                    ),
+                    {
+                        "cid": cid,
+                        "sid": session_id,
+                        "tid": tenant_id,
+                        "uid": user_id,
+                    },
+                )
+                await db.commit()
+        except Exception:
+            logger.warning(
+                "记录压缩任���完成状态失败 | compression_id=%s session=%s",
+                cid,
+                session_id,
+                exc_info=True,
+            )
+
+    return _record
+
+
 # NOTE: 下面这些函数的运行时参数统一叫 `runtime`，不叫 `settings`——
 # 本模块同时在用全局 `app.shared.core.config.settings`，同名参数会遮蔽它，
 # 读者很难判断某处的 `settings` 到底指哪个。
@@ -329,8 +375,14 @@ async def run_compression_pipeline(
     update_summary: Callable[[CompressionContext], Awaitable[None]],
     rewrite_messages: Callable[[CompressionContext], Awaitable[None]],
     save_meta: Callable[[SessionMeta], Awaitable[None]],
+    compression_id: str = "",
+    on_complete: Callable[[str], Awaitable[None]] | None = None,
 ) -> bool:
-    """执行一次带分布式锁保护的压缩流程。"""
+    """执行一次带分布式锁保护的压缩流程。
+
+    v3.36+: compression_id 提供显式幂等键；on_complete 回调在流程
+    成功完成后调用（用于记录 compression_tasks 表）。
+    """
     acquired = await redis_client.set(
         context.keys["lock"],
         "1",
@@ -346,6 +398,8 @@ async def run_compression_pipeline(
         meta = context.meta.model_copy(deep=True)
         meta.last_compressed_turn = meta.total_turns
         await save_meta(meta)
+        if on_complete and compression_id:
+            await on_complete(compression_id)
         return True
     finally:
         await redis_client.delete(context.keys["lock"])
@@ -594,10 +648,16 @@ class RedisShortTermMemory:
         user_id: str,
         session_id: str,
         llm_compress_func: SummaryCompressor,
+        *,
+        compression_id: str = "",
     ) -> bool:
         """压缩旧消息，并保留最近若干轮原始消息。
 
         四路状态读取（meta / 计数 / 摘要 / 消息）互不依赖，并发发起。
+
+        v3.36+: compression_id 非空时，压缩完成后记录到 compression_tasks
+        表，实现显式幂等——即使进程在 save_summary → rewrite_recent_messages
+        → save_meta 之间崩���，重放时可凭 compression_id 判断状态。
         """
         try:
             keys = self._build_session_keys(tenant_id, user_id, session_id)
@@ -644,6 +704,10 @@ class RedisShortTermMemory:
                     runtime=self.settings,
                 ),
                 save_meta=lambda meta: self.save_meta(tenant_id, user_id, session_id, meta),
+                compression_id=compression_id,
+                on_complete=_build_compression_task_recorder(
+                    compression_id, session_id, tenant_id, user_id
+                ) if compression_id else None,
             )
         except Exception as exc:
             log_degradation(logger, "stm.compress_session_memory", exc, session=session_id)

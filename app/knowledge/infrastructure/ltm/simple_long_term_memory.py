@@ -520,6 +520,60 @@ class SimpleLongTermMemory:
             log_degradation(logger, "ltm.update_memory_hit_infos", exc, count=len(memories))
             return False
 
+    async def update_memory_hit_infos_deduped(
+        self,
+        memories: Sequence[LongTermMemory],
+        *,
+        turn_id: str = "",
+    ) -> bool:
+        """批量刷新命中计数器（带去重保护）。
+
+        v3.36+: 通过 memory_hit_events (turn_id, memory_id) 唯一索引去重——
+        同一 turn 同一条记忆命中，只有首次 INSERT 成功才增加 hit_count。
+        MySQL 不可用时静默回退到无去重模式（原有行为）。
+        """
+        if not self.update_on_hit_config.enabled or not memories:
+            return True
+
+        new_memories: list[LongTermMemory] = []
+        for memory in memories:
+            memory_id = getattr(memory, "memory_id", "")
+            if not memory_id:
+                continue
+            is_new = await self._try_record_hit_event_dedup(turn_id, memory_id)
+            if is_new:
+                new_memories.append(memory)
+
+        if not new_memories:
+            return True
+
+        return await self.update_memory_hit_infos(new_memories)
+
+    @staticmethod
+    async def _try_record_hit_event_dedup(turn_id: str, memory_id: str) -> bool:
+        """尝试记录命中事件去重条目。返回 True 表示首次命中（需计数）。"""
+        if not turn_id or not memory_id:
+            return True
+        try:
+            from app.shared.core.database import AsyncSessionLocal
+            from sqlalchemy import text
+            from sqlalchemy.exc import IntegrityError
+
+            async with AsyncSessionLocal() as db:
+                await db.execute(
+                    text(
+                        "INSERT INTO memory_hit_events (turn_id, memory_id) "
+                        "VALUES (:tid, :mid)"
+                    ),
+                    {"tid": turn_id, "mid": memory_id},
+                )
+                await db.commit()
+                return True
+        except IntegrityError:
+            return False
+        except Exception:
+            return True
+
     # ------------------------------------------------------------------ #
     # 检索
     # ------------------------------------------------------------------ #

@@ -7,6 +7,48 @@
 
 ## [Unreleased]
 
+### v3.36 — after_agent 可补偿机制与幂等强化
+
+**背景**: after_agent 内部吞异常 → mark_completed → 不再重试。压缩多步操作
+缺少显式幂等键、画像无事件级幂等、hit_count += 1 天生非幂等、fire-and-forget
+回退不可观测、长期记忆未接入主链路。
+
+**改动**:
+
+- **可补偿**：`after_agent` 返回 `TurnMemoryReport`，`handle_turn_completed` 
+  据此决定是否向上抛异常触发 Stream 重试（各视图现自带幂等，重放安全）。新增
+  `turn_view_status` 表独立追踪每视图状态。
+
+- **压缩幂等**：`compression_id = SHA256(session_id:from:to)` +
+  `compression_tasks` 表，防崩溃半状态。
+
+- **画像幂等**：`user_facts` 新增 `source_turn_id` +
+  `uk_user_fact_source(user_id, fact_key, source_turn_id)` 防 LLM 非确定性重复版本。
+
+- **命中幂等**：`update_memory_hit_infos_deduped` + `memory_hit_events` 表，
+  `uk_hit_event(turn_id, memory_id)` 保证 hit_count 只增一次。
+
+- **LTM 接入**：`long_term_memory_ids` 从 before_agent 透传到 event payload，
+  打通命中统计主链路。
+
+- **faFB 监控**：`_fallback_counter` 计数器 + warning 日志，可观测回退路径使用频率。
+
+**表变更**：新表 `turn_view_status` / `compression_tasks` / `memory_hit_events`；
+`user_facts` 新增 `source_turn_id` + `source_memory_id` + `uk_user_fact_source`。
+迁移文件：`configs/mysql-init/migration_after_agent_compensation.sql`
+
+**文件变更**：
+- `app/knowledge/infrastructure/orchestration/memory_middleware.py` — after_agent 返回报告
+- `app/knowledge/infrastructure/orchestration/turn_view_tracker.py` — **新文件**，视图追踪
+- `app/knowledge/infrastructure/orchestration/profile_adapter.py` — save_user_profile_with_source
+- `app/knowledge/infrastructure/stm/redis_short_term_memory.py` — compression_id 支持
+- `app/knowledge/infrastructure/ltm/simple_long_term_memory.py` — update_memory_hit_infos_deduped
+- `app/user/application/user_profile_service.py` / repository — source_turn_id 透传
+- `app/platform/events.py` — TurnMemoryReport 处理 + faFB 计数器
+- `app/chat/infrastructure/graph/lifecycle_nodes.py` — LTM 透传 + faFB 监控
+- `configs/mysql-init/` — 新迁移 + 更新 init.sql + user_facts 字段扩展
+- `docs/modules/04-记忆系统.md` — v3.36 可补偿机制文档
+
 ### 统一路由决策
 
 - LangGraph 主图将原先连续的 Router 与 RetrievalPlan 合并为

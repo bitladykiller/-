@@ -41,12 +41,12 @@ _DEACTIVATE_FACT_SQL = text(
     "UPDATE user_facts SET is_active = FALSE, superseded_by = NULL WHERE id = :id"
 )
 _INSERT_VERSIONED_FACT_SQL = text(
-    "INSERT INTO user_facts (user_id, fact_key, fact_value, version) "
-    "VALUES (:uid, :key, :val, :ver)"
+    "INSERT INTO user_facts (user_id, fact_key, fact_value, version, source_turn_id) "
+    "VALUES (:uid, :key, :val, :ver, :src_turn)"
 )
 _INSERT_FACT_SQL = text(
-    "INSERT INTO user_facts (user_id, fact_key, fact_value) "
-    "VALUES (:uid, :key, :val)"
+    "INSERT INTO user_facts (user_id, fact_key, fact_value, source_turn_id) "
+    "VALUES (:uid, :key, :val, :src_turn)"
 )
 _LINK_SUPERSEDED_FACT_SQL = text(
     "UPDATE user_facts SET superseded_by = :new_id WHERE id = :old_id"
@@ -179,8 +179,13 @@ class UserProfileRepository:
         user_id: int,
         fact_key: str,
         fact_value: str,
+        source_turn_id: str | None = None,
     ) -> bool:
-        """在单个事务内完成事实更新，返回本次是否真的改动了数据。"""
+        """在单个事务内完成事实更新，返回本次是否真的改动了数据。
+
+        v3.36+: source_turn_id 非空时，通过唯一索引 uk_user_fact_source
+        防止同一 turn 的同一 key 产生重复版本（LLM 非确定性抽取保护）。
+        """
         row = (
             await db.execute(_CURRENT_FACT_VERSION_SQL, {"uid": user_id, "key": fact_key})
         ).mappings().first()
@@ -196,6 +201,7 @@ class UserProfileRepository:
                     "key": fact_key,
                     "val": fact_value,
                     "ver": row["version"] + 1,
+                    "src_turn": source_turn_id,
                 },
             )
             new_id = (await db.execute(_LAST_INSERT_ID_SQL)).scalar()
@@ -207,7 +213,7 @@ class UserProfileRepository:
 
         await db.execute(
             _INSERT_FACT_SQL,
-            {"uid": user_id, "key": fact_key, "val": fact_value},
+            {"uid": user_id, "key": fact_key, "val": fact_value, "src_turn": source_turn_id},
         )
         return True
 
@@ -217,8 +223,12 @@ class UserProfileRepository:
         *,
         user_id: int,
         profile: UserProfileData,
+        source_turn_id: str | None = None,
     ) -> bool:
-        """在单个事务里批量回写画像字段和结构化 facts。"""
+        """在单个事务里批量回写画像字段和结构化 facts。
+
+        v3.36+: source_turn_id 透传到 upsert_fact，实现事件级幂等。
+        """
         data_changed = False
 
         if any(profile.get(field_name) for field_name in PROFILE_FIELD_NAMES) or bool(
@@ -249,6 +259,7 @@ class UserProfileRepository:
                 user_id=user_id,
                 fact_key=fact_key,
                 fact_value=fact_value,
+                source_turn_id=source_turn_id,
             )
             data_changed = data_changed or fact_changed
 
