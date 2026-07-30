@@ -69,3 +69,26 @@ ALTER TABLE user_facts
 -- 同一次抽取产出的同 key 事实只保留首次写入
 CREATE UNIQUE INDEX IF NOT EXISTS uk_user_fact_source
     ON user_facts (user_id, fact_key, source_turn_id);
+
+-- ================================================================
+-- 5. 修复 uk_user_fact 与版本化逻辑的冲突
+--    旧索引 uk_user_fact(user_id, fact_key) 是全局唯一，版本化代码
+--    deactivate 旧行后 insert 同 key 新行会违反约束。
+--    方案：删除旧索引，用生成列 active_fact_key 仅对 is_active=TRUE 行
+--    取 fact_key（非激活行为 NULL），保证「同一 user 同一 key 最多一条
+--    激活记录」，同时允许任意多条历史版本共存。
+--    MySQL 8.0.13+ 支持 STORED 生成列上的唯一索引。
+-- ================================================================
+
+-- 添加生成列
+ALTER TABLE user_facts
+    ADD COLUMN active_fact_key VARCHAR(128) GENERATED ALWAYS AS
+        (CASE WHEN is_active = 1 THEN fact_key ELSE NULL END) STORED
+        AFTER source_memory_id;
+
+-- 删除旧的全局唯一索引
+DROP INDEX uk_user_fact ON user_facts;
+
+-- 建立仅覆盖激活行的唯一索引
+CREATE UNIQUE INDEX uk_user_fact_active
+    ON user_facts (user_id, active_fact_key);

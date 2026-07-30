@@ -102,9 +102,12 @@ CREATE TABLE IF NOT EXISTS user_facts (
     superseded_by INT DEFAULT NULL COMMENT '被哪个 id 替代',
     source_turn_id VARCHAR(128) NULL COMMENT '来源 turn 事件 ID',
     source_memory_id VARCHAR(128) NULL COMMENT '来源语义记忆 ID',
+    -- 仅对激活行生效的唯一键：deactivate 旧行后 insert 新行不再冲突
+    active_fact_key VARCHAR(128) GENERATED ALWAYS AS
+        (CASE WHEN is_active = 1 THEN fact_key ELSE NULL END) STORED,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_user_fact (user_id, fact_key),
+    UNIQUE KEY uk_user_fact_active (user_id, active_fact_key),
     UNIQUE KEY uk_user_fact_source (user_id, fact_key, source_turn_id),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci

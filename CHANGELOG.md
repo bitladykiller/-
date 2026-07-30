@@ -24,6 +24,9 @@
 
 - **画像幂等**：`user_facts` 新增 `source_turn_id` +
   `uk_user_fact_source(user_id, fact_key, source_turn_id)` 防 LLM 非确定性重复版本。
+  同时修复遗留的 `uk_user_fact(user_id, fact_key)` 全局唯一索引与版本化逻辑冲突：
+  改为生成列 `active_fact_key`（`CASE WHEN is_active THEN fact_key ELSE NULL END`），
+  保证「同一 user 同一 key 最多一条激活记录」，历史版本可共存。
 
 - **命中幂等**：`update_memory_hit_infos_deduped` + `memory_hit_events` 表，
   `uk_hit_event(turn_id, memory_id)` 保证 hit_count 只增一次。
@@ -34,7 +37,8 @@
 - **回退监控**：`_fallback_counter` 计数器 + warning 日志，可观测 fire-and-forget 回退路径使用频率。
 
 **表变更**：新表 `turn_view_status` / `compression_tasks` / `memory_hit_events`；
-`user_facts` 新增 `source_turn_id` + `source_memory_id` + `uk_user_fact_source`。
+`user_facts` 新增 `source_turn_id` + `source_memory_id` + `uk_user_fact_source` +
+生成列 `active_fact_key` + `uk_user_fact_active`（替换 `uk_user_fact`）。
 迁移文件：`configs/mysql-init/migration_after_agent_compensation.sql`
 
 **文件变更**：
