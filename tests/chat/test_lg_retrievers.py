@@ -1,0 +1,371 @@
+import asyncio
+
+import app.chat.infrastructure.retrievers.retriever_contracts as retriever_contracts
+import app.chat.infrastructure.retrievers.retriever_implementations as retriever_implementations
+import app.chat.infrastructure.retrievers.retriever_runtime as retriever_runtime
+
+
+class FakeSearcher:
+    def __init__(self, *, result=None, error: Exception | None = None) -> None:
+        self.result = result or []
+        self.error = error
+        self.calls: list[str] = []
+
+    async def search(self, task: str):
+        self.calls.append(task)
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+class FakeT2CAgent:
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        self.calls: list[dict] = []
+
+    async def ainvoke(self, payload: dict):
+        self.calls.append(payload)
+        return self.payload
+
+
+class FakeRetriever(retriever_contracts.Retriever):
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+
+    async def search(self, task: str) -> dict:
+        return {"task": task, **self.payload}
+
+
+class FakeRagRetriever(FakeRetriever):
+    def __init__(self) -> None:
+        super().__init__({"records": [{"id": 2}]})
+
+
+def _run(awaitable):
+    return asyncio.run(awaitable)
+
+
+def test_milvus_doc_retriever_search_truncates_records() -> None:
+    retriever = retriever_implementations.MilvusDocRetriever.__new__(
+        retriever_implementations.MilvusDocRetriever
+    )
+    retriever._searcher = FakeSearcher(
+        result=[
+            {
+                "chunk_type": "text",
+                "section_path": f"章节-{index}",
+                "source_file": f"doc-{index}.md",
+                "raw_text": f"内容-{index}",
+                "rrf_score": index / 10,
+                "rerank_score": index / 20,
+            }
+            for index in range(6)
+        ]
+    )
+    retriever._formalize_enabled = False
+    retriever._formalize_fn = None
+
+    result = _run(retriever.search("保修政策"))
+
+    assert len(result["records"]) == 5
+    assert result["records"][0] == {
+        "chunk_type": "text",
+        "section_path": "章节-0",
+        "source_file": "doc-0.md",
+        "raw_text": "内容-0",
+        "rrf_score": 0.0,
+        "rerank_score": 0.0,
+    }
+    assert result["errors"] == []
+    assert result["steps"] == [retriever_contracts.RAG_SEARCH_STEP]
+    assert retriever._searcher.calls == ["保修政策"]
+
+
+def test_milvus_doc_retriever_applies_formalize_before_search() -> None:
+    retriever = retriever_implementations.MilvusDocRetriever.__new__(
+        retriever_implementations.MilvusDocRetriever
+    )
+    retriever._searcher = FakeSearcher(result=[])
+    retriever._formalize_enabled = True
+
+    async def fake_formalize(q: str) -> str:
+        return "智能门锁保修政策"
+
+    retriever._formalize_fn = fake_formalize
+
+    result = _run(retriever.search("亲门锁保修咋样"))
+
+    assert retriever._searcher.calls == ["智能门锁保修政策"]
+    assert result["task"] == "亲门锁保修咋样"
+    assert result["rewritten_query"] == "智能门锁保修政策"
+
+
+def test_milvus_doc_retriever_search_keeps_stable_record_shape() -> None:
+    retriever = retriever_implementations.MilvusDocRetriever.__new__(
+        retriever_implementations.MilvusDocRetriever
+    )
+    retriever._searcher = FakeSearcher(
+        result=[
+            {
+                "chunk_type": "text",
+                "section_path": "章节-1",
+                "source_file": "doc-1.md",
+                "raw_text": "内容-1",
+                "rrf_score": 0.1,
+                "rerank_score": 0.2,
+            }
+        ]
+    )
+    retriever._formalize_enabled = False
+    retriever._formalize_fn = None
+
+    result = _run(retriever.search("保修政策"))
+
+    assert result["records"] == [
+        {
+            "chunk_type": "text",
+            "section_path": "章节-1",
+            "source_file": "doc-1.md",
+            "raw_text": "内容-1",
+            "rrf_score": 0.1,
+            "rerank_score": 0.2,
+        }
+    ]
+
+
+def test_milvus_doc_retriever_search_returns_fallback_record_on_error() -> None:
+    retriever = retriever_implementations.MilvusDocRetriever.__new__(
+        retriever_implementations.MilvusDocRetriever
+    )
+    retriever._searcher = FakeSearcher(error=RuntimeError("boom"))
+    retriever._formalize_enabled = False
+    retriever._formalize_fn = None
+
+    result = _run(retriever.search("保修政策"))
+
+    assert result["records"] == [{"message": "文档检索暂时不可用。"}]
+    assert result["errors"] == ["boom"]
+
+
+def test_knowledge_graph_retriever_wraps_text2cypher_output() -> None:
+    t2c_agent = FakeT2CAgent(
+        {
+            "cyphers": [{"records": [{"name": "Alice"}]}],
+            "errors": [],
+            "steps": ["text2cypher"],
+        }
+    )
+    retriever = retriever_implementations.KnowledgeGraphRetriever(t2c_agent)
+
+    result = _run(retriever.search("查用户"))
+
+    assert t2c_agent.calls == [{"task": "查用户"}]
+    assert result["task"] == "查用户"
+    assert result["records"] == [{"name": "Alice"}]
+    assert result["steps"] == ["text2cypher"]
+
+
+def test_knowledge_graph_retriever_normalizes_records_and_cyphers() -> None:
+    retriever = retriever_implementations.KnowledgeGraphRetriever(
+        FakeT2CAgent(
+            {
+                "records": {"name": "alice"},
+                "errors": ["warn"],
+                "steps": ["kg"],
+            }
+        )
+    )
+    cypher_retriever = retriever_implementations.KnowledgeGraphRetriever(
+        FakeT2CAgent(
+            {
+                "cyphers": [
+                    {"records": [{"id": 1}]},
+                    {"records": {"id": 2}},
+                ]
+            }
+        )
+    )
+
+    record_payload = _run(retriever.search("查用户"))
+    cypher_payload = _run(cypher_retriever.search("查订单"))
+
+    assert record_payload == {
+        "task": "查用户",
+        "records": [{"name": "alice"}],
+        "errors": ["warn"],
+        "steps": ["kg"],
+        "raw": {
+            "records": {"name": "alice"},
+            "errors": ["warn"],
+            "steps": ["kg"],
+        },
+    }
+    assert cypher_payload["records"] == [{"id": 1}, {"id": 2}]
+
+
+def test_get_retriever_uses_runtime_registry(monkeypatch) -> None:
+    import app.chat.infrastructure.kg.neo4j_conn as kg_neo4j_conn
+    import app.chat.infrastructure.kg.northwind_retriever as northwind_retriever
+    import app.chat.infrastructure.kg.predefined_cypher.cypher_dict as cypher_dict
+    import app.chat.infrastructure.kg.predefined_cypher.descriptions as descriptions
+    import app.chat.infrastructure.kg.text2cypher_workflow as text2cypher
+    import app.chat.infrastructure.modeling.models as lg_models
+
+    created: dict[str, object] = {}
+    fake_graph = object()
+    fake_model = object()
+    fake_agent = object()
+    registry = retriever_contracts.RetrieverRegistry()
+
+    # 预填充，跳过 _get_neo4j_graph 中的健康检查和真实连接
+    from app.platform.container import KnowledgeGraphComponents
+
+    async def fake_get_container():
+        class FakeContainer:
+            retriever_registry = registry
+            retriever_registry_lock = asyncio.Lock()
+            kg_components = KnowledgeGraphComponents()
+            neo4j_graph = fake_graph
+            neo4j_last_health_check_ts = 0.0
+
+        return FakeContainer()
+
+    from app.platform import container as cont_mod
+    monkeypatch.setattr(cont_mod, "get_container", fake_get_container)
+    monkeypatch.setattr(retriever_runtime, "_get_neo4j_graph", lambda container: fake_graph)
+
+    class FakeNorthwindRetriever:
+        def __init__(self) -> None:
+            created["cypher_examples"] = int(created.get("cypher_examples", 0)) + 1
+            created["cypher_example_obj"] = self
+
+    class FakeKgRetriever(FakeRetriever):
+        def __init__(self, agent) -> None:
+            created["kg_retrievers"] = int(created.get("kg_retrievers", 0)) + 1
+            created["kg_agent"] = agent
+            super().__init__({"records": [{"id": 1}]})
+
+    def fake_create_text2cypher_agent(**kwargs):
+        created["t2c_calls"] = int(created.get("t2c_calls", 0)) + 1
+        created["t2c_kwargs"] = kwargs
+        return fake_agent
+
+    monkeypatch.setattr(kg_neo4j_conn, "get_neo4j_graph", lambda: fake_graph)
+    monkeypatch.setattr(
+        northwind_retriever,
+        "NorthwindCypherRetriever",
+        FakeNorthwindRetriever,
+    )
+    monkeypatch.setattr(
+        cypher_dict,
+        "predefined_cypher_dict",
+        {"query_a": "MATCH (n) RETURN n"},
+    )
+    monkeypatch.setattr(
+        descriptions,
+        "QUERY_DESCRIPTIONS",
+        {"query_a": "desc"},
+    )
+    monkeypatch.setattr(
+        text2cypher,
+        "create_text2cypher_agent",
+        fake_create_text2cypher_agent,
+    )
+    monkeypatch.setattr(lg_models, "cypher_model", fake_model)
+    monkeypatch.setattr(
+        retriever_implementations,
+        "KnowledgeGraphRetriever",
+        FakeKgRetriever,
+    )
+    monkeypatch.setattr(
+        retriever_implementations,
+        "MilvusDocRetriever",
+        FakeRagRetriever,
+    )
+
+    kg = _run(
+        retriever_runtime.get_retriever(retriever_contracts.KG_RETRIEVER_NAME)
+    )
+    rag = _run(
+        retriever_runtime.get_retriever(retriever_contracts.RAG_RETRIEVER_NAME)
+    )
+
+    assert isinstance(kg, FakeKgRetriever)
+    assert isinstance(rag, FakeRagRetriever)
+    assert created == {
+        "cypher_examples": 1,
+        "cypher_example_obj": created.get("cypher_example_obj"),
+        "kg_agent": fake_agent,
+        "kg_retrievers": 1,
+        "t2c_calls": 1,
+        "t2c_kwargs": {
+            "llm": fake_model,
+            "graph": fake_graph,
+            "cypher_example_retriever": created.get("cypher_example_obj"),
+            "predefined_cypher_dict": {"query_a": "MATCH (n) RETURN n"},
+            "query_descriptions": {"query_a": "desc"},
+        },
+    }
+
+
+def test_retriever_construction_runs_off_event_loop(monkeypatch) -> None:
+    """首次注册的重构造（Neo4j 连接/模板 embedding/权重加载）必须在线程池。
+
+    回归背景：曾在协程内直接构造——首个提问用户会把所有并发请求一起卡住。
+    """
+    import threading
+
+    from app.platform.container import KnowledgeGraphComponents
+
+    loop_thread_holder: dict[str, int | None] = {"loop": None}
+    ctor_threads: dict[str, int | None] = {}
+    registry = retriever_contracts.RetrieverRegistry()
+    fake_graph = object()
+
+    async def fake_get_container():
+        class FakeContainer:
+            retriever_registry = registry
+            retriever_registry_lock = asyncio.Lock()
+            kg_components = KnowledgeGraphComponents()
+            neo4j_graph = fake_graph
+            neo4j_last_health_check_ts = 0.0
+
+        return FakeContainer()
+
+    from app.platform import container as cont_mod
+
+    monkeypatch.setattr(cont_mod, "get_container", fake_get_container)
+
+    def probe_neo4j(_container):
+        ctor_threads["neo4j"] = threading.current_thread().ident
+        return fake_graph
+
+    def probe_t2c(_container, _graph):
+        ctor_threads["t2c"] = threading.current_thread().ident
+        return object()
+
+    class ProbeRag(FakeRetriever):
+        def __init__(self) -> None:
+            ctor_threads["rag"] = threading.current_thread().ident
+            super().__init__({"records": []})
+
+    monkeypatch.setattr(retriever_runtime, "_get_neo4j_graph", probe_neo4j)
+    monkeypatch.setattr(retriever_runtime, "_ensure_text2cypher_agent", probe_t2c)
+    monkeypatch.setattr(retriever_implementations, "MilvusDocRetriever", ProbeRag)
+
+    class PassKg(FakeRetriever):
+        def __init__(self, _agent) -> None:
+            super().__init__({"records": []})
+
+    monkeypatch.setattr(retriever_implementations, "KnowledgeGraphRetriever", PassKg)
+
+    async def scenario():
+        loop_thread_holder["loop"] = threading.current_thread().ident
+        await retriever_runtime.get_retriever(retriever_contracts.RAG_RETRIEVER_NAME)
+
+    _run(scenario())
+
+    loop_thread = loop_thread_holder["loop"]
+    for name in ("neo4j", "t2c", "rag"):
+        assert ctor_threads.get(name) is not None, f"{name} 构造未发生"
+        assert ctor_threads[name] != loop_thread, f"{name} 构造仍在事件循环线程"
