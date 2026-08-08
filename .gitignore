@@ -60,3 +60,4 @@ frontend/dist/
 # TypeScript 增量编译产物，不应入库
 *.tsbuildinfo
 
+.coverage
