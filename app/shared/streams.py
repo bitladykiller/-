@@ -145,6 +145,9 @@ class RedisStreamQueue:
         event_id = ""
         claim_owner = ""
         payload_conflict = False
+        # 租户边界必须随事件固化（HTTP 请求结束后 ContextVar 已失效）；
+        # 消费者凭它恢复 TenantContext 并定位幂等键
+        tenant_id = str(payload.get("tenant_id") or "default")
         if self._event_inbox is not None:
             from app.platform.event_inbox import (
                 InboxClaimAction,
@@ -163,6 +166,7 @@ class RedisStreamQueue:
             claim = await self._event_inbox.claim(
                 event_type=event_type,
                 event_id=event_id,
+                tenant_id=tenant_id,
                 payload_hash=stable_payload_hash(payload),
                 stream=self.stream,
                 entry_id=eid,
@@ -190,6 +194,10 @@ class RedisStreamQueue:
         try:
             if payload_conflict:
                 raise ValueError(f"event_id payload 冲突: {event_id}")
+            # 消费者恢复可信租户上下文（与同步请求链的 contextvars 同构）
+            from app.shared.core.identity import set_current_tenant_id
+
+            set_current_tenant_id(tenant_id)
             await handler(payload)
             if self._event_inbox is not None:
                 # 必须先落 completed 再 ACK。此处失败时保留 PEL，重放由业务侧
@@ -197,6 +205,7 @@ class RedisStreamQueue:
                 await self._event_inbox.mark_completed(
                     event_type=event_type,
                     event_id=event_id,
+                    tenant_id=tenant_id,
                     owner=claim_owner,
                 )
         except Exception as exc:
@@ -205,6 +214,7 @@ class RedisStreamQueue:
                     await self._event_inbox.mark_failed(
                         event_type=event_type,
                         event_id=event_id,
+                        tenant_id=tenant_id,
                         owner=claim_owner,
                         error=str(exc),
                         dead_lettered=deliveries >= self._max_deliveries,

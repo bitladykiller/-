@@ -13,6 +13,9 @@ class UploadFileInfo(TypedDict, total=False):
 
     path: str
     user_id: int
+    tenant_id: str
+    owner_id: str
+    visibility: str
     # 稳定文档 ID；replace 模式必填；create 可省略（自动生成）
     doc_id: str
     # create = 首次入库；replace = 软删旧版 + 写新 version
@@ -56,6 +59,8 @@ class ChunkIndexer(Protocol):
         version: int = 1,
         content_hash: str = "",
         owner_id: str = "global",
+        tenant_id: str = "",
+        visibility: str = "global",
         idempotency_key: str = "",
     ) -> int: ...
 
@@ -66,6 +71,8 @@ class ChunkIndexer(Protocol):
         *,
         content_hash: str = "",
         owner_id: str = "global",
+        tenant_id: str = "",
+        visibility: str = "global",
         idempotency_key: str = "",
     ) -> ReindexResult: ...
 

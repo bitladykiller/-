@@ -8,6 +8,9 @@
 不负责：
 - Redis 缓存逻辑
 - 业务规则校验
+
+多租户纪律：所有 SQL 强制 `tenant_id = :tid`，画像的唯一性语义是
+(tenant_id, user_id) 二元组，不再是 user_id 单元素。
 """
 
 from __future__ import annotations
@@ -27,30 +30,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 _PROFILE_QUERY_SQL = text(
     "SELECT preferred_brand, budget_range, preferred_category, tags "
-    "FROM user_profiles WHERE user_id = :uid"
+    "FROM user_profiles WHERE tenant_id = :tid AND user_id = :uid"
 )
 _ACTIVE_FACTS_QUERY_SQL = text(
     "SELECT fact_key, fact_value FROM user_facts "
-    "WHERE user_id = :uid AND is_active = TRUE"
+    "WHERE tenant_id = :tid AND user_id = :uid AND is_active = TRUE"
 )
 _CURRENT_FACT_VERSION_SQL = text(
     "SELECT id, fact_value, version FROM user_facts "
-    "WHERE user_id = :uid AND fact_key = :key AND is_active = TRUE"
+    "WHERE tenant_id = :tid AND user_id = :uid "
+    "AND fact_key = :key AND is_active = TRUE"
 )
 _DEACTIVATE_FACT_SQL = text(
     "UPDATE user_facts SET is_active = FALSE, superseded_by = NULL WHERE id = :id"
 )
 _INSERT_VERSIONED_FACT_SQL = text(
-    "INSERT INTO user_facts (user_id, fact_key, fact_value, version, source_turn_id) "
-    "VALUES (:uid, :key, :val, :ver, :src_turn)"
+    "INSERT INTO user_facts "
+    "(tenant_id, user_id, fact_key, fact_value, version, source_turn_id) "
+    "VALUES (:tid, :uid, :key, :val, :ver, :src_turn)"
 )
 _INSERT_FACT_SQL = text(
-    "INSERT INTO user_facts (user_id, fact_key, fact_value, source_turn_id) "
-    "VALUES (:uid, :key, :val, :src_turn)"
+    "INSERT INTO user_facts (tenant_id, user_id, fact_key, fact_value, source_turn_id) "
+    "VALUES (:tid, :uid, :key, :val, :src_turn)"
 )
-_LINK_SUPERSEDED_FACT_SQL = text(
-    "UPDATE user_facts SET superseded_by = :new_id WHERE id = :old_id"
-)
+_LINK_SUPERSEDED_FACT_SQL = text("UPDATE user_facts SET superseded_by = :new_id WHERE id = :old_id")
 _LAST_INSERT_ID_SQL = text("SELECT LAST_INSERT_ID()")
 
 
@@ -119,22 +122,28 @@ class UserProfileRepository:
             "facts": [],
         }
 
-    async def get_profile(self, db: AsyncSession, user_id: int) -> UserProfilePayload:
-        """从数据库读取用户画像和激活中的 facts。"""
+    async def get_profile(
+        self,
+        db: AsyncSession,
+        tenant_id: str,
+        user_id: int,
+    ) -> UserProfilePayload:
+        """从数据库读取指定租户下用户画像和激活中的 facts。"""
         profile = self.empty_profile(user_id)
+        params = {"tid": tenant_id, "uid": user_id}
 
-        profile_row = (await db.execute(_PROFILE_QUERY_SQL, {"uid": user_id})).mappings().first()
+        profile_row = (await db.execute(_PROFILE_QUERY_SQL, params)).mappings().first()
         if profile_row:
             profile["preferred_brand"] = normalize_optional_text(profile_row.get("preferred_brand"))
             profile["budget_range"] = normalize_optional_text(profile_row.get("budget_range"))
-            profile["preferred_category"] = normalize_optional_text(profile_row.get("preferred_category"))
+            profile["preferred_category"] = normalize_optional_text(
+                profile_row.get("preferred_category")
+            )
             profile["tags"] = _decode_profile_tags_json(profile_row.get("tags"))
 
-        fact_rows = (await db.execute(_ACTIVE_FACTS_QUERY_SQL, {"uid": user_id})).mappings().all()
+        fact_rows = (await db.execute(_ACTIVE_FACTS_QUERY_SQL, params)).mappings().all()
         # RowMapping 与 Mapping[str, Any] 在静态类型上不完全兼容，运行时可用
-        profile["facts"] = _build_user_profile_facts(
-            [dict(row) for row in fact_rows]
-        )
+        profile["facts"] = _build_user_profile_facts([dict(row) for row in fact_rows])
 
         return profile
 
@@ -142,6 +151,7 @@ class UserProfileRepository:
         self,
         db: AsyncSession,
         *,
+        tenant_id: str,
         user_id: int,
         preferred_brand: str | None,
         budget_range: str | None,
@@ -164,11 +174,11 @@ class UserProfileRepository:
         await db.execute(
             text(
                 "INSERT INTO user_profiles "
-                f"(user_id, {', '.join(columns)}) "
-                f"VALUES (:uid, {', '.join(placeholders)}) "
+                f"(tenant_id, user_id, {', '.join(columns)}) "
+                f"VALUES (:tid, :uid, {', '.join(placeholders)}) "
                 f"ON DUPLICATE KEY UPDATE {', '.join(assignments)}"
             ),
-            {"uid": user_id, **field_values},
+            {"tid": tenant_id, "uid": user_id, **field_values},
         )
         return True
 
@@ -176,6 +186,7 @@ class UserProfileRepository:
         self,
         db: AsyncSession,
         *,
+        tenant_id: str,
         user_id: int,
         fact_key: str,
         fact_value: str,
@@ -185,10 +196,18 @@ class UserProfileRepository:
 
         v3.36+: source_turn_id 非空时，通过唯一索引 uk_user_fact_source
         防止同一 turn 的同一 key 产生重复版本（LLM 非确定性抽取保护）。
+        租户边界：唯一键为 (tenant_id, user_id, fact_key, source_turn_id)。
         """
         row = (
-            await db.execute(_CURRENT_FACT_VERSION_SQL, {"uid": user_id, "key": fact_key})
-        ).mappings().first()
+            (
+                await db.execute(
+                    _CURRENT_FACT_VERSION_SQL,
+                    {"tid": tenant_id, "uid": user_id, "key": fact_key},
+                )
+            )
+            .mappings()
+            .first()
+        )
         if row:
             if row["fact_value"] == fact_value:
                 return False
@@ -197,6 +216,7 @@ class UserProfileRepository:
             await db.execute(
                 _INSERT_VERSIONED_FACT_SQL,
                 {
+                    "tid": tenant_id,
                     "uid": user_id,
                     "key": fact_key,
                     "val": fact_value,
@@ -213,7 +233,13 @@ class UserProfileRepository:
 
         await db.execute(
             _INSERT_FACT_SQL,
-            {"uid": user_id, "key": fact_key, "val": fact_value, "src_turn": source_turn_id},
+            {
+                "tid": tenant_id,
+                "uid": user_id,
+                "key": fact_key,
+                "val": fact_value,
+                "src_turn": source_turn_id,
+            },
         )
         return True
 
@@ -221,6 +247,7 @@ class UserProfileRepository:
         self,
         db: AsyncSession,
         *,
+        tenant_id: str,
         user_id: int,
         profile: UserProfileData,
         source_turn_id: str | None = None,
@@ -236,6 +263,7 @@ class UserProfileRepository:
         ):
             profile_changed = await self.upsert_profile_fields(
                 db,
+                tenant_id=tenant_id,
                 user_id=user_id,
                 preferred_brand=profile.get("preferred_brand"),
                 budget_range=profile.get("budget_range"),
@@ -256,6 +284,7 @@ class UserProfileRepository:
                 continue
             fact_changed = await self.upsert_fact(
                 db,
+                tenant_id=tenant_id,
                 user_id=user_id,
                 fact_key=fact_key,
                 fact_value=fact_value,

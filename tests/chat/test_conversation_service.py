@@ -70,29 +70,31 @@ def test_create_conversation_returns_id(monkeypatch) -> None:
     async def fake_run(*args, **kwargs):
         return 101
 
-    monkeypatch.setattr(
-        "app.chat.application.conversation_service.run_db_operation", fake_run
-    )
+    monkeypatch.setattr("app.chat.application.conversation_service.run_db_operation", fake_run)
 
     service = ConversationService()
-    result = _run(service.create_conversation(5))
+    result = _run(service.create_conversation("t_1", 5))
     assert result == 101
 
 
 def test_get_user_conversations_returns_list(monkeypatch) -> None:
     expected = [
-        {"id": 1, "title": "test", "created_at": "2024-01-01", "status": "active", "dialogue_type": "normal"}
+        {
+            "id": 1,
+            "title": "test",
+            "created_at": "2024-01-01",
+            "status": "active",
+            "dialogue_type": "normal",
+        }
     ]
 
     async def fake_run(*args, **kwargs):
         return expected
 
-    monkeypatch.setattr(
-        "app.chat.application.conversation_service.run_db_operation", fake_run
-    )
+    monkeypatch.setattr("app.chat.application.conversation_service.run_db_operation", fake_run)
 
     service = ConversationService()
-    result = _run(service.get_user_conversations(1))
+    result = _run(service.get_user_conversations("t_1", 1))
     assert result == expected
 
 
@@ -103,50 +105,46 @@ def test_delete_conversation_succeeds(monkeypatch) -> None:
     async def fake_run(*args, **kwargs):
         return _DeletedConversation()
 
-    cleared: list[tuple[str, str]] = []
+    cleared: list[tuple[str, str, str]] = []
 
-    async def fake_clear(*, user_id: str, session_id: str) -> None:
-        cleared.append((user_id, session_id))
+    async def fake_clear(*, tenant_id: str, user_id: str, session_id: str) -> None:
+        cleared.append((tenant_id, user_id, session_id))
 
-    monkeypatch.setattr(
-        "app.chat.application.conversation_service.run_db_operation", fake_run
-    )
+    monkeypatch.setattr("app.chat.application.conversation_service.run_db_operation", fake_run)
     monkeypatch.setattr(
         "app.chat.application.conversation_service._clear_conversation_memories",
         fake_clear,
     )
 
     service = ConversationService()
-    result = _run(service.delete_conversation(1, user_id=7))
+    result = _run(service.delete_conversation("t_1", 1, user_id=7))
     assert result is None
-    assert cleared == [("7", "1")]
+    assert cleared == [("t_1", "7", "1")]
 
 
 def test_update_conversation_name_succeeds(monkeypatch) -> None:
     async def fake_run(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(
-        "app.chat.application.conversation_service.run_db_operation", fake_run
-    )
+    monkeypatch.setattr("app.chat.application.conversation_service.run_db_operation", fake_run)
 
     service = ConversationService()
-    result = _run(service.update_conversation_name(1, 7, "new name"))
+    result = _run(service.update_conversation_name("t_1", 1, 7, "new name"))
     assert result is None
 
 
 def test_ensure_conversation_creates_when_missing(monkeypatch) -> None:
-    created: list[int] = []
+    created: list[tuple[str, int]] = []
 
-    async def fake_create(user_id: int) -> int:
-        created.append(user_id)
+    async def fake_create(tenant_id: str, user_id: int) -> int:
+        created.append((tenant_id, user_id))
         return 42
 
     service = ConversationService()
     monkeypatch.setattr(service, "create_conversation", fake_create)
 
-    assert _run(service.ensure_conversation(7, None)) == 42
-    assert created == [7]
+    assert _run(service.ensure_conversation("t_1", 7, None)) == 42
+    assert created == [("t_1", 7)]
 
 
 def test_ensure_conversation_validates_ownership(monkeypatch) -> None:
@@ -159,25 +157,21 @@ def test_ensure_conversation_validates_ownership(monkeypatch) -> None:
         checked.append(args)
         raise ResourceNotFoundError("会话不存在或不属于当前用户")
 
-    monkeypatch.setattr(
-        "app.chat.application.conversation_service.run_db_operation", fake_run
-    )
+    monkeypatch.setattr("app.chat.application.conversation_service.run_db_operation", fake_run)
 
     service = ConversationService()
     import pytest as _pytest
 
     with _pytest.raises(ResourceNotFoundError):
-        _run(service.ensure_conversation(7, 999))
-    assert checked == [(999, 7)]
+        _run(service.ensure_conversation("t_1", 7, 999))
+    assert checked == [("t_1", 999, 7)]
 
 
 def test_ensure_conversation_returns_given_id_when_owned(monkeypatch) -> None:
     async def fake_run(factory, log, action, op, *args, **ctx):
         return object()  # 归属校验通过
 
-    monkeypatch.setattr(
-        "app.chat.application.conversation_service.run_db_operation", fake_run
-    )
+    monkeypatch.setattr("app.chat.application.conversation_service.run_db_operation", fake_run)
 
     service = ConversationService()
-    assert _run(service.ensure_conversation(7, 11)) == 11
+    assert _run(service.ensure_conversation("t_1", 7, 11)) == 11

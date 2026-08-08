@@ -39,7 +39,6 @@ from app.knowledge.infrastructure.orchestration.turn_view_tracker import (
     ViewName,
     ViewStatus,
     build_compression_id,
-    record_view_status,
 )
 from app.shared.core.config import settings
 from app.shared.core.degradation import log_degradation
@@ -56,9 +55,9 @@ if TYPE_CHECKING:
     )
 
 logger = get_logger(__name__)
-ProfileReader: TypeAlias = Callable[[int, Any | None], Awaitable[UserProfileData]]
+ProfileReader: TypeAlias = Callable[[str, int, Any | None], Awaitable[UserProfileData]]
 ProfileWriter: TypeAlias = Callable[
-    [int, UserProfileData, Any | None, str | None], Awaitable[bool]
+    [str, int, UserProfileData, Any | None, str | None], Awaitable[bool]
 ]
 
 
@@ -117,7 +116,7 @@ class MemoryMiddleware:
         任意一路失败都只降级该路，不影响其它记忆来源，也不让主对话链路失败。
         """
         stm_task = self._read_short_term(tenant_id, user_id, session_id)
-        profile_task = self._read_user_profile(user_id)
+        profile_task = self._read_user_profile(tenant_id, user_id)
         ltm_task = self._read_long_term(tenant_id, user_id, user_input)
 
         (session_summary, recent_messages), user_profile, long_term_memories = await asyncio.gather(
@@ -155,15 +154,29 @@ class MemoryMiddleware:
             )
         return None, []
 
-    async def _read_user_profile(self, user_id: str) -> UserProfileData | None:
-        """读取用户画像；非数字 user_id 视为匿���，直接跳过。"""
+    async def _read_user_profile(
+        self,
+        tenant_id: str,
+        user_id: str,
+    ) -> UserProfileData | None:
+        """读取指定租户下用户画像；非数字 user_id 视为匿名，直接跳过。"""
         uid = _parse_numeric_user_id(user_id)
         if uid <= 0:
             return None
         try:
-            return await self.profile_reader(uid, getattr(self.redis_stm, "redis", None))
+            return await self.profile_reader(
+                tenant_id,
+                uid,
+                getattr(self.redis_stm, "redis", None),
+            )
         except Exception as exc:
-            self._degrade_once("user_profile", "memory.read_user_profile", exc, user=uid)
+            self._degrade_once(
+                "user_profile",
+                "memory.read_user_profile",
+                exc,
+                tenant=tenant_id,
+                user=uid,
+            )
         return {}
 
     async def _read_long_term(
@@ -287,6 +300,7 @@ class MemoryMiddleware:
                 meta.last_compressed_turn,
                 msg_count,
             ):
+
                 async def summary_compressor(
                     old_summary_str: str,
                     old_messages: list[MessageRecord],
@@ -358,6 +372,7 @@ class MemoryMiddleware:
                 if uid > 0 and profile and isinstance(profile, dict):
                     try:
                         await self.profile_writer(
+                            tenant_id,
                             uid,
                             profile,
                             getattr(self.redis_stm, "redis", None),
@@ -365,9 +380,7 @@ class MemoryMiddleware:
                         )
                         report.record(ViewName.PROFILE.value, ViewStatus.COMPLETED)
                     except Exception as exc:
-                        log_degradation(
-                            logger, "memory.write_user_profile", exc, user=user_id
-                        )
+                        log_degradation(logger, "memory.write_user_profile", exc, user=user_id)
                         report.record(ViewName.PROFILE.value, ViewStatus.FAILED, str(exc))
                 else:
                     report.record(ViewName.PROFILE.value, ViewStatus.SKIPPED)
@@ -421,7 +434,8 @@ class MemoryMiddleware:
                 from app.knowledge.infrastructure.orchestration.turn_view_tracker import (
                     record_all_view_statuses,
                 )
-                await record_all_view_statuses(turn_id, report)
+
+                await record_all_view_statuses(turn_id, report, tenant_id=tenant_id)
             except Exception:
                 logger.warning(
                     "记录视图状态失败 | turn=%s",

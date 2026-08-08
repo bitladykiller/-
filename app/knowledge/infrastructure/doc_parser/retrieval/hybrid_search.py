@@ -52,6 +52,8 @@ class HybridSearcher:
         version: int = 1,
         content_hash: str = "",
         owner_id: str = "global",
+        tenant_id: str = "",
+        visibility: str = "global",
         idempotency_key: str = "",
     ) -> int:
         """将 DocumentChunk 列表写入 Milvus 检索集合（新建）。"""
@@ -61,6 +63,8 @@ class HybridSearcher:
                 version=version,
                 content_hash=content_hash,
                 owner_id=owner_id,
+                tenant_id=tenant_id,
+                visibility=visibility,
                 idempotency_key=idempotency_key,
             )
         else:
@@ -69,6 +73,8 @@ class HybridSearcher:
                 version=version,
                 content_hash=content_hash,
                 owner_id=owner_id,
+                tenant_id=tenant_id,
+                visibility=visibility,
             )
         logger.info("混合索引完成: %s 条记录 | version=%s", count, version)
         return count
@@ -80,6 +86,8 @@ class HybridSearcher:
         *,
         content_hash: str = "",
         owner_id: str = "global",
+        tenant_id: str = "",
+        visibility: str = "global",
         idempotency_key: str = "",
     ) -> dict[str, int]:
         """文档动态更新：软删旧 chunk，再写入新 version。"""
@@ -89,6 +97,8 @@ class HybridSearcher:
                 chunks,
                 content_hash=content_hash,
                 owner_id=owner_id,
+                tenant_id=tenant_id,
+                visibility=visibility,
                 idempotency_key=idempotency_key,
             )
         else:
@@ -97,6 +107,8 @@ class HybridSearcher:
                 chunks,
                 content_hash=content_hash,
                 owner_id=owner_id,
+                tenant_id=tenant_id,
+                visibility=visibility,
             )
         logger.info(
             "混合 reindex 完成 | doc_id=%s soft_deleted=%s version=%s chunks=%s",
@@ -107,9 +119,13 @@ class HybridSearcher:
         )
         return result
 
-    async def soft_delete_document(self, doc_id: str) -> dict[str, int]:
+    async def soft_delete_document(
+        self,
+        doc_id: str,
+        tenant_id: str = "",
+    ) -> dict[str, int]:
         """仅软删除文档（不写入新版）。"""
-        return await self.milvus.soft_delete_by_doc_id(doc_id)
+        return await self.milvus.soft_delete_by_doc_id(doc_id, tenant_id)
 
     async def hard_purge_soft_deleted(
         self,

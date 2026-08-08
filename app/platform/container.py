@@ -142,6 +142,7 @@ class AppContainer:
             self._events_redis,
             max_concurrent=limits.sse_max_concurrent_per_user,
             slot_ttl_seconds=limits.sse_slot_ttl_seconds,
+            max_concurrent_per_tenant=limits.sse_max_concurrent_per_tenant,
         )
 
     async def _init_memory_middleware(self) -> None:

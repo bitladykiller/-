@@ -12,23 +12,48 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.shared.core.database import Base
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 
 class UserDocument(Base):
-    """用户上传的 RAG 文档主表。"""
+    """用户上传的 RAG 文档主表。
+
+    多租户约束：
+    - doc_id 在**租户内**唯一（两个租户可各自拥有 policy.pdf 的 doc_id），
+      全局唯一由 UUID 生成器保证，数据库只保证租户内唯一。
+    - 查询必须带 tenant_id，否则即为跨租户泄漏。
+    """
 
     __tablename__ = "user_documents"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "doc_id", name="uk_doc_id"),
+        Index("idx_user_documents_tenant_user", "tenant_id", "user_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default="default",
+        server_default="default",
+    )
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    # 与 Milvus 中 chunk.doc_id 一致，全局唯一
-    doc_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    # 与 Milvus 中 chunk.doc_id 一致，租户内唯一
+    doc_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     # 前端展示名（默认同原始文件名，可后续改名）
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     original_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")

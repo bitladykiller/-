@@ -21,6 +21,7 @@ class FakeConversation:
         self,
         *,
         id: int = None,
+        tenant_id: str = "default",
         user_id: int = 0,
         title: str = "新会话",
         created_at: datetime = None,
@@ -28,6 +29,7 @@ class FakeConversation:
         dialogue_type: DialogueType = DialogueType.NORMAL,
     ):
         self.id = id
+        self.tenant_id = tenant_id
         self.user_id = user_id
         self.title = title
         self.created_at = created_at or datetime.now()
@@ -101,11 +103,12 @@ def test_create_adds_and_commits_conversation() -> None:
     session = FakeSession()
     repo = ConversationRepository(session)
 
-    result = _run(repo.create(user_id=5))
+    result = _run(repo.create("t_1", user_id=5))
 
     assert result == 101
     assert session.committed is True
     assert len(session.added) == 1
+    assert session.added[0].tenant_id == "t_1"
     assert session.added[0].user_id == 5
     assert session.added[0].title == "新会话"
     assert session.added[0].dialogue_type == DialogueType.NORMAL
@@ -121,12 +124,14 @@ def test_list_by_user_returns_formatted_list() -> None:
         status="ongoing",
         dialogue_type=DialogueType.NORMAL,
     )
-    session.set_execute_results([
-        FakeResult(scalars_data=[conv1]),
-    ])
+    session.set_execute_results(
+        [
+            FakeResult(scalars_data=[conv1]),
+        ]
+    )
     repo = ConversationRepository(session)
 
-    result = _run(repo.list_by_user(user_id=5))
+    result = _run(repo.list_by_user("t_1", user_id=5))
 
     assert len(result) == 1
     assert result[0]["id"] == 1
@@ -138,12 +143,14 @@ def test_list_by_user_returns_formatted_list() -> None:
 
 def test_list_by_user_returns_empty_when_no_conversations() -> None:
     session = FakeSession()
-    session.set_execute_results([
-        FakeResult(scalars_data=[]),
-    ])
+    session.set_execute_results(
+        [
+            FakeResult(scalars_data=[]),
+        ]
+    )
     repo = ConversationRepository(session)
 
-    result = _run(repo.list_by_user(user_id=99))
+    result = _run(repo.list_by_user("t_1", user_id=99))
 
     assert result == []
 
@@ -151,12 +158,14 @@ def test_list_by_user_returns_empty_when_no_conversations() -> None:
 def test_delete_removes_and_commits() -> None:
     session = FakeSession()
     conv = FakeConversation(id=10, user_id=5, title="测试")
-    session.set_execute_results([
-        FakeResult(scalar_one_or_none_data=conv),
-    ])
+    session.set_execute_results(
+        [
+            FakeResult(scalar_one_or_none_data=conv),
+        ]
+    )
     repo = ConversationRepository(session)
 
-    deleted = _run(repo.delete(conversation_id=10, user_id=5))
+    deleted = _run(repo.delete("t_1", conversation_id=10, user_id=5))
 
     assert deleted is conv
     assert session.committed is True
@@ -166,13 +175,15 @@ def test_delete_removes_and_commits() -> None:
 
 def test_delete_raises_not_found_when_missing() -> None:
     session = FakeSession()
-    session.set_execute_results([
-        FakeResult(scalar_one_or_none_data=None),
-    ])
+    session.set_execute_results(
+        [
+            FakeResult(scalar_one_or_none_data=None),
+        ]
+    )
     repo = ConversationRepository(session)
 
     with pytest.raises(ResourceNotFoundError, match="不存在或不属于"):
-        _run(repo.delete(conversation_id=999, user_id=5))
+        _run(repo.delete("t_1", conversation_id=999, user_id=5))
 
 
 def test_delete_rejects_other_users_conversation() -> None:
@@ -181,14 +192,16 @@ def test_delete_rejects_other_users_conversation() -> None:
     删除会联动清空该会话的 STM/LTM 记忆，归属校验是硬约束。
     """
     session = FakeSession()
-    # get_owned 按 (id, user_id) 过滤 → 归属不符时查询结果就是空
-    session.set_execute_results([
-        FakeResult(scalar_one_or_none_data=None),
-    ])
+    # get_owned 按 (tenant_id, id, user_id) 过滤 → 归属不符时查询结果就是空
+    session.set_execute_results(
+        [
+            FakeResult(scalar_one_or_none_data=None),
+        ]
+    )
     repo = ConversationRepository(session)
 
     with pytest.raises(ResourceNotFoundError):
-        _run(repo.delete(conversation_id=10, user_id=999))
+        _run(repo.delete("t_1", conversation_id=10, user_id=999))
 
     assert session.deleted == []
     assert session.committed is False
@@ -197,12 +210,14 @@ def test_delete_rejects_other_users_conversation() -> None:
 def test_rename_updates_title_and_commits() -> None:
     session = FakeSession()
     conv = FakeConversation(id=5, user_id=3, title="旧标题")
-    session.set_execute_results([
-        FakeResult(scalar_one_or_none_data=conv),
-    ])
+    session.set_execute_results(
+        [
+            FakeResult(scalar_one_or_none_data=conv),
+        ]
+    )
     repo = ConversationRepository(session)
 
-    _run(repo.rename(conversation_id=5, user_id=3, name="新标题"))
+    _run(repo.rename("t_1", conversation_id=5, user_id=3, name="新标题"))
 
     assert conv.title == "新标题"
     assert session.committed is True
@@ -210,10 +225,12 @@ def test_rename_updates_title_and_commits() -> None:
 
 def test_rename_raises_not_found_when_missing() -> None:
     session = FakeSession()
-    session.set_execute_results([
-        FakeResult(scalar_one_or_none_data=None),
-    ])
+    session.set_execute_results(
+        [
+            FakeResult(scalar_one_or_none_data=None),
+        ]
+    )
     repo = ConversationRepository(session)
 
     with pytest.raises(ResourceNotFoundError, match="不存在或不属于"):
-        _run(repo.rename(conversation_id=888, user_id=3, name="新标题"))
+        _run(repo.rename("t_1", conversation_id=888, user_id=3, name="新标题"))

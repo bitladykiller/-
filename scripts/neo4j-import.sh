@@ -319,6 +319,30 @@ EOF2
 
 echo "员工汇报关系导入完成"
 
+# ============================================================ --
+# SaaS 多租户：为全部业务节点打上租户标（default 租户）
+# 执行层（tenant_cypher.inject_tenant_constraint）会按租户条件过滤，
+# 未打标的节点会从任何业务查询中消失——这一步不可省略。
+# ============================================================ --
+echo "为存量节点写入 tenant_id（default）..."
+cypher_shell <<EOF2
+MATCH (n)
+WHERE NOT exists(n.tenant_id)
+SET n.tenant_id = 'default';
+EOF2
+
+# 为租户条件建索引，避免全表扫描
+cypher_shell <<EOF2
+CREATE INDEX IF NOT EXISTS FOR (n:Product) ON (n.tenant_id);
+CREATE INDEX IF NOT EXISTS FOR (n:Category) ON (n.tenant_id);
+CREATE INDEX IF NOT EXISTS FOR (n:Supplier) ON (n.tenant_id);
+CREATE INDEX IF NOT EXISTS FOR (n:Customer) ON (n.tenant_id);
+CREATE INDEX IF NOT EXISTS FOR (n:Order) ON (n.tenant_id);
+CREATE INDEX IF NOT EXISTS FOR (n:Employee) ON (n.tenant_id);
+CREATE INDEX IF NOT EXISTS FOR (n:Review) ON (n.tenant_id);
+CREATE INDEX IF NOT EXISTS FOR (n:Shipper) ON (n.tenant_id);
+EOF2
+
 echo "数据导入完成！"
 
 # 验证数据导入结果

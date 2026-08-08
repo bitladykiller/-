@@ -51,12 +51,30 @@ class InboxClaim:
 
 
 class ProcessedEvent(Base):
-    """processed_events 表：Stream 消费幂等收件箱。"""
+    """processed_events 表：Stream 消费幂等收件箱。
+
+    幂等键为 (tenant_id, event_type, event_id)：租户是审计/查询/清理/死信
+    运维的一级维度；同一租户内 event_id（UUID/ULID）重复即重放。
+    """
 
     __tablename__ = "processed_events"
-    __table_args__ = (UniqueConstraint("event_type", "event_id", name="uk_processed_event"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "event_type",
+            "event_id",
+            name="uk_processed_event",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default="default",
+        server_default="default",
+        index=True,
+    )
     event_type: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     event_id: Mapped[str] = mapped_column(String(128), nullable=False)
     stream_name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
@@ -139,15 +157,21 @@ class EventInbox:
         *,
         event_type: str,
         event_id: str,
+        tenant_id: str = "default",
         payload_hash: str,
         stream: str,
         entry_id: str,
     ) -> InboxClaim:
-        """尝试认领事件；返回 PROCESS 才允许执行业务 handler。"""
+        """尝试认领事件；返回 PROCESS 才允许执行业务 handler。
+
+        tenant_id 是幂等键的一级维度（UNIQUE(tenant_id, event_type,
+        event_id)）：租户级审计/查询/清理都直接走这一列。
+        """
         owner = self._new_owner()
         now = datetime.utcnow()
         async with self._session_factory() as db:
             row = ProcessedEvent(
+                tenant_id=tenant_id,
                 event_type=event_type,
                 event_id=event_id,
                 stream_name=stream,
@@ -173,6 +197,7 @@ class EventInbox:
 
             result = await db.execute(
                 select(ProcessedEvent).where(
+                    ProcessedEvent.tenant_id == tenant_id,
                     ProcessedEvent.event_type == event_type,
                     ProcessedEvent.event_id == event_id,
                 )
@@ -235,12 +260,14 @@ class EventInbox:
         *,
         event_type: str,
         event_id: str,
+        tenant_id: str = "default",
         owner: str,
     ) -> None:
         """延长处理中事件的租约；长文档索引用它避免并发接管。"""
         async with self._session_factory() as db:
             result = await db.execute(
                 select(ProcessedEvent).where(
+                    ProcessedEvent.tenant_id == tenant_id,
                     ProcessedEvent.event_type == event_type,
                     ProcessedEvent.event_id == event_id,
                 )
@@ -259,12 +286,14 @@ class EventInbox:
         *,
         event_type: str,
         event_id: str,
+        tenant_id: str = "default",
         owner: str,
     ) -> None:
         """标记事件处理完成。"""
         async with self._session_factory() as db:
             result = await db.execute(
                 select(ProcessedEvent).where(
+                    ProcessedEvent.tenant_id == tenant_id,
                     ProcessedEvent.event_type == event_type,
                     ProcessedEvent.event_id == event_id,
                 )
@@ -287,6 +316,7 @@ class EventInbox:
         *,
         event_type: str,
         event_id: str,
+        tenant_id: str = "default",
         owner: str,
         error: str,
         dead_lettered: bool = False,
@@ -295,6 +325,7 @@ class EventInbox:
         async with self._session_factory() as db:
             result = await db.execute(
                 select(ProcessedEvent).where(
+                    ProcessedEvent.tenant_id == tenant_id,
                     ProcessedEvent.event_type == event_type,
                     ProcessedEvent.event_id == event_id,
                 )

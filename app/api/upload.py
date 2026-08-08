@@ -3,6 +3,7 @@
 落盘 + 写 MySQL 文档元数据 + 提交异步索引任务。
 索引完成后由 document_indexing_job 回写 version/status。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -59,6 +60,7 @@ class StoredUploadFileInfo(TypedDict, total=False):
 
     path: str
     user_id: int
+    tenant_id: str
     doc_id: str
     mode: str
     content_hash: str
@@ -71,6 +73,7 @@ class StoredUploadFileInfo(TypedDict, total=False):
     directory: str
     title: str
     owner_id: str
+    visibility: str
     unchanged: bool
     version: int
     chunk_count: int
@@ -81,6 +84,7 @@ class UploadAcceptedResponse(TypedDict, total=False):
 
     path: str
     user_id: int
+    tenant_id: str
     doc_id: str
     mode: str
     content_hash: str
@@ -93,6 +97,7 @@ class UploadAcceptedResponse(TypedDict, total=False):
     directory: str
     title: str
     owner_id: str
+    visibility: str
     task_id: str
     message: str
     unchanged: bool
@@ -161,14 +166,19 @@ def _normalize_upload_mode(mode: str | None) -> str:
 async def _store_upload(
     file: UploadFile,
     user_id: int,
+    tenant_id: str,
     *,
     doc_id: str | None = None,
     mode: str = "create",
 ) -> StoredUploadFileInfo:
-    """落盘并组装 file_info。"""
+    """落盘并组装 file_info。
+
+    目录结构按租户隔离：uploads/{tenant_id}/{user_uuid}/{timestamp}，
+    避免跨租户文件路径可被枚举。
+    """
     user_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_{user_id}"))
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    upload_dir = UPLOAD_DIR / user_uuid / timestamp
+    upload_dir = UPLOAD_DIR / tenant_id / user_uuid / timestamp
     upload_dir.mkdir(parents=True, exist_ok=True)
 
     original_filename = file.filename or "upload"
@@ -192,6 +202,7 @@ async def _store_upload(
         "type": file.content_type,
         "path": file_path.as_posix(),
         "user_id": user_id,
+        "tenant_id": tenant_id,
         "user_uuid": user_uuid,
         "upload_time": timestamp,
         "directory": upload_dir.as_posix(),
@@ -207,10 +218,9 @@ async def _store_upload(
 async def _register_document_metadata(file_info: StoredUploadFileInfo) -> StoredUploadFileInfo:
     """在提交索引前写入/更新 MySQL，保证 doc_id 与文件名绑定。"""
     user_id = int(file_info.get("user_id") or 0)
+    tenant_id = str(file_info.get("tenant_id") or "default")
     mode = str(file_info.get("mode") or "create")
-    original_name = str(
-        file_info.get("original_name") or file_info.get("filename") or "document"
-    )
+    original_name = str(file_info.get("original_name") or file_info.get("filename") or "document")
     source_path = str(file_info.get("path") or "")
     content_hash = str(file_info.get("content_hash") or "")
     incoming_doc_id = _optional_str(file_info.get("doc_id"))
@@ -218,6 +228,7 @@ async def _register_document_metadata(file_info: StoredUploadFileInfo) -> Stored
     try:
         if mode == "replace":
             meta = await document_service.prepare_replace(
+                tenant_id=tenant_id,
                 user_id=user_id,
                 doc_id=incoming_doc_id or "",
                 original_name=original_name,
@@ -226,6 +237,7 @@ async def _register_document_metadata(file_info: StoredUploadFileInfo) -> Stored
             )
         else:
             meta = await document_service.prepare_create(
+                tenant_id=tenant_id,
                 user_id=user_id,
                 title=str(file_info.get("title") or original_name),
                 original_name=original_name,
@@ -248,33 +260,66 @@ async def _register_document_metadata(file_info: StoredUploadFileInfo) -> Stored
     return updated
 
 
-_ALLOWED_VISIBILITY = {"global", "private"}
+_ALLOWED_VISIBILITY = {"global", "tenant", "private"}
 
 
-def _resolve_owner(visibility: str, user_id: int) -> str:
-    """把可见域参数解析为 chunk 的 owner 标识。
+def _resolve_visibility(visibility: str) -> str:
+    """规范化并校验可见域参数（global|tenant|private）。"""
+    value = (visibility or "global").strip().lower()
+    if value not in _ALLOWED_VISIBILITY:
+        raise HTTPException(
+            status_code=400,
+            detail="visibility 仅支持 global、tenant 或 private",
+        )
+    return value
+
+
+def resolve_chunk_visibility(
+    visibility: str,
+    tenant_id: str,
+    user_id: int,
+) -> tuple[str, str, str]:
+    """把可见域解析为 chunk 的 (owner_id, tenant_id, visibility) 三元组。
+
+    三级可见性语义（与检索侧过滤一一对应）：
+    - global  : owner_id=global_owner，tenant_id=""  —— 平台公共知识
+    - tenant  : owner_id=""，tenant_id=当前租户      —— 组织共享知识
+    - private : owner_id=user_id，tenant_id=当前租户 —— 个人私有文档
 
     共享域标识取自配置（rag_visibility.global_owner），与检索侧过滤
     使用同一来源——两侧硬编码各写一个 "global" 迟早会分家。
     """
-    value = (visibility or "global").strip().lower()
-    if value not in _ALLOWED_VISIBILITY:
-        raise HTTPException(status_code=400, detail="visibility 仅支持 global 或 private")
+    value = _resolve_visibility(visibility)
     global_owner = settings.app_config.rag_visibility.global_owner
-    return global_owner if value == "global" else str(user_id)
+    if value == "global":
+        return global_owner, "", value
+    if value == "tenant":
+        return "", tenant_id, value
+    return str(user_id), tenant_id, value
 
 
 async def _run_upload(
     file: UploadFile,
     user_id: int,
+    tenant_id: str,
     doc_id: str | None,
     mode: str,
     visibility: str = "global",
 ) -> UploadAcceptedResponse:
-    """上传主流程（显式 async，便于类型检查）。"""
+    """上传主流程（显式 async，便于类型检查）。
+
+    tenant_id 来自已验证的 TenantContext（JWT + membership），
+    不信任客户端自报的租户参数。
+    """
     validate_upload(file)
     normalized_mode = _normalize_upload_mode(mode)
-    owner_id = _resolve_owner(visibility, user_id)
+    _owner_id, _chunk_tenant_id, _visibility = resolve_chunk_visibility(
+        visibility,
+        tenant_id,
+        user_id,
+    )
+    visibility = _visibility
+    owner_id = _owner_id
     if normalized_mode == "replace" and not _optional_str(doc_id):
         raise HTTPException(
             status_code=400,
@@ -284,10 +329,15 @@ async def _run_upload(
     file_info = await _store_upload(
         file,
         user_id,
+        tenant_id,
         doc_id=doc_id,
         mode=normalized_mode,
     )
+    # owner_id/visibility 是 Milvus chunk 的可见域元数据；
+    # file_info["tenant_id"] 始终是请求方真实租户（MySQL 行归属边界），
+    # chunk 的 tenant_id 由索引任务按可见域推导（global 为空串）。
     file_info["owner_id"] = owner_id
+    file_info["visibility"] = visibility
     file_info = await _register_document_metadata(file_info)
     resolved_doc_id = _require_doc_id(file_info)
 
@@ -303,7 +353,7 @@ async def _run_upload(
         return response
 
     task_id = await _submit_indexing(dict(file_info))
-    await document_service.bind_task_id(resolved_doc_id, task_id)
+    await document_service.bind_task_id(tenant_id, resolved_doc_id, task_id)
     return {
         **file_info,
         "doc_id": resolved_doc_id,
@@ -328,6 +378,7 @@ async def _submit_indexing(file_info: dict) -> str:
     from app.shared.background_tasks import TaskStatus, write_task_status
 
     task_id = _uuid.uuid4().hex[:12]
+    tenant_id = str(file_info.get("tenant_id") or "default")
     # 机会型访问：容器未初始化（如单测直调 handler）时直接走进程内回退，
     # 绝不为一次投递拉起整套外部连接
     container = get_container_if_initialized()
@@ -340,10 +391,16 @@ async def _submit_indexing(file_info: dict) -> str:
                 task_id,
                 TaskStatus.PENDING,
                 origin="stream",
+                tenant_id=tenant_id,
             )
             await queue.publish(
                 EVENT_DOCUMENT_INDEX_REQUESTED,
-                {"task_id": task_id, "file_info": file_info},
+                {
+                    "event_id": task_id,
+                    "tenant_id": tenant_id,
+                    "task_id": task_id,
+                    "file_info": file_info,
+                },
             )
             return task_id
         except Exception as exc:
@@ -371,6 +428,7 @@ async def upload_file(
     operation: Awaitable[UploadAcceptedResponse] = _run_upload(
         file,
         current_user.id,
+        current_user.tenant_id,
         doc_id,
         mode,
         visibility,
@@ -386,8 +444,11 @@ async def upload_file(
 
 @router.get("/upload/status/{task_id}")
 async def get_upload_status(task_id: str, current_user: CurrentUser) -> TaskStatusPayload:
-    """查询文档解析任务状态（需登录；task_id 随机不可枚举，暂不做归属绑定）。"""
-    operation: Awaitable[TaskStatusPayload] = _run_get_upload_status(task_id)
+    """查询文档解析任务状态（需登录；task_id 在租户内随机不可枚举）。"""
+    operation: Awaitable[TaskStatusPayload] = _run_get_upload_status(
+        task_id,
+        current_user.tenant_id,
+    )
     return await run_api_action(
         "get_upload_status",
         operation,
@@ -396,9 +457,9 @@ async def get_upload_status(task_id: str, current_user: CurrentUser) -> TaskStat
     )
 
 
-async def _run_get_upload_status(task_id: str) -> TaskStatusPayload:
+async def _run_get_upload_status(task_id: str, tenant_id: str) -> TaskStatusPayload:
     task_manager = await get_task_manager()
-    status = await task_manager.get_status(task_id)
+    status = await task_manager.get_status(task_id, tenant_id=tenant_id)
     if status is None:
         raise HTTPException(
             status_code=404,

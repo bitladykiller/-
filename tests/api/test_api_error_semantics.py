@@ -55,10 +55,10 @@ async def test_http_exception_passes_through_unchanged() -> None:
 class _FakeRepo:
     def __init__(self, row):
         self._row = row
-        self.delete_calls: list[tuple[int, str]] = []
+        self.delete_calls: list[tuple[str, int, str]] = []
 
-    async def delete_owned(self, user_id: int, doc_id: str):
-        self.delete_calls.append((user_id, doc_id))
+    async def delete_owned(self, tenant_id: str, user_id: int, doc_id: str):
+        self.delete_calls.append((tenant_id, user_id, doc_id))
         return self._row
 
 
@@ -86,17 +86,17 @@ async def test_delete_document_soft_deletes_chunks(monkeypatch) -> None:
     soft_deleted_docs: list[str] = []
 
     class _FakeSearcher:
-        async def soft_delete_document(self, doc_id: str):
-            soft_deleted_docs.append(doc_id)
+        async def soft_delete_document(self, doc_id: str, tenant_id: str = ""):
+            soft_deleted_docs.append((doc_id, tenant_id))
             return {"soft_deleted": 4, "max_version": 2}
 
     monkeypatch.setattr(hs_module, "get_shared_searcher", lambda: _FakeSearcher())
 
     service = ds_module.DocumentService(session_factory=_FakeSessionCtx)
-    result = await service.delete_document(7, "doc_ok")
+    result = await service.delete_document("t_7", 7, "doc_ok")
 
-    assert fake_repo.delete_calls == [(7, "doc_ok")]
-    assert soft_deleted_docs == ["doc_ok"]
+    assert fake_repo.delete_calls == [("t_7", 7, "doc_ok")]
+    assert soft_deleted_docs == [("doc_ok", "t_7")]
     assert result == {"doc_id": "doc_ok", "soft_deleted_chunks": 4}
 
 
@@ -111,7 +111,7 @@ async def test_delete_document_raises_not_found_for_foreign_doc(monkeypatch) -> 
     searcher_touched: list[str] = []
 
     class _FakeSearcher:
-        async def soft_delete_document(self, doc_id: str):
+        async def soft_delete_document(self, doc_id: str, tenant_id: str = ""):
             searcher_touched.append(doc_id)
             return {}
 
@@ -119,7 +119,7 @@ async def test_delete_document_raises_not_found_for_foreign_doc(monkeypatch) -> 
 
     service = ds_module.DocumentService(session_factory=_FakeSessionCtx)
     with pytest.raises(ResourceNotFoundError):
-        await service.delete_document(7, "doc_foreign")
+        await service.delete_document("t_7", 7, "doc_foreign")
 
     assert searcher_touched == []
 
@@ -135,12 +135,12 @@ async def test_delete_document_survives_chunk_soft_delete_failure(monkeypatch) -
     monkeypatch.setattr(ds_module, "UserDocumentRepository", lambda _db: _FakeRepo(_Row()))
 
     class _BrokenSearcher:
-        async def soft_delete_document(self, doc_id: str):
+        async def soft_delete_document(self, doc_id: str, tenant_id: str = ""):
             raise RuntimeError("milvus down")
 
     monkeypatch.setattr(hs_module, "get_shared_searcher", lambda: _BrokenSearcher())
 
     service = ds_module.DocumentService(session_factory=_FakeSessionCtx)
-    result = await service.delete_document(7, "doc_ok")
+    result = await service.delete_document("t_7", 7, "doc_ok")
 
     assert result == {"doc_id": "doc_ok", "soft_deleted_chunks": 0}

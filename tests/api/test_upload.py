@@ -66,8 +66,8 @@ class FakeTaskManager:
         self.submit_calls.append((coro_func, args))
         return self.task_id
 
-    async def get_status(self, task_id: str) -> dict[str, Any] | None:
-        self.status_calls.append(task_id)
+    async def get_status(self, task_id: str, tenant_id: str = "") -> dict[str, Any] | None:
+        self.status_calls.append((task_id, tenant_id))
         return self.status
 
 
@@ -131,8 +131,7 @@ def test_validate_upload_accepts_markdown_pdf_and_docx() -> None:
             FakeUploadFile(
                 filename="spec.docx",
                 content_type=(
-                    "application/vnd.openxmlformats-officedocument."
-                    "wordprocessingml.document"
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 ),
                 content=b"PK\x03\x04",
             )
@@ -214,7 +213,13 @@ def test_store_upload_writes_file_and_returns_stable_metadata(
     monkeypatch.setattr(upload_api, "uuid", FakeUUIDModule)
     monkeypatch.setattr(upload_api, "datetime", FakeDateTime)
 
-    file_info = _run(upload_api._store_upload(_as_upload(FakeUploadFile(filename="manual.pdf")), 3))
+    file_info = _run(
+        upload_api._store_upload(
+            _as_upload(FakeUploadFile(filename="manual.pdf")),
+            3,
+            "t_1",
+        )
+    )
 
     assert file_info == {
         "filename": "manual_20260102_030405.pdf",
@@ -222,16 +227,19 @@ def test_store_upload_writes_file_and_returns_stable_metadata(
         "title": "manual.pdf",
         "size": len(b"%PDF-1.7"),
         "type": "application/pdf",
-        "path": (tmp_path / "user-uuid" / "20260102_030405" / "manual_20260102_030405.pdf").as_posix(),
+        "path": (
+            tmp_path / "t_1" / "user-uuid" / "20260102_030405" / "manual_20260102_030405.pdf"
+        ).as_posix(),
         "user_id": 3,
+        "tenant_id": "t_1",
         "user_uuid": "user-uuid",
         "upload_time": "20260102_030405",
-        "directory": (tmp_path / "user-uuid" / "20260102_030405").as_posix(),
+        "directory": (tmp_path / "t_1" / "user-uuid" / "20260102_030405").as_posix(),
         "mode": "create",
         "content_hash": hashlib.sha256(b"%PDF-1.7").hexdigest(),
     }
     assert (
-        tmp_path / "user-uuid" / "20260102_030405" / "manual_20260102_030405.pdf"
+        tmp_path / "t_1" / "user-uuid" / "20260102_030405" / "manual_20260102_030405.pdf"
     ).read_bytes() == b"%PDF-1.7"
 
 
@@ -244,6 +252,7 @@ def test_process_upload_runs_validation_storage_and_task_submission(
         "path": "uploads/guide.pdf",
         "filename": "guide.pdf",
         "user_id": 7,
+        "tenant_id": "t_7",
         "mode": "create",
         "content_hash": "h",
         "original_name": "guide.pdf",
@@ -257,9 +266,10 @@ def test_process_upload_runs_validation_storage_and_task_submission(
     async def fake_store_upload(
         upload_file: UploadFile,
         user_id: int,
+        tenant_id: str,
         **kwargs: object,
     ) -> dict[str, object]:
-        captured.append(("store", (upload_file, user_id, kwargs)))
+        captured.append(("store", (upload_file, user_id, tenant_id, kwargs)))
         return dict(file_info)
 
     async def fake_register(info: dict[str, object]) -> dict[str, object]:
@@ -269,8 +279,8 @@ def test_process_upload_runs_validation_storage_and_task_submission(
         info["title"] = "guide.pdf"
         return info
 
-    async def fake_bind(doc_id: str, task_id: str) -> None:
-        bound.append((doc_id, task_id))
+    async def fake_bind(tenant_id: str, doc_id: str, task_id: str) -> None:
+        bound.append((tenant_id, doc_id, task_id))
 
     async def fake_get_task_manager() -> FakeTaskManager:
         return manager
@@ -285,19 +295,25 @@ def test_process_upload_runs_validation_storage_and_task_submission(
 
     response = _run(
         upload_api.upload_file(
-            AuthenticatedUser(id=7, username="tester"),
+            AuthenticatedUser(id=7, username="tester", tenant_id="t_7"),
             _as_upload(file),
         )
     )
 
     assert captured[0] == ("validate", _as_upload(file))
     assert captured[1][0] == "store"
+    store_args = captured[1][1]
+    assert store_args[0] is _as_upload(file)
+    assert store_args[1] == 7
+    assert store_args[2] == "t_7"
+    assert store_args[3] == {"doc_id": None, "mode": "create"}
     assert captured[2] == ("register", "uploads/guide.pdf")
     assert len(manager.submit_calls) == 1
     submitted_func, submitted_args = manager.submit_calls[0]
     assert submitted_func is upload_api.run_document_indexing_job
     assert submitted_args[0]["doc_id"] == "upload_7_abc"
-    assert bound == [("upload_7_abc", "task-9")]
+    assert submitted_args[0]["tenant_id"] == "t_7"
+    assert bound == [("t_7", "upload_7_abc", "task-9")]
     assert response["task_id"] == "task-9"
     assert response["doc_id"] == "upload_7_abc"
     assert response["message"] == "文件已上传，后台正在解析索引。请通过 task_id 查询进度。"
@@ -311,7 +327,7 @@ def test_get_upload_status_or_raise_returns_status_and_raises_404(
 
     from app.user.application.auth_service import AuthenticatedUser
 
-    viewer = AuthenticatedUser(id=1, username="tester")
+    viewer = AuthenticatedUser(id=1, username="tester", tenant_id="t_1")
     monkeypatch.setattr(upload_api, "get_task_manager", fake_get_task_manager_ok)
     assert _run(upload_api.get_upload_status("task-ok", viewer)) == {"status": "running"}
 

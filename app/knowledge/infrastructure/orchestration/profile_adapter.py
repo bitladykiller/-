@@ -12,19 +12,22 @@ from app.user.domain.schemas import UserProfileData
 
 
 async def load_user_profile(
+    tenant_id: str,
     user_id: int,
     redis_client: Any | None = None,
 ) -> UserProfileData:
-    """通过用户画像服务读取结构化画像。"""
+    """通过用户画像服务读取指定租户下结构化画像。"""
     from app.user.application.user_profile_service import user_profile_service
 
     return await user_profile_service.get_profile(
+        tenant_id,
         user_id,
         redis_client=redis_client,
     )
 
 
 async def save_user_profile(
+    tenant_id: str,
     user_id: int,
     profile: UserProfileData,
     redis_client: Any | None = None,
@@ -33,6 +36,7 @@ async def save_user_profile(
     from app.user.application.user_profile_service import user_profile_service
 
     return await user_profile_service.upsert_profile_data(
+        tenant_id=tenant_id,
         user_id=user_id,
         profile=profile,
         redis_client=redis_client,
@@ -40,6 +44,7 @@ async def save_user_profile(
 
 
 async def save_user_profile_with_source(
+    tenant_id: str,
     user_id: int,
     profile: UserProfileData,
     redis_client: Any | None = None,
@@ -54,6 +59,7 @@ async def save_user_profile_with_source(
     from app.user.application.user_profile_service import user_profile_service
 
     return await user_profile_service.upsert_profile_data(
+        tenant_id=tenant_id,
         user_id=user_id,
         profile=profile,
         redis_client=redis_client,

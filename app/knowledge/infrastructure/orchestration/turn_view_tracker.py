@@ -13,11 +13,9 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
 
 from app.shared.core.database import AsyncSessionLocal, Base
 from sqlalchemy import DateTime, Integer, String, Text, UniqueConstraint, text
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, mapped_column
 
 logger = logging.getLogger(__name__)
@@ -64,8 +62,7 @@ class TurnMemoryReport:
     @property
     def all_completed(self) -> bool:
         return bool(self.views) and all(
-            s in (ViewStatus.COMPLETED, ViewStatus.SKIPPED)
-            for s in self.views.values()
+            s in (ViewStatus.COMPLETED, ViewStatus.SKIPPED) for s in self.views.values()
         )
 
     @property
@@ -82,11 +79,15 @@ class TurnViewStatus(Base):
     """turn_view_status 表 ORM 模型。"""
 
     __tablename__ = "turn_view_status"
-    __table_args__ = (
-        UniqueConstraint("turn_id", "view_name", name="uk_turn_view"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "turn_id", "view_name", name="uk_turn_view"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default="default",
+        server_default="default",
+    )
     turn_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     view_name: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(
@@ -94,7 +95,9 @@ class TurnViewStatus(Base):
     )
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=lambda: datetime.now(timezone.utc),
@@ -106,9 +109,7 @@ class CompressionTask(Base):
     """compression_tasks 表 ORM 模型（压缩显式幂等键）。"""
 
     __tablename__ = "compression_tasks"
-    __table_args__ = (
-        UniqueConstraint("compression_id", name="uk_compression_id"),
-    )
+    __table_args__ = (UniqueConstraint("compression_id", name="uk_compression_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     compression_id: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -120,7 +121,9 @@ class CompressionTask(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="processing")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -128,14 +131,20 @@ class MemoryHitEvent(Base):
     """memory_hit_events 表 ORM 模型（LTM hit_count 去重）。"""
 
     __tablename__ = "memory_hit_events"
-    __table_args__ = (
-        UniqueConstraint("turn_id", "memory_id", name="uk_hit_event"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "turn_id", "memory_id", name="uk_hit_event"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default="default",
+        server_default="default",
+    )
     turn_id: Mapped[str] = mapped_column(String(128), nullable=False)
     memory_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
 
 
 def build_compression_id(session_id: str, from_turn: int, to_turn: int) -> str:
@@ -149,11 +158,14 @@ async def record_view_status(
     view_name: str,
     status: str,
     error: str = "",
+    *,
+    tenant_id: str = "default",
 ) -> None:
     """记录单个视图的写入状态到 turn_view_status 表。
 
-    同 (turn_id, view_name) 已存在时，更新状态和错误（不增加 attempts，
-    因为这是同一次 after_agent 调用内的最终结果，而非 Stream 层面的重试）。
+    同 (tenant_id, turn_id, view_name) 已存在时，更新状态和错误（不增加
+    attempts，因为这是同一次 after_agent 调用内的最终结果，而非 Stream
+    层面的重试）。
     """
     if not turn_id:
         return
@@ -161,12 +173,14 @@ async def record_view_status(
         async with AsyncSessionLocal() as db:
             await db.execute(
                 text(
-                    "INSERT INTO turn_view_status (turn_id, view_name, status, last_error) "
-                    "VALUES (:tid, :vn, :st, :err) "
+                    "INSERT INTO turn_view_status "
+                    "(tenant_id, turn_id, view_name, status, last_error) "
+                    "VALUES (:tid, :turl, :vn, :st, :err) "
                     "ON DUPLICATE KEY UPDATE status = :st2, last_error = :err2"
                 ),
                 {
-                    "tid": turn_id,
+                    "tid": tenant_id,
+                    "turl": turn_id,
                     "vn": view_name,
                     "st": status,
                     "err": (error or "")[:1000],
@@ -187,12 +201,20 @@ async def record_view_status(
 async def record_all_view_statuses(
     turn_id: str,
     report: TurnMemoryReport,
+    *,
+    tenant_id: str = "default",
 ) -> None:
     """将 TurnMemoryReport 中的所有视图状态批量写入 turn_view_status。"""
     for view_name in ViewName:
         status = report.views.get(view_name.value, ViewStatus.SKIPPED.value)
         error = report.errors.get(view_name.value, "")
-        await record_view_status(turn_id, view_name.value, status, error)
+        await record_view_status(
+            turn_id,
+            view_name.value,
+            status,
+            error,
+            tenant_id=tenant_id,
+        )
 
 
 __all__ = [

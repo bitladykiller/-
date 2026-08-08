@@ -8,6 +8,13 @@
 边界：
 - 不处理业务规则（如缓存、事务编排）
 - 不直接暴露给 API 层
+
+多租户纪律：
+- **所有查询强制携带 tenant_id**，不允许"无租户上下文"的查询路径。
+  tenant_id 是组织边界，user_id 是租户内部归属边界，二者组合才是
+  完整的资源可见性。
+- 归属于本模块 `get_owned(tenant_id, conversation_id, user_id)`，
+  不再存在纯 `get_by_id` 的业务调用路径。
 """
 
 from __future__ import annotations
@@ -18,12 +25,10 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 _DEFAULT_CONVERSATION_TITLE = "新会话"
-# 统一文案：不区分"不存在"与"不属于该用户"，避免资源 ID 被枚举探测
+# 统一文案：不区分"不存在"与"不属于该租户/用户"，避免资源 ID 被枚举探测
 _NOT_FOUND_MESSAGE = "会话不存在或不属于当前用户"
 # 历史初始化脚本中的 messages 表；主路径消息在 Redis STM，这里做兼容清理
-_DELETE_MYSQL_MESSAGES_SQL = text(
-    "DELETE FROM messages WHERE conversation_id = :conversation_id"
-)
+_DELETE_MYSQL_MESSAGES_SQL = text("DELETE FROM messages WHERE conversation_id = :conversation_id")
 
 
 class ConversationRepository:
@@ -32,9 +37,10 @@ class ConversationRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def create(self, user_id: int) -> int:
-        """创建新会话并返回主键。"""
+    async def create(self, tenant_id: str, user_id: int) -> int:
+        """在指定租户下创建新会话并返回主键。"""
         conversation = Conversation(
+            tenant_id=tenant_id,
             user_id=user_id,
             title=_DEFAULT_CONVERSATION_TITLE,
             dialogue_type=DialogueType.NORMAL,
@@ -44,21 +50,30 @@ class ConversationRepository:
         await self._session.refresh(conversation)
         return conversation.id
 
-    async def get_by_id(self, conversation_id: int) -> Conversation | None:
-        """按主键查询会话。"""
+    async def get_by_id(
+        self,
+        tenant_id: str,
+        conversation_id: int,
+    ) -> Conversation | None:
+        """按租户 + 主键查询会话。"""
         result = await self._session.execute(
-            select(Conversation).where(Conversation.id == conversation_id)
+            select(Conversation).where(
+                Conversation.tenant_id == tenant_id,
+                Conversation.id == conversation_id,
+            )
         )
         return result.scalar_one_or_none()
 
     async def list_by_user(
         self,
+        tenant_id: str,
         user_id: int,
     ) -> list[dict[str, int | str]]:
-        """查询用户会话列表，排除默认标题。"""
+        """查询用户在指定租户内的会话列表，排除默认标题。"""
         stmt = (
             select(Conversation)
             .where(
+                Conversation.tenant_id == tenant_id,
                 Conversation.user_id == user_id,
                 Conversation.title != _DEFAULT_CONVERSATION_TITLE,
             )
@@ -77,24 +92,35 @@ class ConversationRepository:
             for conversation in conversations
         ]
 
-    async def get_owned(self, conversation_id: int, user_id: int) -> Conversation | None:
-        """按主键查询会话并校验归属。"""
+    async def get_owned(
+        self,
+        tenant_id: str,
+        conversation_id: int,
+        user_id: int,
+    ) -> Conversation | None:
+        """按租户 + 主键查询会话并校验租户内归属。"""
         result = await self._session.execute(
             select(Conversation).where(
+                Conversation.tenant_id == tenant_id,
                 Conversation.id == conversation_id,
                 Conversation.user_id == user_id,
             )
         )
         return result.scalar_one_or_none()
 
-    async def delete(self, conversation_id: int, user_id: int) -> Conversation:
-        """删除指定用户名下的会话及其 MySQL messages 兼容数据，返回被删会话。
+    async def delete(
+        self,
+        tenant_id: str,
+        conversation_id: int,
+        user_id: int,
+    ) -> Conversation:
+        """删除指定租户+用户名下的会话及其 MySQL messages 兼容数据。
 
-        WHY 必须带 user_id：删除会联动清空该会话的 STM/LTM 记忆。
-        无归属校验时任何调用方可以按 id 删任意人的会话与记忆（IDOR）。
-        不存在或不属于该用户时抛 ResourceNotFoundError（API 层映射 404）。
+        WHY 必须带 tenant_id + user_id：删除会联动清空该会话的 STM/LTM
+        记忆。无归属校验时任何调用方可以按 id 删任意人的会话与记忆（IDOR）。
+        不存在或不属于该租户/用户时抛 ResourceNotFoundError（API 层映射 404）。
         """
-        conversation = await self.get_owned(conversation_id, user_id)
+        conversation = await self.get_owned(tenant_id, conversation_id, user_id)
         if conversation is None:
             raise ResourceNotFoundError(_NOT_FOUND_MESSAGE)
 
@@ -107,7 +133,7 @@ class ConversationRepository:
         except Exception:
             await self._session.rollback()
             # 重新加载会话，避免事务失效后对象状态异常
-            conversation = await self.get_owned(conversation_id, user_id)
+            conversation = await self.get_owned(tenant_id, conversation_id, user_id)
             if conversation is None:
                 raise ResourceNotFoundError(_NOT_FOUND_MESSAGE) from None
 
@@ -115,12 +141,18 @@ class ConversationRepository:
         await self._session.commit()
         return conversation
 
-    async def rename(self, conversation_id: int, user_id: int, name: str) -> None:
-        """重命名指定用户名下的会话。
+    async def rename(
+        self,
+        tenant_id: str,
+        conversation_id: int,
+        user_id: int,
+        name: str,
+    ) -> None:
+        """重命名指定租户+用户名下的会话。
 
-        不存在或不属于该用户时抛 ResourceNotFoundError（API 层映射 404）。
+        不存在或不属于该租户/用户时抛 ResourceNotFoundError（API 层映射 404）。
         """
-        conversation = await self.get_owned(conversation_id, user_id)
+        conversation = await self.get_owned(tenant_id, conversation_id, user_id)
         if conversation is None:
             raise ResourceNotFoundError(_NOT_FOUND_MESSAGE)
         conversation.title = name

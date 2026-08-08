@@ -57,10 +57,16 @@ class RegistrationError(Exception):
 
 @dataclass(frozen=True)
 class AuthenticatedUser:
-    """通过令牌验证后的请求方身份。"""
+    """通过令牌验证后的请求方身份。
+
+    tenant_id 是令牌声明的"活跃租户"，即本请求的数据隔离边界。
+    API 层（deps.get_current_user）会再经 tenant_memberships 校验该声明，
+    任何业务代码不得信任客户端自报的租户。
+    """
 
     id: int
     username: str
+    tenant_id: str = "default"
 
 
 # ---------------------------------------------------------------------- #
@@ -82,16 +88,25 @@ def verify_password(plain: str, hashed: str) -> bool:
 def issue_access_token(
     user_id: int,
     username: str,
+    tenant_id: str = "default",
     *,
     now: int | None = None,
     ttl_seconds: int | None = None,
 ) -> str:
-    """签发 JWT 访问令牌。"""
+    """签发 JWT 访问令牌。
+
+    Args:
+        user_id: 用户 ID（sub）。
+        username: 用户名。
+        tenant_id: 活跃租户 ID——SaaS 数据隔离边界，必须与
+            tenant_memberships 中的有效成员关系一致才能通过请求鉴权。
+    """
     issued_at = now if now is not None else int(time.time())
     ttl = ttl_seconds if ttl_seconds is not None else settings.ACCESS_TOKEN_TTL_SECONDS
     payload = {
         "sub": str(user_id),
         "username": username,
+        "tenant_id": tenant_id,
         "iat": issued_at,
         "exp": issued_at + ttl,
     }
@@ -119,16 +134,17 @@ def verify_access_token(token: str) -> AuthenticatedUser:
     username = payload.get("username")
     if not (isinstance(sub, str) and sub.isdigit() and isinstance(username, str)):
         raise AuthError("令牌载荷缺失")
-    return AuthenticatedUser(id=int(sub), username=username)
+    tenant_id = payload.get("tenant_id")
+    if not isinstance(tenant_id, str) or not tenant_id.strip():
+        tenant_id = "default"
+    return AuthenticatedUser(id=int(sub), username=username, tenant_id=tenant_id)
 
 
 def validate_registration(username: str, password: str) -> None:
     """注册参数校验；不合规抛 RegistrationError。"""
     name = (username or "").strip()
     if not (_USERNAME_MIN <= len(name) <= _USERNAME_MAX):
-        raise RegistrationError(
-            f"用户名长度须在 {_USERNAME_MIN}-{_USERNAME_MAX} 之间"
-        )
+        raise RegistrationError(f"用户名长度须在 {_USERNAME_MIN}-{_USERNAME_MAX} 之间")
     if len(password or "") < _PASSWORD_MIN:
         raise RegistrationError(f"密码至少 {_PASSWORD_MIN} 位")
 
@@ -186,9 +202,7 @@ class AuthService:
         from sqlalchemy import select
 
         async with self._session_factory() as db:
-            result = await db.execute(
-                select(User).where(User.username == (username or "").strip())
-            )
+            result = await db.execute(select(User).where(User.username == (username or "").strip()))
             user = result.scalar_one_or_none()
             # 统一失败文案：区分"用户不存在"会泄露注册状态
             if user is None or not verify_password(password, user.password_hash):

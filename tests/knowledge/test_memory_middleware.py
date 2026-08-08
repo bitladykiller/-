@@ -44,9 +44,7 @@ class FakeRedisShortTermMemory:
         self.redis = object()
         self.should_compress_result = should_compress_result
         self.compress_session_result = (
-            should_compress_result
-            if compress_session_result is None
-            else compress_session_result
+            should_compress_result if compress_session_result is None else compress_session_result
         )
         self.summary = SessionSummary(
             content="历史摘要",
@@ -134,8 +132,11 @@ class FakeRedisShortTermMemory:
         user_id: str,
         session_id: str,
         summary_compressor,
+        *,
+        compression_id: str = "",
     ) -> bool:
         self.compress_calls += 1
+        self.compression_id = compression_id
         if not self.compress_session_result:
             return False
         self.summary_callback_result = await summary_compressor(
@@ -193,6 +194,16 @@ class FakeLongTermMemory:
         self.updated_memory_ids.extend(memory.memory_id for memory in memories)
         return True
 
+    async def update_memory_hit_infos_deduped(
+        self,
+        memories,
+        *,
+        turn_id: str = "",
+    ) -> bool:
+        self.hit_update_batches += 1
+        self.updated_memory_ids.extend(memory.memory_id for memory in memories)
+        return True
+
 
 class FakeLLMClient:
     def __init__(self) -> None:
@@ -245,10 +256,10 @@ def test_before_agent_loads_all_memory_layers() -> None:
     )
     milvus_ltm.hybrid_results = [expected_memory]
     extractor = FakeMemoryExtractor()
-    profile_reader_calls: list[tuple[int, object]] = []
+    profile_reader_calls: list[tuple[str, int, object]] = []
 
-    async def fake_profile_reader(user_id: int, redis_client: object | None):
-        profile_reader_calls.append((user_id, redis_client))
+    async def fake_profile_reader(tenant_id: str, user_id: int, redis_client: object | None):
+        profile_reader_calls.append((tenant_id, user_id, redis_client))
         return expected_profile
 
     middleware = MemoryMiddleware(
@@ -258,21 +269,21 @@ def test_before_agent_loads_all_memory_layers() -> None:
         profile_reader=fake_profile_reader,
     )
 
-    memory_state = _run(
-        middleware.before_agent("tenant-1", "42", "session-1", "怎么修空调")
-    )
+    memory_state = _run(middleware.before_agent("tenant-1", "42", "session-1", "怎么修空调"))
 
     assert memory_state.session_summary == redis_stm.summary
     assert memory_state.recent_messages == redis_stm.recent_messages
     assert memory_state.long_term_memories == [expected_memory]
     assert memory_state.user_profile == expected_profile
-    assert profile_reader_calls == [(42, redis_stm.redis)]
+    assert profile_reader_calls == [("tenant-1", 42, redis_stm.redis)]
     assert milvus_ltm.hybrid_search_calls == [("tenant-1", "42", "怎么修空调")]
 
 
 def test_before_agent_degrades_and_warns_once_on_memory_load_failures(monkeypatch) -> None:
     class BrokenRedisShortTermMemory(FakeRedisShortTermMemory):
-        async def get_summary(self, tenant_id: str, user_id: str, session_id: str) -> SessionSummary:
+        async def get_summary(
+            self, tenant_id: str, user_id: str, session_id: str
+        ) -> SessionSummary:
             raise RuntimeError("redis failed")
 
     class BrokenLongTermMemory(FakeLongTermMemory):
@@ -287,7 +298,7 @@ def test_before_agent_degrades_and_warns_once_on_memory_load_failures(monkeypatc
     logger = FakeLogger()
     monkeypatch.setattr(memory_middleware, "logger", logger)
 
-    async def broken_profile_reader(user_id: int, redis_client: object | None):
+    async def broken_profile_reader(tenant_id: str, user_id: int, redis_client: object | None):
         raise RuntimeError("profile failed")
 
     middleware = MemoryMiddleware(
@@ -330,7 +341,7 @@ def test_before_agent_treats_redis_outage_as_expected_degradation(monkeypatch) -
         async def get_summary(self, tenant_id, user_id, session_id):
             raise redis_exceptions.ConnectionError("redis down")
 
-    async def ok_profile_reader(user_id: int, redis_client: object | None):
+    async def ok_profile_reader(tenant_id: str, user_id: int, redis_client: object | None):
         return {}
 
     logger = FakeLogger()
@@ -362,10 +373,16 @@ def test_after_agent_persists_turn_extracts_memory_and_updates_hits() -> None:
         ],
         profile={"preferred_category": "智能门铃"},
     )
-    profile_writer_calls: list[tuple[int, dict, object]] = []
+    profile_writer_calls: list[tuple[str, int, dict, object, str | None]] = []
 
-    async def fake_profile_writer(user_id: int, profile: dict, redis_client: object | None):
-        profile_writer_calls.append((user_id, profile, redis_client))
+    async def fake_profile_writer(
+        tenant_id: str,
+        user_id: int,
+        profile: dict,
+        redis_client: object | None,
+        source_turn_id: str | None,
+    ):
+        profile_writer_calls.append((tenant_id, user_id, profile, redis_client, source_turn_id))
         return True
 
     middleware = MemoryMiddleware(
@@ -418,7 +435,7 @@ def test_after_agent_persists_turn_extracts_memory_and_updates_hits() -> None:
     ]
     assert milvus_ltm.updated_memory_ids == ["mem-hit"]
     assert profile_writer_calls == [
-        (5, {"preferred_category": "智能门铃"}, redis_stm.redis)
+        ("tenant-1", 5, {"preferred_category": "智能门铃"}, redis_stm.redis, None)
     ]
 
 
@@ -437,7 +454,13 @@ def test_after_agent_logs_profile_write_failure_without_aborting(monkeypatch) ->
         profile={"preferred_category": "智能门铃"},
     )
 
-    async def broken_profile_writer(user_id: int, profile: dict, redis_client: object | None):
+    async def broken_profile_writer(
+        tenant_id: str,
+        user_id: int,
+        profile: dict,
+        redis_client: object | None,
+        source_turn_id: str | None,
+    ):
         raise RuntimeError("profile failed")
 
     middleware = MemoryMiddleware(
@@ -483,10 +506,16 @@ def test_after_agent_skips_extraction_when_compress_did_not_complete() -> None:
         ],
         profile={"preferred_brand": "不应写入"},
     )
-    profile_writer_calls: list[tuple[int, dict, object]] = []
+    profile_writer_calls: list[tuple[str, int, dict, object, str | None]] = []
 
-    async def fake_profile_writer(user_id: int, profile: dict, redis_client: object | None):
-        profile_writer_calls.append((user_id, profile, redis_client))
+    async def fake_profile_writer(
+        tenant_id: str,
+        user_id: int,
+        profile: dict,
+        redis_client: object | None,
+        source_turn_id: str | None,
+    ):
+        profile_writer_calls.append((tenant_id, user_id, profile, redis_client, source_turn_id))
         return True
 
     middleware = MemoryMiddleware(
@@ -558,7 +587,12 @@ def test_after_agent_swallows_hit_refresh_failure(monkeypatch) -> None:
     """命中统计是旁路逻辑：整批刷新失败也不能让 after_agent 抛出。"""
 
     class BrokenLongTermMemory(FakeLongTermMemory):
-        async def update_memory_hit_infos(self, memories) -> bool:
+        async def update_memory_hit_infos_deduped(
+            self,
+            memories,
+            *,
+            turn_id: str = "",
+        ) -> bool:
             raise RuntimeError("boom")
 
     logger = FakeLogger()
@@ -613,7 +647,11 @@ async def test_before_agent_reads_all_sources_concurrently() -> None:
             await rendezvous()
             return []
 
-    async def concurrent_profile_reader(user_id: int, redis_client: object | None):
+    async def concurrent_profile_reader(
+        tenant_id: str,
+        user_id: int,
+        redis_client: object | None,
+    ):
         await rendezvous()
         return {"preferred_brand": "小米"}
 

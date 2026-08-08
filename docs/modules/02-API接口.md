@@ -190,15 +190,18 @@ async def run_api_action(action_name, operation, *, logger, **context) -> ApiRes
 ## 4. 鉴权 API
 
 文件：[`app/api/auth.py`](../../app/api/auth.py) ·
-服务：[`app/user/application/auth_service.py`](../../app/user/application/auth_service.py)
+服务：[`app/user/application/auth_service.py`](../../app/user/application/auth_service.py) ·
+租户：[`app/user/application/tenant_service.py`](../../app/user/application/tenant_service.py)
 
-### 4.1 三个端点
+### 4.1 端点
 
 | 方法 | 路径 | 请求体 | 成功响应 |
 |---|---|---|---|
-| POST | `/api/auth/register` | `{"username","password"}` | `{access_token, token_type:"bearer", user_id, username}`（注册即登录） |
-| POST | `/api/auth/login` | 同上 | 同上 |
-| GET | `/api/auth/me` | —（带 Bearer） | `{user_id, username}`（前端启动探活令牌用） |
+| POST | `/api/auth/register` | `{"username","password"}` | `{access_token, token_type:"bearer", user_id, username, tenant_id}`（注册即登录，自动创建个人租户） |
+| POST | `/api/auth/login` | 同上 | 同上（`tenant_id` 为用户最早加入的有效租户） |
+| GET | `/api/auth/me` | —（带 Bearer） | `{user_id, username, tenant_id, role}`（前端启动探活令牌用） |
+| GET | `/api/auth/tenants` | —（带 Bearer） | `[{tenant_id, tenant_name, role, status}]`（用户全部租户归属） |
+| POST | `/api/auth/switch-tenant` | `{"tenant_id"}` | TokenResponse（切换活跃租户后重新签发令牌） |
 
 规则（与 `auth_service.py` 对齐）：
 
@@ -207,6 +210,10 @@ async def run_api_action(action_name, operation, *, logger, **context) -> ApiRes
 - 登录失败 → 401 **统一文案**`用户名或密码错误`
   （不区分"用户不存在/密码错"——区分会泄露注册状态，方便撞库）
 - 演示种子账号：`demo_user / demo1234`（生产部署删除）
+- **多租户鉴权链**（v3.37 起）：JWT 验签 → `tenant_memberships` 校验
+  `user ∈ tenant 且双方 active` → 建立 `TenantContext{tenant_id, user_id, role}`
+  写入 contextvars；令牌声明的租户不可信，membership 是最终裁判。
+  校验失败 → 401 `无权访问该租户，请切换租户或重新登录`。
 
 ### 4.2 令牌生命周期（时序图）
 

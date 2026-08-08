@@ -38,6 +38,7 @@ class FakeRepo:
         now = datetime(2026, 7, 21, 12, 0, 0)
         row = UserDocument(
             id=STATE.next_id,
+            tenant_id=kwargs.get("tenant_id", "default"),
             user_id=kwargs["user_id"],
             doc_id=kwargs["doc_id"],
             title=kwargs["title"],
@@ -56,17 +57,20 @@ class FakeRepo:
         STATE.rows[row.doc_id] = row
         return row
 
-    async def get_by_doc_id(self, doc_id: str) -> UserDocument | None:
-        return STATE.rows.get(doc_id)
-
-    async def get_owned(self, user_id: int, doc_id: str) -> UserDocument | None:
+    async def get_by_doc_id(self, tenant_id: str, doc_id: str) -> UserDocument | None:
         row = STATE.rows.get(doc_id)
-        if row and row.user_id == user_id:
+        if row and row.tenant_id == tenant_id:
             return row
         return None
 
-    async def list_by_user(self, user_id: int) -> list[UserDocument]:
-        return [r for r in STATE.rows.values() if r.user_id == user_id]
+    async def get_owned(self, tenant_id: str, user_id: int, doc_id: str) -> UserDocument | None:
+        row = STATE.rows.get(doc_id)
+        if row and row.tenant_id == tenant_id and row.user_id == user_id:
+            return row
+        return None
+
+    async def list_by_user(self, tenant_id: str, user_id: int) -> list[UserDocument]:
+        return [r for r in STATE.rows.values() if r.tenant_id == tenant_id and r.user_id == user_id]
 
     async def mark_indexing(self, row: UserDocument, **kwargs: Any) -> UserDocument:
         row.status = "indexing"
@@ -118,6 +122,7 @@ def test_prepare_create_and_list() -> None:
     svc = DocumentService(session_factory=fake_session_factory)
     meta = _run(
         svc.prepare_create(
+            tenant_id="t_1",
             user_id=1,
             title="faq.md",
             original_name="faq.md",
@@ -128,7 +133,7 @@ def test_prepare_create_and_list() -> None:
     )
     assert meta["doc_id"] == "kb_faq_1"
     assert meta["status"] == "pending"
-    docs = _run(svc.list_user_documents(1))
+    docs = _run(svc.list_user_documents("t_1", 1))
     assert len(docs) == 1
     assert docs[0]["title"] == "faq.md"
 
@@ -137,6 +142,7 @@ def test_prepare_replace_checks_owner() -> None:
     svc = DocumentService(session_factory=fake_session_factory)
     _run(
         svc.prepare_create(
+            tenant_id="t_1",
             user_id=1,
             title="a.md",
             original_name="a.md",
@@ -148,6 +154,7 @@ def test_prepare_replace_checks_owner() -> None:
     with pytest.raises(ValueError, match="不属于"):
         _run(
             svc.prepare_replace(
+                tenant_id="t_1",
                 user_id=2,
                 doc_id="doc_x",
                 original_name="b.md",
@@ -157,6 +164,7 @@ def test_prepare_replace_checks_owner() -> None:
         )
     meta = _run(
         svc.prepare_replace(
+            tenant_id="t_1",
             user_id=1,
             doc_id="doc_x",
             original_name="b.md",
@@ -172,6 +180,7 @@ def test_prepare_replace_skips_when_hash_matches() -> None:
     svc = DocumentService(session_factory=fake_session_factory)
     _run(
         svc.prepare_create(
+            tenant_id="t_1",
             user_id=1,
             title="a.md",
             original_name="a.md",
@@ -182,6 +191,7 @@ def test_prepare_replace_skips_when_hash_matches() -> None:
     )
     meta = _run(
         svc.prepare_replace(
+            tenant_id="t_1",
             user_id=1,
             doc_id="doc_hash",
             original_name="a.md",
@@ -195,6 +205,7 @@ def test_prepare_replace_skips_when_hash_matches() -> None:
 
     changed = _run(
         svc.prepare_replace(
+            tenant_id="t_1",
             user_id=1,
             doc_id="doc_hash",
             original_name="a2.md",
@@ -211,6 +222,7 @@ def test_apply_indexing_result_ready() -> None:
     svc = DocumentService(session_factory=fake_session_factory)
     _run(
         svc.prepare_create(
+            tenant_id="t_1",
             user_id=1,
             title="a.md",
             original_name="a.md",
@@ -221,12 +233,13 @@ def test_apply_indexing_result_ready() -> None:
     )
     _run(
         svc.apply_indexing_result(
+            tenant_id="t_1",
             doc_id="doc_y",
             indexing_result={"status": "success", "version": 2, "chunks": 5},
             task_id="t1",
         )
     )
-    row = _run(svc.get_user_document(1, "doc_y"))
+    row = _run(svc.get_user_document("t_1", 1, "doc_y"))
     assert row is not None
     assert row["status"] == "ready"
     assert row["version"] == 2

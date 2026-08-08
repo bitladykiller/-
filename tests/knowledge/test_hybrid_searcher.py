@@ -31,23 +31,55 @@ class FakeMilvusStore:
         FakeMilvusStore.instances.append(self)
 
     async def insert_chunks(
-        self, chunks, *, version: int = 1, content_hash: str = "", owner_id: str = "global"
+        self,
+        chunks,
+        *,
+        version: int = 1,
+        content_hash: str = "",
+        owner_id: str = "global",
+        tenant_id: str = "",
+        visibility: str = "global",
     ) -> int:
         self.inserted.append(
-            {"chunks": list(chunks), "version": version, "hash": content_hash, "owner": owner_id}
+            {
+                "chunks": list(chunks),
+                "version": version,
+                "hash": content_hash,
+                "owner": owner_id,
+                "tenant": tenant_id,
+                "visibility": visibility,
+            }
         )
         return len(chunks)
 
     async def reindex_document(
-        self, doc_id, chunks, *, content_hash: str = "", owner_id: str = "global"
+        self,
+        doc_id,
+        chunks,
+        *,
+        content_hash: str = "",
+        owner_id: str = "global",
+        tenant_id: str = "",
+        visibility: str = "global",
     ):
         self.reindexed.append(
-            {"doc_id": doc_id, "chunks": list(chunks), "hash": content_hash, "owner": owner_id}
+            {
+                "doc_id": doc_id,
+                "chunks": list(chunks),
+                "hash": content_hash,
+                "owner": owner_id,
+                "tenant": tenant_id,
+                "visibility": visibility,
+            }
         )
         return {"soft_deleted": 2, "version": 3, "chunks": len(chunks)}
 
-    async def soft_delete_by_doc_id(self, doc_id: str) -> dict[str, int]:
-        self.soft_deleted.append(doc_id)
+    async def soft_delete_by_doc_id(
+        self,
+        doc_id: str,
+        tenant_id: str = "",
+    ) -> dict[str, int]:
+        self.soft_deleted.append((doc_id, tenant_id))
         return {"soft_deleted": 4, "max_version": 1}
 
     async def hard_purge_soft_deleted(self, *, retention_seconds: int, batch_limit: int) -> int:
@@ -81,7 +113,14 @@ async def test_index_delegates_version_and_hash() -> None:
 
     assert count == 2
     assert searcher.milvus.inserted == [
-        {"chunks": ["c1", "c2"], "version": 2, "hash": "h", "owner": "global"}
+        {
+            "chunks": ["c1", "c2"],
+            "version": 2,
+            "hash": "h",
+            "owner": "global",
+            "tenant": "",
+            "visibility": "global",
+        }
     ]
 
 
@@ -101,7 +140,7 @@ async def test_soft_delete_document_awaits_store() -> None:
         "soft_deleted": 4,
         "max_version": 1,
     }
-    assert searcher.milvus.soft_deleted == ["doc_a"]
+    assert searcher.milvus.soft_deleted == [("doc_a", "")]
 
 
 async def test_hard_purge_forwards_retention_and_limit() -> None:

@@ -17,7 +17,6 @@ from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Protocol, TypeAlias, TypeVar
 
-from app.chat.infrastructure.graph.memory_context import _DEFAULT_TENANT_ID
 from app.chat.infrastructure.repository.conversation_repository import (
     ConversationRepository,
 )
@@ -77,29 +76,35 @@ class ConversationService:
     def __init__(self, session_factory: _SessionFactory = AsyncSessionLocal):
         self._session_factory = session_factory
 
-    async def create_conversation(self, user_id: int) -> int:
+    async def create_conversation(self, tenant_id: str, user_id: int) -> int:
         """创建新会话并返回会话 id。"""
         return await run_db_operation(
             self._session_factory,
             logger,
             "create_conversation",
             _create_conversation,
+            tenant_id,
             user_id,
+            tenant_id=tenant_id,
             user_id=user_id,
         )
 
-    async def get_user_conversations(self, user_id: int) -> list[ConversationSummary]:
+    async def get_user_conversations(
+        self, tenant_id: str, user_id: int
+    ) -> list[ConversationSummary]:
         """获取用户的所有非默认标题会话。"""
         return await run_db_operation(
             self._session_factory,
             logger,
             "get_user_conversations",
             _get_user_conversations,
+            tenant_id,
             user_id,
+            tenant_id=tenant_id,
             user_id=user_id,
         )
 
-    async def delete_conversation(self, conversation_id: int, user_id: int) -> None:
+    async def delete_conversation(self, tenant_id: str, conversation_id: int, user_id: int) -> None:
         """删除指定用户名下的会话，并清理关联记忆。
 
         归属校验在 Repository 完成：不存在或不属于该用户 → ResourceNotFoundError。
@@ -115,18 +120,22 @@ class ConversationService:
             logger,
             "delete_conversation",
             _delete_conversation,
+            tenant_id,
             conversation_id,
             user_id,
+            tenant_id=tenant_id,
             conversation_id=conversation_id,
             user_id=user_id,
         )
         await _clear_conversation_memories(
+            tenant_id=tenant_id,
             user_id=str(deleted.user_id),
             session_id=str(conversation_id),
         )
 
     async def ensure_conversation(
         self,
+        tenant_id: str,
         user_id: int,
         conversation_id: int | None,
     ) -> int:
@@ -141,15 +150,17 @@ class ConversationService:
             ResourceNotFoundError: 指定的会话不存在或不属于该用户。
         """
         if conversation_id is None:
-            return await self.create_conversation(user_id)
+            return await self.create_conversation(tenant_id, user_id)
 
         await run_db_operation(
             self._session_factory,
             logger,
             "ensure_conversation",
             _get_owned_conversation,
+            tenant_id,
             conversation_id,
             user_id,
+            tenant_id=tenant_id,
             conversation_id=conversation_id,
             user_id=user_id,
         )
@@ -157,6 +168,7 @@ class ConversationService:
 
     async def list_messages(
         self,
+        tenant_id: str,
         conversation_id: int,
         user_id: int,
     ) -> list[dict[str, str]]:
@@ -166,14 +178,17 @@ class ConversationService:
             logger,
             "list_messages",
             _list_messages,
+            tenant_id,
             conversation_id,
             user_id,
+            tenant_id=tenant_id,
             conversation_id=conversation_id,
             user_id=user_id,
         )
 
     async def update_conversation_name(
         self,
+        tenant_id: str,
         conversation_id: int,
         user_id: int,
         name: str,
@@ -184,9 +199,11 @@ class ConversationService:
             logger,
             "update_conversation_name",
             _update_conversation_name,
+            tenant_id,
             conversation_id,
             user_id,
             name,
+            tenant_id=tenant_id,
             conversation_id=conversation_id,
             user_id=user_id,
             name=name,
@@ -198,20 +215,22 @@ conversation_service = ConversationService()
 
 # ---- Repository 适配函数 ----
 
-async def _create_conversation(db: AsyncSession, user_id: int) -> int:
+
+async def _create_conversation(db: AsyncSession, tenant_id: str, user_id: int) -> int:
     """创建新会话。"""
     repo = ConversationRepository(db)
-    return await repo.create(user_id)
+    return await repo.create(tenant_id, user_id)
 
 
 async def _get_user_conversations(
     db: AsyncSession,
+    tenant_id: str,
     user_id: int,
 ) -> list[ConversationSummary]:
     """查询用户会话列表。"""
     repo = ConversationRepository(db)
     # Repository 返回通用 dict，这里收敛为会话摘要契约
-    rows = await repo.list_by_user(user_id)
+    rows = await repo.list_by_user(tenant_id, user_id)
     return [
         ConversationSummary(
             id=int(row["id"]),
@@ -224,27 +243,35 @@ async def _get_user_conversations(
     ]
 
 
-async def _delete_conversation(db: AsyncSession, conversation_id: int, user_id: int):
+async def _delete_conversation(
+    db: AsyncSession, tenant_id: str, conversation_id: int, user_id: int
+):
     """删除会话元信息及 MySQL 兼容消息，返回被删会话。"""
     repo = ConversationRepository(db)
-    return await repo.delete(conversation_id, user_id)
+    return await repo.delete(tenant_id, conversation_id, user_id)
 
 
 async def _update_conversation_name(
     db: AsyncSession,
+    tenant_id: str,
     conversation_id: int,
     user_id: int,
     name: str,
 ) -> None:
     """更新会话标题。"""
     repo = ConversationRepository(db)
-    await repo.rename(conversation_id, user_id, name)
+    await repo.rename(tenant_id, conversation_id, user_id, name)
 
 
-async def _get_owned_conversation(db: AsyncSession, conversation_id: int, user_id: int):
+async def _get_owned_conversation(
+    db: AsyncSession,
+    tenant_id: str,
+    conversation_id: int,
+    user_id: int,
+):
     """校验会话归属；不存在或非本人抛 ResourceNotFoundError。"""
     repo = ConversationRepository(db)
-    conversation = await repo.get_owned(conversation_id, user_id)
+    conversation = await repo.get_owned(tenant_id, conversation_id, user_id)
     if conversation is None:
         raise ResourceNotFoundError("会话不存在或不属于当前用户")
     return conversation
@@ -252,23 +279,23 @@ async def _get_owned_conversation(db: AsyncSession, conversation_id: int, user_i
 
 async def _list_messages(
     db: AsyncSession,
+    tenant_id: str,
     conversation_id: int,
     user_id: int,
 ) -> list[dict[str, str]]:
     """校验归属后列出持久化消息。"""
     from app.chat.infrastructure.repository.message_repository import MessageRepository
 
-    await _get_owned_conversation(db, conversation_id, user_id)
-    return await MessageRepository(db).list_by_conversation(conversation_id)
+    await _get_owned_conversation(db, tenant_id, conversation_id, user_id)
+    return await MessageRepository(db).list_by_conversation(tenant_id, conversation_id)
 
 
-async def _clear_conversation_memories(*, user_id: str, session_id: str) -> None:
+async def _clear_conversation_memories(*, tenant_id: str, user_id: str, session_id: str) -> None:
     """清理会话关联的 Redis STM 与 Milvus LTM。
 
     记忆清理失败只记录日志，不回滚已删除的 MySQL 会话元信息，
     避免“库删了但接口 500”导致前端重试反复失败。
     """
-    tenant_id = _DEFAULT_TENANT_ID
     try:
         from app.platform.container import get_container
 

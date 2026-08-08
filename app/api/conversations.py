@@ -43,7 +43,7 @@ async def create_conversation(current_user: CurrentUser) -> ConversationCreatedR
     """为当前用户创建新会话并返回会话 ID。"""
     conversation_id = await run_api_action(
         "create_conversation",
-        conversation_service.create_conversation(current_user.id),
+        conversation_service.create_conversation(current_user.tenant_id, current_user.id),
         logger=logger,
         user_id=current_user.id,
     )
@@ -55,7 +55,7 @@ async def get_my_conversations(current_user: CurrentUser) -> list[ConversationSu
     """查询当前用户的会话列表。"""
     return await run_api_action(
         "get_my_conversations",
-        conversation_service.get_user_conversations(current_user.id),
+        conversation_service.get_user_conversations(current_user.tenant_id, current_user.id),
         logger=logger,
         user_id=current_user.id,
     )
@@ -73,7 +73,11 @@ async def get_conversation_messages(
     """
     return await run_api_action(
         "get_conversation_messages",
-        conversation_service.list_messages(conversation_id, current_user.id),
+        conversation_service.list_messages(
+            current_user.tenant_id,
+            conversation_id,
+            current_user.id,
+        ),
         logger=logger,
         conversation_id=conversation_id,
         user_id=current_user.id,
@@ -94,7 +98,11 @@ async def delete_conversation(
     """
     await run_api_action(
         "delete_conversation",
-        conversation_service.delete_conversation(conversation_id, current_user.id),
+        conversation_service.delete_conversation(
+            current_user.tenant_id,
+            conversation_id,
+            current_user.id,
+        ),
         logger=logger,
         conversation_id=conversation_id,
         user_id=current_user.id,
@@ -112,6 +120,7 @@ async def update_conversation_name(
     await run_api_action(
         "update_conversation_name",
         conversation_service.update_conversation_name(
+            current_user.tenant_id,
             conversation_id,
             current_user.id,
             request.name,

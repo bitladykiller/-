@@ -3,10 +3,15 @@
 只有两个操作：追加一轮对话、按会话列出。
 append-only：不提供更新与单条删除（历史即事实）；
 会话删除时随 FK CASCADE / 兼容清理一并消失。
+
+多租户策略：messages 不冗余 tenant_id 列，而是通过 JOIN conversations
+强制租户条件——即使调用方漏做了会话归属校验，查询/写入本身也带租户
+边界，杜绝跨租户读写。
 """
 
 from __future__ import annotations
 
+from app.chat.infrastructure.models.conversation import Conversation
 from app.chat.infrastructure.models.message import (
     MESSAGE_SENDER_ASSISTANT,
     MESSAGE_SENDER_USER,
@@ -25,18 +30,23 @@ class MessageRepository:
 
     async def add_turn(
         self,
+        tenant_id: str,
         conversation_id: int,
         user_content: str,
         assistant_content: str,
         *,
         turn_event_id: str | None = None,
     ) -> None:
-        """追加一轮对话（user + assistant 两条，一次提交）。
+        """在指定租户的会话下追加一轮对话（user + assistant 两次提交）。
 
         turn_event_id 非空时由数据库唯一键兜底：Stream 在 XACK 前崩溃并重放，
         也不会再追加同一回合的两条历史消息。
         """
-        if turn_event_id and await self._turn_exists(conversation_id, turn_event_id):
+        if turn_event_id and await self._turn_exists(
+            tenant_id,
+            conversation_id,
+            turn_event_id,
+        ):
             return
 
         self._session.add_all(
@@ -60,14 +70,26 @@ class MessageRepository:
         except IntegrityError:
             # 并发消费者可能在查询与插入之间完成了同一 event；唯一键是最终裁决。
             await self._session.rollback()
-            if turn_event_id and await self._turn_exists(conversation_id, turn_event_id):
+            if turn_event_id and await self._turn_exists(
+                tenant_id,
+                conversation_id,
+                turn_event_id,
+            ):
                 return
             raise
 
-    async def _turn_exists(self, conversation_id: int, turn_event_id: str) -> bool:
+    async def _turn_exists(
+        self,
+        tenant_id: str,
+        conversation_id: int,
+        turn_event_id: str,
+    ) -> bool:
         """判断该回合的 user/assistant 历史是否已经完整持久化。"""
         result = await self._session.execute(
-            select(Message.sender).where(
+            select(Message.sender)
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(
+                Conversation.tenant_id == tenant_id,
                 Message.conversation_id == conversation_id,
                 Message.turn_event_id == turn_event_id,
             )
@@ -77,11 +99,19 @@ class MessageRepository:
             MESSAGE_SENDER_ASSISTANT,
         }
 
-    async def list_by_conversation(self, conversation_id: int) -> list[dict[str, str]]:
-        """按时间正序返回会话全部消息。"""
+    async def list_by_conversation(
+        self,
+        tenant_id: str,
+        conversation_id: int,
+    ) -> list[dict[str, str]]:
+        """按时间正序返回租户内会话的全部消息。"""
         result = await self._session.execute(
             select(Message)
-            .where(Message.conversation_id == conversation_id)
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(
+                Conversation.tenant_id == tenant_id,
+                Message.conversation_id == conversation_id,
+            )
             .order_by(Message.id.asc())
         )
         return [

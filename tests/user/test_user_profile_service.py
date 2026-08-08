@@ -57,8 +57,8 @@ class FakeRepository:
     """用于测试的假 Repository，记录调用并返回预设值。"""
 
     def __init__(self) -> None:
-        self.get_profile_calls: list[int] = []
-        self.upsert_profile_data_calls: list[tuple[int, dict]] = []
+        self.get_profile_calls: list[tuple[str, int]] = []
+        self.upsert_profile_data_calls: list[tuple[str, int, dict]] = []
         self._profile_result: dict | None = None
         self._upsert_result: bool = True
         self._raise_on_get: Exception | None = None
@@ -79,16 +79,24 @@ class FakeRepository:
     def empty_profile(self, user_id: int) -> dict:
         return UserProfileRepository.empty_profile(user_id)
 
-    async def get_profile(self, db, user_id: int) -> dict:
-        self.get_profile_calls.append(user_id)
+    async def get_profile(self, db, tenant_id: str, user_id: int) -> dict:
+        self.get_profile_calls.append((tenant_id, user_id))
         if self._raise_on_get:
             raise self._raise_on_get
         if self._profile_result is not None:
             return self._profile_result
         return self.empty_profile(user_id)
 
-    async def upsert_profile_data(self, db, *, user_id: int, profile: dict) -> bool:
-        self.upsert_profile_data_calls.append((user_id, profile))
+    async def upsert_profile_data(
+        self,
+        db,
+        *,
+        tenant_id: str,
+        user_id: int,
+        profile: dict,
+        source_turn_id: str | None = None,
+    ) -> bool:
+        self.upsert_profile_data_calls.append((tenant_id, user_id, profile))
         if self._raise_on_upsert:
             raise self._raise_on_upsert
         return self._upsert_result
@@ -108,7 +116,7 @@ def test_get_profile_uses_cached_profile(monkeypatch) -> None:
         "tags": ["家电"],
         "facts": [{"key": "city", "value": "杭州"}],
     }
-    cache.values["user:profile:7"] = json.dumps(expected, ensure_ascii=False)
+    cache.values["tenant:t_1:user:profile:7"] = json.dumps(expected, ensure_ascii=False)
 
     repo = FakeRepository()
     repo.set_raise_on_get(AssertionError("unexpected db query"))
@@ -119,7 +127,7 @@ def test_get_profile_uses_cached_profile(monkeypatch) -> None:
     )
 
     service = UserProfileService(repository=repo)
-    result = _run(service.get_profile(7, redis_client=cache))
+    result = _run(service.get_profile("t_1", 7, redis_client=cache))
 
     assert result == expected
     assert cache.setex_calls == []
@@ -128,7 +136,7 @@ def test_get_profile_uses_cached_profile(monkeypatch) -> None:
 
 def test_get_profile_ignores_invalid_cached_json_and_queries_db(monkeypatch) -> None:
     cache = FakeProfileCache()
-    cache.values["user:profile:3"] = "{not-json"
+    cache.values["tenant:t_1:user:profile:3"] = "{not-json"
     expected = {
         "user_id": 3,
         "preferred_brand": "海尔",
@@ -147,12 +155,12 @@ def test_get_profile_ignores_invalid_cached_json_and_queries_db(monkeypatch) -> 
     )
 
     service = UserProfileService(repository=repo)
-    result = _run(service.get_profile(3, redis_client=cache))
+    result = _run(service.get_profile("t_1", 3, redis_client=cache))
 
     assert result == expected
     assert cache.setex_calls == [
         (
-            "user:profile:3",
+            "tenant:t_1:user:profile:3",
             UserProfileService.CACHE_TTL,
             json.dumps(expected, ensure_ascii=False),
         )
@@ -179,12 +187,12 @@ def test_get_profile_queries_db_and_backfills_cache(monkeypatch) -> None:
     )
 
     service = UserProfileService(repository=repo)
-    result = _run(service.get_profile(9, redis_client=cache))
+    result = _run(service.get_profile("t_1", 9, redis_client=cache))
 
     assert result == expected
     assert len(cache.setex_calls) == 1
     key, ttl, value = cache.setex_calls[0]
-    assert key == "user:profile:9"
+    assert key == "tenant:t_1:user:profile:9"
     assert ttl == UserProfileService.CACHE_TTL
     assert json.loads(value) == expected
 
@@ -199,7 +207,7 @@ def test_get_profile_returns_empty_profile_when_query_fails(monkeypatch) -> None
     )
 
     service = UserProfileService(repository=repo)
-    result = _run(service.get_profile(11))
+    result = _run(service.get_profile("t_1", 11))
 
     assert result == {
         "user_id": 11,
@@ -221,7 +229,7 @@ def test_upsert_profile_data_short_circuits_on_empty_payload(monkeypatch) -> Non
     )
 
     service = UserProfileService(repository=repo)
-    result = _run(service.upsert_profile_data(3, {}))
+    result = _run(service.upsert_profile_data("t_1", 3, {}))
 
     assert result is True
     assert repo.upsert_profile_data_calls == []
@@ -241,12 +249,12 @@ def test_upsert_profile_data_commits_and_invalidates_cache_on_change(monkeypatch
     )
 
     service = UserProfileService(repository=repo)
-    result = _run(service.upsert_profile_data(5, profile, redis_client=cache))
+    result = _run(service.upsert_profile_data("t_1", 5, profile, redis_client=cache))
 
     assert result is True
     assert session.committed is True
-    assert cache.deleted_keys == ["user:profile:5"]
-    assert repo.upsert_profile_data_calls == [(5, profile)]
+    assert cache.deleted_keys == ["tenant:t_1:user:profile:5"]
+    assert repo.upsert_profile_data_calls == [("t_1", 5, profile)]
 
 
 def test_upsert_profile_data_skips_commit_and_invalidation_when_store_reports_no_change(
@@ -266,6 +274,7 @@ def test_upsert_profile_data_skips_commit_and_invalidation_when_store_reports_no
     service = UserProfileService(repository=repo)
     result = _run(
         service.upsert_profile_data(
+            "t_1",
             8,
             {"preferred_brand": "海尔"},
             redis_client=cache,
@@ -292,6 +301,7 @@ def test_upsert_profile_data_returns_false_when_write_raises(monkeypatch) -> Non
     service = UserProfileService(repository=repo)
     result = _run(
         service.upsert_profile_data(
+            "t_1",
             5,
             {"preferred_brand": "海尔"},
             redis_client=cache,

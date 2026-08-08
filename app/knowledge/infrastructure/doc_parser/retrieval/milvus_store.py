@@ -18,11 +18,13 @@ from app.knowledge.infrastructure.doc_parser.retrieval.doc_lifecycle import (
     DEFAULT_QUERY_LIMIT,
     build_soft_delete_record,
     doc_id_filter,
+    escape_milvus_string,
     hard_purge_filter,
     merge_active_filter,
     next_version,
     now_ts,
-    owner_scope_filter,
+    tenant_boundary_filter,
+    tenant_visibility_filter,
     validate_doc_id,
 )
 from app.shared.core.async_bridge import run_blocking
@@ -128,6 +130,11 @@ class MilvusStore:
         schema.add_field("content_hash", DataType.VARCHAR, max_length=64)
         # 可见域："global" 为共享知识库；私有文档为上传者 user_id 字符串
         schema.add_field("owner_id", DataType.VARCHAR, max_length=64)
+        # 租户边界："" 表示平台公共（visibility=global）；否则为本租户 chunk。
+        # SaaS 检索过滤的硬性隔离维度，任何查询都必须叠加
+        schema.add_field("tenant_id", DataType.VARCHAR, max_length=64)
+        # 三级可见性：global | tenant | private
+        schema.add_field("visibility", DataType.VARCHAR, max_length=32)
         bm25_fn = Function(
             name="bm25",
             function_type=FunctionType.BM25,
@@ -200,42 +207,55 @@ class MilvusStore:
         )
         return [row for row in (rows or []) if isinstance(row, dict)]
 
-    async def get_max_version(self, doc_id: str) -> int:
-        """查询某文档历史最大 version（含已软删），不存在则 0。"""
+    async def get_max_version(self, doc_id: str, tenant_id: str = "") -> int:
+        """查询某租户下文档历史最大 version（含已软删），不存在则 0。"""
         safe_doc = validate_doc_id(doc_id)
+        expr = doc_id_filter(safe_doc, active_only=False)
+        if tenant_id:
+            expr = f'(tenant_id == "{escape_milvus_string(tenant_id)}") and ({expr})'
         try:
-            rows = await self._query(
-                doc_id_filter(safe_doc, active_only=False),
-                output_fields=["version"],
-            )
+            rows = await self._query(expr, output_fields=["version"])
         except Exception as exc:
             logger.warning("get_max_version 失败 | doc_id=%s | %s", safe_doc, exc)
             return 0
         return _max_version_of(rows)
 
-    async def soft_delete_by_doc_id(self, doc_id: str) -> dict[str, int]:
-        """软删除某文档下全部未删 chunk。
+    async def soft_delete_by_doc_id(
+        self,
+        doc_id: str,
+        tenant_id: str = "",
+    ) -> dict[str, int]:
+        """软删除某租户下文档的全部未删 chunk。
+
+        tenant_id 为空时不做租户过滤（兼容存量未打标 chunk 的清理路径）。
 
         Returns:
             {"soft_deleted": n, "max_version": v}
         """
         safe_doc = validate_doc_id(doc_id)
+        expr = doc_id_filter(safe_doc, active_only=True)
+        if tenant_id:
+            expr = f'(tenant_id == "{escape_milvus_string(tenant_id)}") and ({expr})'
         try:
-            rows = await self._query(
-                doc_id_filter(safe_doc, active_only=True),
-                output_fields=["chunk_id", "version"],
-            )
+            rows = await self._query(expr, output_fields=["chunk_id", "version"])
         except Exception as exc:
             logger.error(
-                "soft_delete_by_doc_id query 失败 | doc_id=%s | %s",
+                "soft_delete_by_doc_id query 失败 | doc_id=%s tenant=%s | %s",
                 safe_doc,
+                tenant_id,
                 exc,
                 exc_info=True,
             )
-            return {"soft_deleted": 0, "max_version": await self.get_max_version(safe_doc)}
+            return {
+                "soft_deleted": 0,
+                "max_version": await self.get_max_version(safe_doc, tenant_id),
+            }
 
         if not rows:
-            return {"soft_deleted": 0, "max_version": await self.get_max_version(safe_doc)}
+            return {
+                "soft_deleted": 0,
+                "max_version": await self.get_max_version(safe_doc, tenant_id),
+            }
 
         max_v = _max_version_of(rows)
         ts = now_ts()
@@ -277,6 +297,8 @@ class MilvusStore:
         version: int = 1,
         content_hash: str = "",
         owner_id: str = "global",
+        tenant_id: str = "",
+        visibility: str = "global",
         idempotency_key: str = "",
     ) -> int:
         """批量插入 DocumentChunk 到 Milvus。
@@ -285,6 +307,9 @@ class MilvusStore:
             chunks: DocumentChunk 列表。
             version: 文档版本号，默认 1。
             content_hash: 可选内容哈希。
+            owner_id: 私有文档的所有者标识；公共文档为 global_owner。
+            tenant_id: 租户边界；global 可见性文档为空串（平台公共）。
+            visibility: global | tenant | private 三级可见性。
 
         Returns:
             成功插入的数量。
@@ -312,6 +337,8 @@ class MilvusStore:
                 "updated_at": ts,
                 "content_hash": hash_value,
                 "owner_id": (owner_id or "global")[:64],
+                "tenant_id": (tenant_id or "")[:64],
+                "visibility": (visibility or "global")[:32],
                 "embedding": vector,
             }
             # strict=True 冗余但明确：_embed_texts 已保证长度一致，
@@ -336,6 +363,8 @@ class MilvusStore:
         *,
         content_hash: str = "",
         owner_id: str = "global",
+        tenant_id: str = "",
+        visibility: str = "global",
         idempotency_key: str = "",
     ) -> dict[str, int]:
         """文档动态更新：软删旧版 → 插入新 version。
@@ -345,14 +374,18 @@ class MilvusStore:
         """
         safe_doc = validate_doc_id(doc_id)
         if idempotency_key:
-            existing = await self._get_active_event_index(safe_doc, idempotency_key)
+            existing = await self._get_active_event_index(
+                safe_doc,
+                idempotency_key,
+                tenant_id,
+            )
             if existing is not None:
                 return {
                     "soft_deleted": 0,
                     "version": existing["version"],
                     "chunks": existing["chunks"],
                 }
-        delete_info = await self.soft_delete_by_doc_id(safe_doc)
+        delete_info = await self.soft_delete_by_doc_id(safe_doc, tenant_id)
         version = next_version(delete_info.get("max_version"))
         # 确保 chunks 上的 doc_id 一致（防止解析侧漂移）
         for chunk in chunks:
@@ -366,6 +399,8 @@ class MilvusStore:
             version=version,
             content_hash=content_hash,
             owner_id=owner_id,
+            tenant_id=tenant_id,
+            visibility=visibility,
             idempotency_key=idempotency_key,
         )
         return {
@@ -378,14 +413,15 @@ class MilvusStore:
         self,
         doc_id: str,
         idempotency_key: str,
+        tenant_id: str = "",
     ) -> dict[str, int] | None:
         """返回本次事件已写入的活跃版本，供 XACK 前重放快速收敛。"""
         marker = f"evt_{idempotency_key}_"
+        expr = doc_id_filter(doc_id, active_only=True)
+        if tenant_id:
+            expr = f'(tenant_id == "{escape_milvus_string(tenant_id)}") and ({expr})'
         try:
-            rows = await self._query(
-                doc_id_filter(doc_id, active_only=True),
-                output_fields=["chunk_id", "version"],
-            )
+            rows = await self._query(expr, output_fields=["chunk_id", "version"])
         except Exception as exc:
             logger.warning("读取事件索引状态失败 | doc_id=%s | %s", doc_id, exc)
             return None
@@ -446,23 +482,35 @@ class MilvusStore:
 
     @staticmethod
     def _visibility_filter() -> str | None:
-        """分域开关开启时，按请求上下文身份构造可见域过滤。
+        """按请求上下文构造检索过滤（租户隔离 + 可选可见性精排）。
+
+        两层语义：
+        1. 租户边界（**常开**，SaaS 隔离底线）：本租户 chunk + 平台公共
+        2. 可见性精排（rag_visibility.enabled 开启时）：global/tenant/private
 
         身份来自 contextvars（认证依赖写入），检索层无需层层传参；
-        无认证上下文（脚本/评测）只能看共享域。
+        无认证上下文（脚本/评测）只能看公共 + 默认租户数据。
         """
         from app.shared.core.config import settings as app_settings
+        from app.shared.core.identity import (
+            get_current_tenant_id,
+            get_current_user_id,
+        )
+
+        tenant_id = get_current_tenant_id()
+        scope = tenant_boundary_filter(tenant_id)
 
         visibility = app_settings.app_config.rag_visibility
         if not visibility.enabled:
-            return None
-        from app.shared.core.identity import get_current_user_id
+            return scope
 
         user_id = get_current_user_id()
-        return owner_scope_filter(
+        visibility_scope = tenant_visibility_filter(
+            tenant_id,
             str(user_id) if user_id is not None else None,
             global_owner=visibility.global_owner,
         )
+        return f"({scope}) and ({visibility_scope})"
 
     def _merge_visibility(self, filter_expr: str | None) -> str | None:
         scope = self._visibility_filter()

@@ -61,19 +61,34 @@ async def handle_turn_completed(payload: dict[str, Any]) -> None:
         logger.warning("turn_completed 载荷不完整，丢弃 | payload_keys=%s", sorted(payload))
         return
 
+    # 消费者恢复可信 TenantContext：HTTP 请求结束后 ContextVar 已失效，
+    # 租户边界只能从事件 payload 恢复（streams 层已做同样恢复，双保险）。
+    from app.shared.core.identity import set_current_tenant_id
+
+    set_current_tenant_id(tenant_id)
+
     # 记录 history 视图状态
     history_ok = True
     if turn_id:
         try:
             await _persist_turn_history(
-                session_id, user_message, assistant_message, turn_event_id=turn_id
+                tenant_id,
+                session_id,
+                user_message,
+                assistant_message,
+                turn_event_id=turn_id,
             )
         except Exception as exc:
             log_degradation(logger, "events.persist_turn_history", exc, session=session_id)
             history_ok = False
     else:
         try:
-            await _persist_turn_history(session_id, user_message, assistant_message)
+            await _persist_turn_history(
+                tenant_id,
+                session_id,
+                user_message,
+                assistant_message,
+            )
         except Exception as exc:
             log_degradation(logger, "events.persist_turn_history", exc, session=session_id)
             history_ok = False
@@ -86,10 +101,12 @@ async def handle_turn_completed(payload: dict[str, Any]) -> None:
                 ViewStatus,
                 record_view_status,
             )
+
             await record_view_status(
                 turn_id,
                 ViewName.HISTORY.value,
                 ViewStatus.COMPLETED.value if history_ok else ViewStatus.FAILED.value,
+                tenant_id=tenant_id,
             )
         except Exception:
             pass
@@ -166,6 +183,7 @@ def _parse_ltm_memories_from_payload(payload: dict[str, Any]) -> list[Any]:
 
 
 async def _persist_turn_history(
+    tenant_id: str,
     session_id: str,
     user_message: str,
     assistant_message: str,
@@ -176,6 +194,7 @@ async def _persist_turn_history(
 
     session_id 即会话主键（v3.35.0 起服务端保证一致）；
     历史遗留的非数字 session 直接跳过。
+    tenant_id 从事件 payload 显式携带（worker 无请求上下文）。
     """
     if not session_id.isdigit():
         return
@@ -187,6 +206,7 @@ async def _persist_turn_history(
 
         async with AsyncSessionLocal() as db:
             await MessageRepository(db).add_turn(
+                tenant_id,
                 int(session_id),
                 user_message,
                 assistant_message,
@@ -208,12 +228,20 @@ async def handle_document_index_requested(payload: dict[str, Any]) -> None:
     if not task_id or not isinstance(file_info, dict):
         logger.warning("document_index_requested 载荷不完整，丢弃")
         return
+    tenant_id = str(
+        payload.get("tenant_id") or file_info.get("tenant_id") or "default"
+    )
 
     from app.knowledge.application.document_indexing_job import (
         run_document_indexing_job_with_task,
     )
     from app.platform.container import get_container
     from app.shared.background_tasks import run_task_with_status_updates
+
+    # worker 无 HTTP 请求上下文：恢复可信租户边界供检索/任务层读取
+    from app.shared.core.identity import set_current_tenant_id
+
+    set_current_tenant_id(tenant_id)
 
     container = await get_container()
     manager = container.task_manager
@@ -229,6 +257,7 @@ async def handle_document_index_requested(payload: dict[str, Any]) -> None:
         indexed_file_info,
         task_id,
         origin="stream",
+        tenant_id=tenant_id,
     )
 
 

@@ -11,6 +11,7 @@
 - 记忆读写
 - 检索与工具执行细节
 """
+
 from __future__ import annotations
 
 import json
@@ -122,22 +123,23 @@ async def langgraph_query(
     limiter = await _get_sse_limiter()
     if limiter is not None:
         try:
-            await limiter.acquire(current_user.id)
+            await limiter.acquire(current_user.tenant_id, current_user.id)
         except ConcurrencyLimitExceededError as exc:
             raise HTTPException(status_code=429, detail=_RATE_LIMIT_DETAIL) from exc
 
     try:
         resolved_conversation_id = await conversation_service.ensure_conversation(
+            current_user.tenant_id,
             current_user.id,
             conversation_id,
         )
     except ResourceNotFoundError as exc:
         if limiter is not None:
-            await limiter.release(current_user.id)
+            await limiter.release(current_user.tenant_id, current_user.id)
         raise HTTPException(status_code=404, detail=exc.message) from exc
     except Exception:
         if limiter is not None:
-            await limiter.release(current_user.id)
+            await limiter.release(current_user.tenant_id, current_user.id)
         raise
 
     thread_id = str(resolved_conversation_id)
@@ -145,6 +147,7 @@ async def langgraph_query(
         graph_stream = stream_agent_query(
             query=query,
             user_id=current_user.id,
+            tenant_id=current_user.tenant_id,
             thread_id=thread_id,
         )
 
@@ -165,7 +168,7 @@ async def langgraph_query(
                 yield format_sse_error(_STREAM_ERROR_MESSAGE)
             finally:
                 if limiter is not None:
-                    await limiter.release(current_user.id)
+                    await limiter.release(current_user.tenant_id, current_user.id)
                 if usage_total:
                     logger.info(
                         "llm_usage | user=%s conversation=%s in=%s out=%s total=%s",
@@ -183,6 +186,6 @@ async def langgraph_query(
         raise
     except Exception as exc:
         if limiter is not None:
-            await limiter.release(current_user.id)
+            await limiter.release(current_user.tenant_id, current_user.id)
         logger.exception("[api] SSE 流处理异常")
         raise HTTPException(status_code=500, detail=INTERNAL_SERVER_ERROR_DETAIL) from exc

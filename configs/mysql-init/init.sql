@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS users (
 -- 对话表（v3.2: 废弃，由 Redis STM + Milvus LTM 替代）
 CREATE TABLE IF NOT EXISTS conversations (
     id INT AUTO_INCREMENT PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL DEFAULT 'default' COMMENT '租户边界（SaaS 一级隔离维度）',
     user_id INT NOT NULL,
     title VARCHAR(100) NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -28,7 +29,9 @@ CREATE TABLE IF NOT EXISTS conversations (
     dialogue_type ENUM('NORMAL', 'DEEP_THINKING', 'WEB_SEARCH', 'RAG') NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     INDEX idx_user_id (user_id),
-    INDEX idx_status (status)
+    INDEX idx_status (status),
+    INDEX idx_conversation_tenant_user (tenant_id, user_id),
+    INDEX idx_conversation_tenant_id (tenant_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 消息表
@@ -77,10 +80,12 @@ INSERT INTO messages (conversation_id, sender, content, message_type) VALUES
 
 -- ============================================================ --
 -- v3.2: 用户画像表（替代 Milvus 中的 user_profile 类型）
+-- SaaS 化：租户内 (tenant_id, user_id) 才构成唯一画像
 -- ============================================================ --
 
 CREATE TABLE IF NOT EXISTS user_profiles (
-    user_id INT PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL DEFAULT 'default' COMMENT '租户边界',
+    user_id INT NOT NULL,
     preferred_brand VARCHAR(64) DEFAULT NULL COMMENT '偏好品牌：google/apple/xiaomi/huawei',
     budget_range VARCHAR(32) DEFAULT NULL COMMENT '预算范围：0-1000/1000-3000/3000-5000/5000+',
     preferred_category VARCHAR(128) DEFAULT NULL COMMENT '偏好品类：智能门铃/智能音箱/智能照明',
@@ -88,12 +93,14 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     language VARCHAR(16) DEFAULT 'zh-CN',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (tenant_id, user_id),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='用户画像（结构化字段，精确查询，统计聚合）';
 
 CREATE TABLE IF NOT EXISTS user_facts (
     id INT AUTO_INCREMENT PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL DEFAULT 'default' COMMENT '租户边界',
     user_id INT NOT NULL,
     fact_key VARCHAR(128) NOT NULL COMMENT '事实键：workplace/family_size/pet/expertise',
     fact_value VARCHAR(256) NOT NULL COMMENT '事实值：ali/3/cat/backend',
@@ -107,32 +114,34 @@ CREATE TABLE IF NOT EXISTS user_facts (
         (CASE WHEN is_active = 1 THEN fact_key ELSE NULL END) STORED,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_user_fact_active (user_id, active_fact_key),
-    UNIQUE KEY uk_user_fact_source (user_id, fact_key, source_turn_id),
+    UNIQUE KEY uk_user_fact_active (tenant_id, user_id, active_fact_key),
+    UNIQUE KEY uk_user_fact_source (tenant_id, user_id, fact_key, source_turn_id),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='用户事实（key-value，支持版本追踪、来源追溯和事件级幂等）';
 
 -- 示例用户画像数据
-INSERT INTO user_profiles (user_id, preferred_brand, budget_range, preferred_category, tags) VALUES
-(1, 'google', '3000-5000', '智能门铃,智能音箱', '["smart_home","early_adopter"]'),
-(2, 'xiaomi', '1000-3000', '智能照明,智能安防', '["price_sensitive","smart_home"]'),
-(3, 'apple', '5000+', '智能音箱,智能厨电', '["premium_user","early_adopter"]');
+INSERT INTO user_profiles (tenant_id, user_id, preferred_brand, budget_range, preferred_category, tags) VALUES
+('default', 1, 'google', '3000-5000', '智能门铃,智能音箱', '["smart_home","early_adopter"]'),
+('default', 2, 'xiaomi', '1000-3000', '智能照明,智能安防', '["price_sensitive","smart_home"]'),
+('default', 3, 'apple', '5000+', '智能音箱,智能厨电', '["premium_user","early_adopter"]');
 
-INSERT INTO user_facts (user_id, fact_key, fact_value, version) VALUES
-(1, 'workplace', 'ali', 1),
-(1, 'family_size', '3', 1),
-(2, 'workplace', 'tencent', 1),
-(3, 'pet', 'cat', 1);
+INSERT INTO user_facts (tenant_id, user_id, fact_key, fact_value, version) VALUES
+('default', 1, 'workplace', 'ali', 1),
+('default', 1, 'family_size', '3', 1),
+('default', 2, 'workplace', 'tencent', 1),
+('default', 3, 'pet', 'cat', 1);
 
 -- ============================================================ --
 -- v3.30+: 用户知识文档元信息（Milvus 向量仍按 doc_id 存；本表供列表/更新绑定）
+-- SaaS 化：doc_id 租户内唯一（全局唯一由 UUID 生成器保证）
 -- ============================================================ --
 
 CREATE TABLE IF NOT EXISTS user_documents (
     id INT AUTO_INCREMENT PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL DEFAULT 'default' COMMENT '租户边界',
     user_id INT NOT NULL,
-    doc_id VARCHAR(64) NOT NULL COMMENT '与 Milvus chunk.doc_id 一致，全局唯一',
+    doc_id VARCHAR(64) NOT NULL COMMENT '与 Milvus chunk.doc_id 一致，租户内唯一',
     title VARCHAR(255) NOT NULL COMMENT '前端展示名',
     original_name VARCHAR(255) NOT NULL DEFAULT '' COMMENT '最近一次上传原始文件名',
     source_path VARCHAR(1024) NOT NULL DEFAULT '' COMMENT '服务器落盘路径',
@@ -144,11 +153,49 @@ CREATE TABLE IF NOT EXISTS user_documents (
     error_message TEXT NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_doc_id (doc_id),
+    UNIQUE KEY uk_doc_id (tenant_id, doc_id),
     INDEX idx_user_documents_user (user_id),
+    INDEX idx_user_documents_tenant_user (tenant_id, user_id),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='用户 RAG 文档元信息';
+
+-- ============================================================ --
+-- SaaS 多租户：租户主体与成员关系
+-- ============================================================ --
+
+CREATE TABLE IF NOT EXISTS tenants (
+    id VARCHAR(64) PRIMARY KEY COMMENT '租户 ID（default / t_xxx）',
+    name VARCHAR(100) NOT NULL COMMENT '租户展示名',
+    status VARCHAR(20) NOT NULL DEFAULT 'active' COMMENT 'active|disabled',
+    plan VARCHAR(32) NOT NULL DEFAULT 'free' COMMENT 'free|pro|enterprise',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='租户主体：SaaS 数据隔离的一级边界';
+
+CREATE TABLE IF NOT EXISTS tenant_memberships (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL,
+    user_id INT NOT NULL,
+    role VARCHAR(20) NOT NULL DEFAULT 'member' COMMENT 'owner|admin|member|viewer',
+    status VARCHAR(20) NOT NULL DEFAULT 'active' COMMENT 'active|suspended',
+    joined_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_membership (tenant_id, user_id),
+    INDEX idx_membership_user (user_id),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='用户-租户多对多成员关系';
+
+-- 种子租户与成员：老账号（admin/test_user/demo_user）归属 default 租户
+INSERT INTO tenants (id, name, status, plan) VALUES
+('default', '默认租户', 'active', 'free');
+
+INSERT INTO tenant_memberships (tenant_id, user_id, role, status) VALUES
+('default', 1, 'owner', 'active'),
+('default', 2, 'member', 'active'),
+('default', 3, 'member', 'active');
 
 -- ============================================================ --
 -- v3.36+: after_agent 可补偿机制 + 压缩/画像/命中幂等强化

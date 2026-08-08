@@ -28,6 +28,7 @@ def stream_agent_query(
     *,
     query: str,
     user_id: int | str,
+    tenant_id: str,
     thread_id: str,
 ) -> GraphStream:
     """启动 Agent 图流式执行（messages 模式）。
@@ -35,6 +36,7 @@ def stream_agent_query(
     configurable 约定（记忆与检索都依赖）：
     - thread_id → STM/LTM 的 session_id
     - user_id → 画像与记忆作用域（字符串化）
+    - tenant_id → 记忆/检索的租户边界（SaaS 隔离维度）
     """
     # cast: langgraph 对 stream_mode 字面量类型较严，运行时 "messages" 合法
     return cast(
@@ -46,6 +48,7 @@ def stream_agent_query(
                 "configurable": {
                     "thread_id": thread_id,
                     "user_id": str(user_id),
+                    "tenant_id": tenant_id,
                 }
             },
         ),

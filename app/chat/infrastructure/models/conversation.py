@@ -18,6 +18,7 @@ from app.shared.core.database import Base
 from sqlalchemy import (
     DateTime,
     ForeignKey,
+    Index,
     String,
     func,
 )
@@ -37,14 +38,26 @@ class DialogueType(str, enum.Enum):
 
 
 class Conversation(Base):
-    """会话元信息表。"""
+    """会话元信息表。
+
+    tenant_id 是组织边界（VARCHAR(64)，默认 "default"）；
+    user_id 是租户内部的资源归属边界。
+    """
 
     __tablename__ = "conversations"
+    __table_args__ = (
+        Index("idx_conversation_tenant_user", "tenant_id", "user_id"),
+        Index("idx_conversation_tenant_id", "tenant_id", "id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE")
+    tenant_id: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default="default",
+        server_default="default",
     )
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     title: Mapped[str] = mapped_column(String(100), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime,

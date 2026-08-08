@@ -16,6 +16,10 @@ from operator import add
 from typing import Annotated, Any, Protocol
 
 from app.chat.infrastructure.kg.predefined_cypher.utils import create_vector_query_matcher
+from app.chat.infrastructure.kg.tenant_cypher import (
+    inject_tenant_constraint,
+    resolve_kg_tenant_id,
+)
 from app.chat.infrastructure.kg.text2cypher_state import (
     CypherInputState,
     CypherOutputState,
@@ -156,6 +160,7 @@ _VALIDATION_PROMPT = ChatPromptTemplate.from_messages(
     ]
 )
 
+
 def create_text2cypher_agent(
     llm: BaseChatModel,
     graph: Neo4jGraph,
@@ -209,10 +214,16 @@ def create_text2cypher_agent(
                     best_match["query_name"],
                     llm=llm,
                 )
+                # 执行层强制租户约束：模板命中路径同样要注入，
+                # 不依赖 LLM/模板作者自觉加 tenant 条件
+                scoped_statement, has_tenant = inject_tenant_constraint(best_match["cypher"])
+                query_params = {key: str(value) for key, value in params.items()}
+                if has_tenant:
+                    query_params["__tenant_id"] = resolve_kg_tenant_id()
                 records = await run_blocking(
                     graph.query,
-                    best_match["cypher"],
-                    params={key: str(value) for key, value in params.items()},
+                    scoped_statement,
+                    params=query_params,
                 )
             except Exception:
                 logger.warning(
@@ -233,19 +244,33 @@ def create_text2cypher_agent(
         text2cypher_graph_builder.add_edge(START, "predefined_match")
 
     async def execute_cypher(state: CypherState) -> dict[str, list[CypherOutputState] | list[str]]:
-        """执行 Cypher 查询并回填统一输出结构。"""
+        """执行 Cypher 查询并回填统一输出结构。
+
+        ⚠️ 租户约束在**执行层**确定性注入（inject_tenant_constraint），
+        LLM 生成的语句即使漏写 tenant 条件也不会跨租户泄漏。
+        """
+        statement = state.get("statement", "")
+        scoped_statement, has_tenant = inject_tenant_constraint(statement)
         # Neo4j 同步驱动：查询 RTT 下线程池，不阻塞其它并发请求
-        records = await run_blocking(graph.query, state.get("statement", ""))
+        query_params: dict[str, str] | None = (
+            {"__tenant_id": resolve_kg_tenant_id()} if has_tenant else None
+        )
+        records = await run_blocking(
+            graph.query,
+            scoped_statement,
+            # cast: Neo4jGraph.query 的 params 标注为 dict | None（dict[Any, Any]），
+            # 租户参数是字符串字典，运行时完全兼容
+            params=query_params,  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
+        )
         steps = list(state.get("steps", []))
         steps.append("execute_cypher")
         output_state = CypherOutputState(
             task=state.get("task", []),
-            statement=state.get("statement", ""),
-            parameters=None,
+            statement=scoped_statement,
+            parameters=query_params,
             errors=state.get("errors", []),
-            records=records or [
-                {"error": "I couldn't find any relevant information in the database."}
-            ],
+            records=records
+            or [{"error": "I couldn't find any relevant information in the database."}],
             steps=steps,
         )
         return {
@@ -319,10 +344,7 @@ def create_text2cypher_agent(
             next_action = "correct_cypher"
         elif generation_attempt < max_attempts:
             next_action = "execute_cypher"
-        elif (
-            generation_attempt == max_attempts
-            and attempt_cypher_execution_on_final_attempt
-        ):
+        elif generation_attempt == max_attempts and attempt_cypher_execution_on_final_attempt:
             next_action = "execute_cypher"
         else:
             next_action = "__end__"
@@ -360,9 +382,7 @@ def create_text2cypher_agent(
         text2cypher_graph_builder.add_conditional_edges(
             "predefined_match",
             lambda state: (
-                "execute_cypher"
-                if state.get("records") is not None
-                else "generate_cypher"
+                "execute_cypher" if state.get("records") is not None else "generate_cypher"
             ),
             {
                 "execute_cypher": "execute_cypher",
@@ -377,8 +397,7 @@ def create_text2cypher_agent(
         "validate_cypher",
         lambda state: (
             state.get("next_action_cypher")
-            if state.get("next_action_cypher")
-            in {"correct_cypher", "execute_cypher", "__end__"}
+            if state.get("next_action_cypher") in {"correct_cypher", "execute_cypher", "__end__"}
             else "__end__"
         ),
     )

@@ -4,20 +4,18 @@ from app.api import langgraph as langgraph_api
 from app.chat.application import agent_query_service
 from app.user.application.auth_service import AuthenticatedUser
 
-_TEST_USER = AuthenticatedUser(id=3, username="tester")
+_TEST_USER = AuthenticatedUser(id=3, username="tester", tenant_id="t_1")
 
 
 def _stub_conversation(monkeypatch, resolved_id: int) -> list[tuple[int, object]]:
     """替换会话解析：记录调用并返回固定会话 id。"""
     calls: list[tuple[int, object]] = []
 
-    async def fake_ensure(user_id: int, conversation_id):
-        calls.append((user_id, conversation_id))
+    async def fake_ensure(tenant_id: str, user_id: int, conversation_id):
+        calls.append((tenant_id, user_id, conversation_id))
         return resolved_id
 
-    monkeypatch.setattr(
-        langgraph_api.conversation_service, "ensure_conversation", fake_ensure
-    )
+    monkeypatch.setattr(langgraph_api.conversation_service, "ensure_conversation", fake_ensure)
     return calls
 
 
@@ -45,9 +43,10 @@ def test_langgraph_query_builds_streaming_response(monkeypatch) -> None:
     async def scenario() -> None:
         ensure_calls = _stub_conversation(monkeypatch, resolved_id=11)
 
-        def fake_stream_agent_query(*, query, user_id, thread_id):
+        def fake_stream_agent_query(*, query, user_id, tenant_id, thread_id):
             assert query == "空调推荐"
             assert user_id == 3
+            assert tenant_id == "t_1"
             assert thread_id == "11"
             return fake_graph_stream()
 
@@ -69,11 +68,10 @@ def test_langgraph_query_builds_streaming_response(monkeypatch) -> None:
             conversation_id=None,
         )
 
-        assert ensure_calls == [(3, None)]
+        assert ensure_calls == [("t_1", 3, None)]
         assert response.headers["X-Conversation-ID"] == "11"
         assert await _collect_response_body(response) == (
-            'data: "推荐这款"\n\n'
-            'data: "正常输出"\n\n'
+            'data: "推荐这款"\n\ndata: "正常输出"\n\n'
         )
 
     asyncio.run(scenario())

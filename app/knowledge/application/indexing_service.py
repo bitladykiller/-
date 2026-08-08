@@ -187,6 +187,10 @@ class IndexingService:
 
         default_owner = app_settings.app_config.rag_visibility.global_owner
         owner_id = str(file_info.get("owner_id") or default_owner)
+        # 三级可见性 + chunk 租户边界推导：
+        # global → tenant_id 为空串（平台公共）；tenant/private → 本租户
+        visibility = str(file_info.get("visibility") or "global").strip().lower()
+        chunk_tenant_id = "" if visibility == "global" else str(file_info.get("tenant_id") or "")
 
         try:
             parse_document, searcher = self._pipeline_loader()
@@ -209,6 +213,8 @@ class IndexingService:
                         chunks,
                         content_hash=content_hash,
                         owner_id=owner_id,
+                        tenant_id=chunk_tenant_id,
+                        visibility=visibility,
                         idempotency_key=event_id,
                     )
                 else:
@@ -217,6 +223,8 @@ class IndexingService:
                         chunks,
                         content_hash=content_hash,
                         owner_id=owner_id,
+                        tenant_id=chunk_tenant_id,
+                        visibility=visibility,
                     )
                 return {
                     "status": STATUS_SUCCESS,
@@ -235,6 +243,8 @@ class IndexingService:
                         version=1,
                         content_hash=content_hash,
                         owner_id=owner_id,
+                        tenant_id=chunk_tenant_id,
+                        visibility=visibility,
                         idempotency_key=event_id,
                     )
                 )
@@ -245,6 +255,8 @@ class IndexingService:
                         version=1,
                         content_hash=content_hash,
                         owner_id=owner_id,
+                        tenant_id=chunk_tenant_id,
+                        visibility=visibility,
                     )
                 )
             return {

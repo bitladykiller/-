@@ -49,9 +49,7 @@ class ReactConfig(FrozenConfig):
     transcript_window: int = 20
     progress_message: str = "正在综合分析..."
     fallback_answer: str = "亲～这个问题回答不了哦～"
-    retry_prompt: str = (
-        "上一次候选答案仍然不充分，请继续按标准 ReAct 检索并补足关键事实。"
-    )
+    retry_prompt: str = "上一次候选答案仍然不充分，请继续按标准 ReAct 检索并补足关键事实。"
     step_exhausted_marker: str = "need more steps"
     step_exhausted_reason: str = "单次 ReAct 内部步数耗尽，仍未得到足够答案。"
     default_insufficiency_reason: str = "答案信息不足。"
@@ -225,12 +223,8 @@ class MemoryConfig(FrozenConfig):
     user_profile_cache_ttl: int = Field(default=1800, gt=0)
     stm: STMConfig = Field(default_factory=STMConfig)
     ltm: LTMConfig = Field(default_factory=LTMConfig)
-    ltm_memory_types: dict[str, str] = Field(
-        default_factory=lambda: dict(LTM_MEMORY_TYPES)
-    )
-    sensitive_patterns: tuple[str, ...] = Field(
-        default_factory=lambda: SENSITIVE_PATTERNS
-    )
+    ltm_memory_types: dict[str, str] = Field(default_factory=lambda: dict(LTM_MEMORY_TYPES))
+    sensitive_patterns: tuple[str, ...] = Field(default_factory=lambda: SENSITIVE_PATTERNS)
 
 
 # ====================================================================
@@ -262,6 +256,8 @@ class LimitsConfig(FrozenConfig):
 
     #: 单用户同时进行的流式问答上限
     sse_max_concurrent_per_user: int = Field(default=3, gt=0)
+    #: 单租户同时进行的流式问答上限（SaaS 企业级配额；0 = 不启用）
+    sse_max_concurrent_per_tenant: int = Field(default=0, ge=0)
     #: 并发槽位兜底 TTL（秒）：进程崩溃未释放时的自动回收窗口
     sse_slot_ttl_seconds: int = Field(default=300, gt=0)
 

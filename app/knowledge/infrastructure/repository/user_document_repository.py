@@ -1,4 +1,10 @@
-"""用户文档元信息 Repository。"""
+"""用户文档元信息 Repository。
+
+多租户纪律：所有查询强制 tenant_id。
+- 业务路径（list/get/delete）用 (tenant_id, user_id, doc_id) 三要素校验归属
+- worker 回写路径（get_by_doc_id）也带 tenant_id——doc_id 已升级为租户内
+  唯一，不带租户的查询要么歧义、要么泄漏
+"""
 
 from __future__ import annotations
 
@@ -18,6 +24,7 @@ class UserDocumentRepository:
     async def create(
         self,
         *,
+        tenant_id: str,
         user_id: int,
         doc_id: str,
         title: str,
@@ -28,6 +35,7 @@ class UserDocumentRepository:
         last_task_id: str = "",
     ) -> UserDocument:
         row = UserDocument(
+            tenant_id=tenant_id,
             user_id=user_id,
             doc_id=doc_id,
             title=title,
@@ -42,32 +50,58 @@ class UserDocumentRepository:
         await self._session.refresh(row)
         return row
 
-    async def get_by_doc_id(self, doc_id: str) -> UserDocument | None:
+    async def get_by_doc_id(
+        self,
+        tenant_id: str,
+        doc_id: str,
+    ) -> UserDocument | None:
+        """按租户 + doc_id 查询（worker 任务回写路径）。"""
         result = await self._session.execute(
-            select(UserDocument).where(UserDocument.doc_id == doc_id)
+            select(UserDocument).where(
+                UserDocument.tenant_id == tenant_id,
+                UserDocument.doc_id == doc_id,
+            )
         )
         return result.scalar_one_or_none()
 
-    async def get_owned(self, user_id: int, doc_id: str) -> UserDocument | None:
+    async def get_owned(
+        self,
+        tenant_id: str,
+        user_id: int,
+        doc_id: str,
+    ) -> UserDocument | None:
         result = await self._session.execute(
             select(UserDocument).where(
+                UserDocument.tenant_id == tenant_id,
                 UserDocument.user_id == user_id,
                 UserDocument.doc_id == doc_id,
             )
         )
         return result.scalar_one_or_none()
 
-    async def list_by_user(self, user_id: int) -> list[UserDocument]:
+    async def list_by_user(
+        self,
+        tenant_id: str,
+        user_id: int,
+    ) -> list[UserDocument]:
         result = await self._session.execute(
             select(UserDocument)
-            .where(UserDocument.user_id == user_id)
+            .where(
+                UserDocument.tenant_id == tenant_id,
+                UserDocument.user_id == user_id,
+            )
             .order_by(UserDocument.updated_at.desc())
         )
         return list(result.scalars().all())
 
-    async def delete_owned(self, user_id: int, doc_id: str) -> UserDocument | None:
-        """删除指定用户名下的文档元信息行，返回被删行；归属不符返回 None。"""
-        row = await self.get_owned(user_id, doc_id)
+    async def delete_owned(
+        self,
+        tenant_id: str,
+        user_id: int,
+        doc_id: str,
+    ) -> UserDocument | None:
+        """删除指定租户+用户名下的文档元信息行，返回被删行；归属不符返回 None。"""
+        row = await self.get_owned(tenant_id, user_id, doc_id)
         if row is None:
             return None
         await self._session.delete(row)
@@ -123,6 +157,7 @@ class UserDocumentRepository:
     def to_summary(row: UserDocument) -> dict[str, Any]:
         return {
             "id": row.id,
+            "tenant_id": row.tenant_id,
             "user_id": row.user_id,
             "doc_id": row.doc_id,
             "title": row.title,

@@ -29,7 +29,9 @@ from app.user.infrastructure.repository.user_profile_repository import (
 logger = get_logger(__name__)
 
 _PROFILE_CACHE_TTL = settings.app_config.memory.user_profile_cache_ttl
-_PROFILE_CACHE_PREFIX = "user:profile"
+# 租户级 namespace：tenant:{tenant_id}:user:profile:{user_id}
+# 同一用户在不同租户的画像彼此隔离，也便于按租户扫描清理。
+_PROFILE_CACHE_PREFIX = "tenant:{}:user:profile"
 
 
 class ProfileCache(Protocol):
@@ -52,13 +54,19 @@ class UserProfileService:
         """初始化服务，可注入自定义 Repository（用于测试）。"""
         self._repository = repository or user_profile_repository
 
+    @staticmethod
+    def _cache_key(tenant_id: str, user_id: int) -> str:
+        """构造租户级画像缓存 key。"""
+        return f"{_PROFILE_CACHE_PREFIX.format(tenant_id)}:{user_id}"
+
     async def get_profile(
         self,
+        tenant_id: str,
         user_id: int,
         redis_client: ProfileCache | None = None,
     ) -> UserProfilePayload:
-        """获取用户画像，优先读 Redis，未命中再查 MySQL。"""
-        cache_key = f"{self.CACHE_PREFIX}:{user_id}"
+        """获取指定租户下用户画像，优先读 Redis，未命中再查 MySQL。"""
+        cache_key = self._cache_key(tenant_id, user_id)
         if redis_client is not None:
             cached = await redis_client.get(cache_key)
             if cached:
@@ -69,7 +77,7 @@ class UserProfileService:
 
         try:
             async with AsyncSessionLocal() as db:
-                profile = await self._repository.get_profile(db, user_id)
+                profile = await self._repository.get_profile(db, tenant_id, user_id)
             if redis_client is not None:
                 await redis_client.setex(
                     cache_key,
@@ -79,7 +87,8 @@ class UserProfileService:
             return profile
         except Exception:
             logger.warning(
-                "[user_profile] 读取画像失败 | user_id=%s",
+                "[user_profile] 读取画像失败 | tenant=%s user_id=%s",
+                tenant_id,
                 user_id,
                 exc_info=True,
             )
@@ -87,6 +96,7 @@ class UserProfileService:
 
     async def upsert_profile_data(
         self,
+        tenant_id: str,
         user_id: int,
         profile: UserProfileData,
         redis_client: ProfileCache | None = None,
@@ -105,6 +115,7 @@ class UserProfileService:
             async with AsyncSessionLocal() as db:
                 data_changed = await self._repository.upsert_profile_data(
                     db,
+                    tenant_id=tenant_id,
                     user_id=user_id,
                     profile=profile,
                     source_turn_id=source_turn_id,
@@ -113,14 +124,15 @@ class UserProfileService:
                     await db.commit()
         except Exception:
             logger.warning(
-                "[user_profile] 写入画像失败 | user_id=%s",
+                "[user_profile] 写入画像失败 | tenant=%s user_id=%s",
+                tenant_id,
                 user_id,
                 exc_info=True,
             )
             return False
 
         if data_changed and redis_client is not None:
-            await redis_client.delete(f"{self.CACHE_PREFIX}:{user_id}")
+            await redis_client.delete(self._cache_key(tenant_id, user_id))
         return True
 
 

@@ -36,20 +36,34 @@ class DocumentService:
     def __init__(self, session_factory: _SessionFactory = AsyncSessionLocal) -> None:
         self._session_factory = session_factory
 
-    async def list_user_documents(self, user_id: int) -> list[DocumentSummary]:
+    async def list_user_documents(
+        self,
+        tenant_id: str,
+        user_id: int,
+    ) -> list[DocumentSummary]:
         async with self._session_factory() as db:
             repo = UserDocumentRepository(db)
-            rows = await repo.list_by_user(user_id)
+            rows = await repo.list_by_user(tenant_id, user_id)
             return [repo.to_summary(r) for r in rows]
 
-    async def get_user_document(self, user_id: int, doc_id: str) -> DocumentSummary | None:
+    async def get_user_document(
+        self,
+        tenant_id: str,
+        user_id: int,
+        doc_id: str,
+    ) -> DocumentSummary | None:
         safe = validate_doc_id(doc_id)
         async with self._session_factory() as db:
             repo = UserDocumentRepository(db)
-            row = await repo.get_owned(user_id, safe)
+            row = await repo.get_owned(tenant_id, user_id, safe)
             return repo.to_summary(row) if row else None
 
-    async def delete_document(self, user_id: int, doc_id: str) -> dict[str, Any]:
+    async def delete_document(
+        self,
+        tenant_id: str,
+        user_id: int,
+        doc_id: str,
+    ) -> dict[str, Any]:
         """删除文档：MySQL 删元信息行 + Milvus 软删全部 chunk。
 
         WHY 顺序是"先 MySQL 后 Milvus"：
@@ -66,7 +80,7 @@ class DocumentService:
         safe = validate_doc_id(doc_id)
         async with self._session_factory() as db:
             repo = UserDocumentRepository(db)
-            row = await repo.delete_owned(user_id, safe)
+            row = await repo.delete_owned(tenant_id, user_id, safe)
         if row is None:
             raise ResourceNotFoundError(f"文档不存在或不属于当前用户: {safe}")
 
@@ -76,7 +90,10 @@ class DocumentService:
                 get_shared_searcher,
             )
 
-            result = await get_shared_searcher().soft_delete_document(safe)
+            result = await get_shared_searcher().soft_delete_document(
+                safe,
+                tenant_id=tenant_id,
+            )
             soft_deleted = int(result.get("soft_deleted") or 0)
         except Exception as exc:
             # 软删 chunk 失败不回滚元信息删除；chunk 残留由 is_deleted 过滤兜底
@@ -93,6 +110,7 @@ class DocumentService:
     async def prepare_create(
         self,
         *,
+        tenant_id: str,
         user_id: int,
         title: str,
         original_name: str,
@@ -108,10 +126,11 @@ class DocumentService:
         display = (title or original_name or resolved).strip() or resolved
         async with self._session_factory() as db:
             repo = UserDocumentRepository(db)
-            existing = await repo.get_by_doc_id(resolved)
+            existing = await repo.get_by_doc_id(tenant_id, resolved)
             if existing is not None:
                 raise ValueError(f"doc_id 已存在: {resolved}")
             row = await repo.create(
+                tenant_id=tenant_id,
                 user_id=user_id,
                 doc_id=resolved,
                 title=display[:255],
@@ -126,6 +145,7 @@ class DocumentService:
     async def prepare_replace(
         self,
         *,
+        tenant_id: str,
         user_id: int,
         doc_id: str,
         original_name: str,
@@ -143,7 +163,7 @@ class DocumentService:
         new_hash = (content_hash or "").strip()
         async with self._session_factory() as db:
             repo = UserDocumentRepository(db)
-            row = await repo.get_owned(user_id, safe)
+            row = await repo.get_owned(tenant_id, user_id, safe)
             if row is None:
                 raise ValueError(f"文档不存在或不属于当前用户: {safe}")
 
@@ -168,10 +188,15 @@ class DocumentService:
             summary["unchanged"] = False
             return summary
 
-    async def bind_task_id(self, doc_id: str, task_id: str) -> None:
+    async def bind_task_id(
+        self,
+        tenant_id: str,
+        doc_id: str,
+        task_id: str,
+    ) -> None:
         async with self._session_factory() as db:
             repo = UserDocumentRepository(db)
-            row = await repo.get_by_doc_id(validate_doc_id(doc_id))
+            row = await repo.get_by_doc_id(tenant_id, validate_doc_id(doc_id))
             if row is None:
                 return
             row.last_task_id = task_id
@@ -181,6 +206,7 @@ class DocumentService:
     async def apply_indexing_result(
         self,
         *,
+        tenant_id: str,
         doc_id: str,
         indexing_result: dict[str, Any],
         task_id: str = "",
@@ -214,7 +240,7 @@ class DocumentService:
         try:
             async with self._session_factory() as db:
                 repo = UserDocumentRepository(db)
-                row = await repo.get_by_doc_id(safe)
+                row = await repo.get_by_doc_id(tenant_id, safe)
                 if row is None:
                     logger.warning("apply_indexing_result 未找到 doc_id=%s", safe)
                     return

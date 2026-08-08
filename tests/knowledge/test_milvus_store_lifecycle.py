@@ -299,7 +299,10 @@ async def test_search_can_include_soft_deleted() -> None:
 
     await store.search("查询", top_k=3, include_deleted=True)
 
-    assert client.search_calls[0]["filter"] == ""
+    applied = client.search_calls[0]["filter"]
+    # 租户边界常开；include_deleted 时不再叠加 is_deleted 条件
+    assert 'tenant_id == "default"' in applied
+    assert "is_deleted == false" not in applied
 
 
 # ---------------------------------------------------------------------- #
@@ -458,20 +461,23 @@ async def test_search_without_visibility_flag_keeps_filter_unchanged() -> None:
 
     await store.search("查询", top_k=3)
 
-    assert "owner_id" not in client.search_calls[0]["filter"]
+    applied = client.search_calls[0]["filter"]
+    # 租户边界常开（SaaS 隔离底线），但可见性精排默认不启用
+    assert "owner_id" not in applied
+    assert 'tenant_id == "default"' in applied
+    assert 'tenant_id == ""' in applied
 
 
 async def test_search_with_visibility_flag_scopes_to_user(monkeypatch) -> None:
     from app.shared.core.app_config import RagVisibilityConfig
     from app.shared.core.config import settings as app_settings
-    from app.shared.core.identity import set_current_user_id
+    from app.shared.core.identity import set_current_tenant_id, set_current_user_id
 
     scoped_config = app_settings.app_config.model_copy(
         update={"rag_visibility": RagVisibilityConfig(enabled=True)}
     )
-    monkeypatch.setattr(
-        type(app_settings), "app_config", property(lambda self: scoped_config)
-    )
+    monkeypatch.setattr(type(app_settings), "app_config", property(lambda self: scoped_config))
+    set_current_tenant_id("t_1")
     set_current_user_id(7)
     try:
         client = FakeMilvusClient()
@@ -480,19 +486,51 @@ async def test_search_with_visibility_flag_scopes_to_user(monkeypatch) -> None:
         await store.search("查询", top_k=3)
 
         applied = client.search_calls[0]["filter"]
-        assert 'owner_id in ["global", "7"]' in applied
+        # 三级可见性：公共 + 组织共享 + 本人私有
+        assert 'tenant_id == "t_1"' in applied
+        assert 'owner_id == "7"' in applied
+        assert 'visibility == "tenant"' in applied
         assert "is_deleted == false" in applied
     finally:
+        set_current_tenant_id("default")
         set_current_user_id(None)
+
+
+async def test_search_anonymous_only_sees_public_and_tenant_shared(monkeypatch) -> None:
+    """匿名请求看不到 private 域。"""
+    from app.shared.core.app_config import RagVisibilityConfig
+    from app.shared.core.config import settings as app_settings
+    from app.shared.core.identity import set_current_tenant_id, set_current_user_id
+
+    scoped_config = app_settings.app_config.model_copy(
+        update={"rag_visibility": RagVisibilityConfig(enabled=True)}
+    )
+    monkeypatch.setattr(type(app_settings), "app_config", property(lambda self: scoped_config))
+    set_current_tenant_id("t_1")
+    set_current_user_id(None)
+    try:
+        client = FakeMilvusClient()
+        store = _build_store(client)
+
+        await store.search("查询", top_k=3)
+
+        applied = client.search_calls[0]["filter"]
+        assert 'owner_id == "7"' not in applied
+        assert "private" not in applied
+        assert 'visibility == "global"' in applied
+    finally:
+        set_current_tenant_id("default")
 
 
 async def test_insert_chunks_stamps_owner(monkeypatch) -> None:
     client = FakeMilvusClient()
     store = _build_store(client, FakeBatchEmbedding())
 
-    await store.insert_chunks([_chunk("c0")], owner_id="7")
+    await store.insert_chunks([_chunk("c0")], owner_id="7", tenant_id="t_1")
 
     assert client.inserts[0][0]["owner_id"] == "7"
+    assert client.inserts[0][0]["tenant_id"] == "t_1"
+    assert client.inserts[0][0]["visibility"] == "global"
 
 
 async def test_insert_chunks_defaults_to_global_owner() -> None:
@@ -502,3 +540,29 @@ async def test_insert_chunks_defaults_to_global_owner() -> None:
     await store.insert_chunks([_chunk("c0")])
 
     assert client.inserts[0][0]["owner_id"] == "global"
+    assert client.inserts[0][0]["tenant_id"] == ""
+    assert client.inserts[0][0]["visibility"] == "global"
+
+
+async def test_soft_delete_by_doc_id_scopes_to_tenant(monkeypatch) -> None:
+    """软删必须带租户条件，杜绝跨租户删文档。"""
+    client = FakeMilvusClient()
+    store = _build_store(client)
+
+    await store.soft_delete_by_doc_id("doc_1", "t_1")
+
+    applied = client.query_calls[0]["filter"]
+    assert 'tenant_id == "t_1"' in applied
+    assert 'doc_id == "doc_1"' in applied
+    assert "is_deleted == false" in applied
+
+
+async def test_soft_delete_without_tenant_keeps_legacy_filter() -> None:
+    """tenant_id 为空（存量清理路径）时不追加租户条件。"""
+    client = FakeMilvusClient()
+    store = _build_store(client)
+
+    await store.soft_delete_by_doc_id("doc_1")
+
+    applied = client.query_calls[0]["filter"]
+    assert "tenant_id" not in applied

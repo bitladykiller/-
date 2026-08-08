@@ -545,7 +545,11 @@ class SimpleLongTermMemory:
             memory_id = getattr(memory, "memory_id", "")
             if not memory_id:
                 continue
-            is_new = await self._try_record_hit_event_dedup(turn_id, memory_id)
+            is_new = await self._try_record_hit_event_dedup(
+                turn_id,
+                memory_id,
+                tenant_id=getattr(memory, "tenant_id", "") or "default",
+            )
             if is_new:
                 new_memories.append(memory)
 
@@ -604,7 +608,12 @@ class SimpleLongTermMemory:
             return None
 
     @staticmethod
-    async def _try_record_hit_event_dedup(turn_id: str, memory_id: str) -> bool:
+    async def _try_record_hit_event_dedup(
+        turn_id: str,
+        memory_id: str,
+        *,
+        tenant_id: str = "default",
+    ) -> bool:
         """尝试记录命中事件去重条目。返回 True 表示首次命中（需计数）。"""
         if not turn_id or not memory_id:
             return True
@@ -616,10 +625,11 @@ class SimpleLongTermMemory:
             async with AsyncSessionLocal() as db:
                 await db.execute(
                     text(
-                        "INSERT INTO memory_hit_events (turn_id, memory_id) "
-                        "VALUES (:tid, :mid)"
+                        "INSERT INTO memory_hit_events "
+                        "(tenant_id, turn_id, memory_id) "
+                        "VALUES (:tnt, :tid, :mid)"
                     ),
-                    {"tid": turn_id, "mid": memory_id},
+                    {"tnt": tenant_id, "tid": turn_id, "mid": memory_id},
                 )
                 await db.commit()
                 return True

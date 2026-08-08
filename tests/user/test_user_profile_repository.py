@@ -81,7 +81,7 @@ def test_get_profile_reads_rows_and_normalizes_payload() -> None:
     )
 
     repo = UserProfileRepository()
-    result = _run(repo.get_profile(session, 7))
+    result = _run(repo.get_profile(session, "t_1", 7))
 
     assert result == {
         "user_id": 7,
@@ -92,7 +92,8 @@ def test_get_profile_reads_rows_and_normalizes_payload() -> None:
         "facts": [{"key": "city", "value": "杭州"}],
     }
     assert len(session.calls) == 2
-    assert "FROM user_profiles WHERE user_id = :uid" in session.calls[0][0]
+    assert "FROM user_profiles WHERE tenant_id = :tid" in session.calls[0][0]
+    assert session.calls[0][1] == {"tid": "t_1", "uid": 7}
     assert "FROM user_facts" in session.calls[1][0]
 
 
@@ -118,6 +119,7 @@ def test_upsert_profile_data_orchestrates_profile_fields_and_facts() -> None:
     changed = _run(
         repo.upsert_profile_data(
             fake_session,
+            tenant_id="t_1",
             user_id=5,
             profile={
                 "preferred_brand": "海尔",
@@ -134,6 +136,7 @@ def test_upsert_profile_data_orchestrates_profile_fields_and_facts() -> None:
         (
             "profile_fields",
             {
+                "tenant_id": "t_1",
                 "user_id": 5,
                 "preferred_brand": "海尔",
                 "budget_range": None,
@@ -143,11 +146,23 @@ def test_upsert_profile_data_orchestrates_profile_fields_and_facts() -> None:
         ),
         (
             "fact",
-            {"user_id": 5, "fact_key": "city", "fact_value": "杭州"},
+            {
+                "tenant_id": "t_1",
+                "user_id": 5,
+                "fact_key": "city",
+                "fact_value": "杭州",
+                "source_turn_id": None,
+            },
         ),
         (
             "fact",
-            {"user_id": 5, "fact_key": "budget", "fact_value": "3000以内"},
+            {
+                "tenant_id": "t_1",
+                "user_id": 5,
+                "fact_key": "budget",
+                "fact_value": "3000以内",
+                "source_turn_id": None,
+            },
         ),
     ]
 
@@ -172,6 +187,7 @@ def test_upsert_profile_data_skips_empty_fields_and_invalid_facts() -> None:
     changed = _run(
         repo.upsert_profile_data(
             fake_session,
+            tenant_id="t_1",
             user_id=6,
             profile={
                 "preferred_brand": "",
@@ -188,7 +204,13 @@ def test_upsert_profile_data_skips_empty_fields_and_invalid_facts() -> None:
     assert calls == [
         (
             "fact",
-            {"user_id": 6, "fact_key": "city", "fact_value": "杭州"},
+            {
+                "tenant_id": "t_1",
+                "user_id": 6,
+                "fact_key": "city",
+                "fact_value": "杭州",
+                "source_turn_id": None,
+            },
         )
     ]
 
@@ -204,6 +226,7 @@ def test_upsert_fact_returns_false_when_value_did_not_change() -> None:
     changed = _run(
         repo.upsert_fact(
             session,
+            tenant_id="t_1",
             user_id=8,
             fact_key="city",
             fact_value="杭州",
@@ -229,6 +252,7 @@ def test_upsert_fact_replaces_existing_fact_when_value_changes() -> None:
     changed = _run(
         repo.upsert_fact(
             session,
+            tenant_id="t_1",
             user_id=9,
             fact_key="city",
             fact_value="宁波",
@@ -238,7 +262,15 @@ def test_upsert_fact_replaces_existing_fact_when_value_changes() -> None:
     assert changed is True
     assert len(session.calls) == 5
     assert "UPDATE user_facts SET is_active = FALSE" in session.calls[1][0]
-    assert "INSERT INTO user_facts (user_id, fact_key, fact_value, version)" in session.calls[2][0]
+    assert "INSERT INTO user_facts" in session.calls[2][0]
+    assert session.calls[2][1] == {
+        "tid": "t_1",
+        "uid": 9,
+        "key": "city",
+        "val": "宁波",
+        "ver": 3,
+        "src_turn": None,
+    }
     assert "SELECT LAST_INSERT_ID()" in session.calls[3][0]
     assert session.calls[4][1] == {"new_id": 19, "old_id": 5}
 
@@ -255,6 +287,7 @@ def test_upsert_fact_inserts_first_version_when_missing() -> None:
     changed = _run(
         repo.upsert_fact(
             session,
+            tenant_id="t_1",
             user_id=6,
             fact_key="budget",
             fact_value="3000以内",
@@ -263,7 +296,9 @@ def test_upsert_fact_inserts_first_version_when_missing() -> None:
 
     assert changed is True
     assert len(session.calls) == 2
-    assert "INSERT INTO user_facts (user_id, fact_key, fact_value)" in session.calls[1][0]
+    assert "INSERT INTO user_facts" in session.calls[1][0]
+    assert session.calls[1][1]["tid"] == "t_1"
+    assert session.calls[1][1]["uid"] == 6
 
 
 def test_upsert_profile_fields_returns_false_for_empty_fields() -> None:
@@ -273,6 +308,7 @@ def test_upsert_profile_fields_returns_false_for_empty_fields() -> None:
     changed = _run(
         repo.upsert_profile_fields(
             session,
+            tenant_id="t_1",
             user_id=4,
             preferred_brand="",
             budget_range=None,
@@ -292,6 +328,7 @@ def test_upsert_profile_fields_executes_generated_upsert_sql() -> None:
     changed = _run(
         repo.upsert_profile_fields(
             session,
+            tenant_id="t_1",
             user_id=4,
             preferred_brand="海尔",
             budget_range=None,
@@ -305,6 +342,7 @@ def test_upsert_profile_fields_executes_generated_upsert_sql() -> None:
     sql_text, params = session.calls[0]
     assert "INSERT INTO user_profiles" in sql_text
     assert params == {
+        "tid": "t_1",
         "uid": 4,
         "preferred_brand": "海尔",
         "preferred_category": "冰箱",

@@ -7,6 +7,51 @@
 
 ## [Unreleased]
 
+### v3.37 — SaaS 级多租户（全链路隔离）
+
+**背景**: 此前 `tenant_id` 基本为默认值 "default"，MySQL/JWT 主体是 user-centric；
+Tenant 不是经过鉴权确认的安全边界。本次把 Tenant 建成端到端不可丢失的一级隔离维度：
+HTTP → Agent → 异步事件 → MySQL → Redis → Milvus → Neo4j。
+
+**身份模型**:
+- 新增 `tenants` / `tenant_memberships`（用户可加入多个租户，注册自动创建个人租户，
+  登录携带活跃租户）。JWT payload 增加 `tenant_id`。
+- `deps.get_current_user` 升级为鉴权链：JWT 验签 → membership 校验
+  （user ∈ tenant 且双方 active）→ 建立 `TenantContext{tenant_id, user_id, role}`
+  写入 contextvars（`identity.py`）。令牌声明的租户不可信，membership 是最终裁判。
+- 新增 `GET /api/auth/tenants`、`POST /api/auth/switch-tenant`（切换租户重新签发令牌）。
+
+**MySQL**:
+- 业务表全部 `tenant_id` 化：conversations / user_profiles（主键升级
+  `(tenant_id, user_id)`）/ user_facts / user_documents（doc_id 租户内唯一）/
+  turn_view_status / memory_hit_events / processed_events（幂等键升级
+  `(tenant_id, event_type, event_id)`）。
+- messages 采用**间接 tenant**：Repository 查询 JOIN conversations 强制租户条件。
+- 迁移：`configs/mysql-init/migration_saas_tenancy.sql`；init.sql 同步更新并新增种子租户。
+
+**Repository / Redis / Milvus / Neo4j / 事件**:
+- Repository 强制 tenant：`get_owned(tenant_id, conversation_id, user_id)` 等，
+  无租户上下文的查询路径已消灭。
+- Redis namespace：画像缓存 `tenant:{tenant_id}:user:profile:{user_id}`；
+  任务状态 `tenant:{tenant_id}:task:doc_parse:{task_id}`；SSE 限流升级为
+  租户级 + 用户级双层（`ratelimit:sse:{tenant}` / `:{tenant}:user:{user}`，
+  新增 `sse_max_concurrent_per_tenant` 配置）。
+- Milvus RAG 三级可见性：chunk 增加 `tenant_id` + `visibility`，
+  检索常开租户边界过滤 `(tenant_id == 当前) or (tenant_id == "")`；
+  `rag_visibility.enabled` 时叠加 global/tenant/private 精排。上传
+  `visibility` 参数扩展为 `global | tenant | private`，落盘目录按租户隔离。
+- Neo4j 执行层强制约束：`tenant_cypher.inject_tenant_constraint` 在
+  `graph.query` 闸口确定性注入租户条件（参数化绑定，不依赖 LLM）；
+  `scripts/neo4j-import.sh` 自动打标并建索引。
+- 事件 payload 顶层固化 `tenant_id`，worker 消费后恢复 TenantContext；
+  索引任务回写路径显式携带租户。
+
+**文档**: 新增 [docs/modules/08-SaaS多租户架构.md](docs/modules/08-SaaS多租户架构.md)，
+README / API / 配置与数据字段全览同步更新。
+
+**表变更**：新表 `tenants` / `tenant_memberships`；9 张业务表新增
+`tenant_id` 列并重建唯一键。
+
 ### v3.36 — after_agent 可补偿机制与幂等强化
 
 **背景**: after_agent 内部吞异常 → mark_completed → 不再重试。压缩多步操作

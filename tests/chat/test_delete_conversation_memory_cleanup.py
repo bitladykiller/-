@@ -53,8 +53,12 @@ def test_clear_conversation_memories_calls_stm_and_ltm(monkeypatch) -> None:
     )
 
     asyncio.run(
-        service_module._clear_conversation_memories(user_id="7", session_id="42")
+        service_module._clear_conversation_memories(
+            tenant_id="t_1",
+            user_id="7",
+            session_id="42",
+        )
     )
 
-    assert middleware.redis_stm.calls == [("default", "7", "42")]
-    assert middleware.milvus_ltm.calls == [("default", "7", "42")]
+    assert middleware.redis_stm.calls == [("t_1", "7", "42")]
+    assert middleware.milvus_ltm.calls == [("t_1", "7", "42")]

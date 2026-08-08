@@ -48,7 +48,8 @@ def _extract_long_term_memory_ids(memory_state: object | None) -> list[str]:
         return [
             result.memory.memory_id
             for result in ltm_list
-            if hasattr(result, "memory") and getattr(result.memory, "memory_id", "")
+            if hasattr(result, "memory")
+            and bool(getattr(result.memory, "memory_id", ""))
         ]
     except Exception:
         return []

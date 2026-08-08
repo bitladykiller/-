@@ -27,7 +27,10 @@ async def list_my_documents(current_user: CurrentUser) -> list[dict[str, Any]]:
     """
 
     async def operation() -> list[dict[str, Any]]:
-        return await document_service.list_user_documents(current_user.id)
+        return await document_service.list_user_documents(
+            current_user.tenant_id,
+            current_user.id,
+        )
 
     return await run_api_action(
         "list_my_documents",
@@ -42,7 +45,11 @@ async def get_my_document(doc_id: str, current_user: CurrentUser) -> dict[str, A
     """查询单条文档元信息（归属校验）。"""
 
     async def operation() -> dict[str, Any]:
-        row = await document_service.get_user_document(current_user.id, doc_id)
+        row = await document_service.get_user_document(
+            current_user.tenant_id,
+            current_user.id,
+            doc_id,
+        )
         if row is None:
             raise HTTPException(status_code=404, detail=f"文档不存在: {doc_id}")
         return row
@@ -66,7 +73,11 @@ async def delete_my_document(doc_id: str, current_user: CurrentUser) -> dict[str
     """
     result = await run_api_action(
         "delete_my_document",
-        document_service.delete_document(current_user.id, doc_id),
+        document_service.delete_document(
+            current_user.tenant_id,
+            current_user.id,
+            doc_id,
+        ),
         logger=logger,
         user_id=current_user.id,
         doc_id=doc_id,

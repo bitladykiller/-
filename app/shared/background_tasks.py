@@ -150,11 +150,7 @@ def load_task_status_payload(raw: str | None) -> TaskStatusPayload | None:
     task_id = raw_payload.get("task_id")
     status = raw_payload.get("status")
     updated_at = raw_payload.get("updated_at")
-    if not (
-        isinstance(task_id, str)
-        and isinstance(status, str)
-        and isinstance(updated_at, str)
-    ):
+    if not (isinstance(task_id, str) and isinstance(status, str) and isinstance(updated_at, str)):
         return None
 
     payload: TaskStatusPayload = {
@@ -202,6 +198,23 @@ def create_redis_client(redis_url: str) -> TaskStore:
     return client  # type: ignore[return-value]  # pyright: ignore[reportReturnType]
 
 
+def build_task_key(task_id: str, tenant_id: str = "") -> str:
+    """构造任务状态 Redis key。
+
+    - tenant_id 非空：`tenant:{tenant_id}:task:doc_parse:{task_id}`
+      （SaaS 模式，任务状态按租户 namespace 隔离）
+    - tenant_id 为空：沿用历史 key `task:doc_parse:{task_id}`（兼容旧部署）
+    """
+    if tenant_id:
+        return f"tenant:{tenant_id}:{_TASK_CFG.task_key_prefix}{task_id}"
+    return f"{_TASK_CFG.task_key_prefix}{task_id}"
+
+
+def tenant_task_key_prefix() -> str:
+    """租户 namespace 前缀（用于 scan）。"""
+    return f"tenant:*:{_TASK_CFG.task_key_prefix}"
+
+
 async def write_task_status(
     redis_client: TaskStore,
     task_id: str,
@@ -210,8 +223,9 @@ async def write_task_status(
     result: Any = None,
     error: str | None = None,
     origin: str | None = None,
+    tenant_id: str = "",
 ) -> None:
-    """构造统一状态 payload 并写入 Redis。"""
+    """构造统一状态 payload 并写入 Redis（租户级 namespace）。"""
     payload = build_task_status_payload(
         task_id,
         status,
@@ -220,7 +234,7 @@ async def write_task_status(
         origin=origin,
     )
     await redis_client.set(
-        f"{_TASK_CFG.task_key_prefix}{task_id}",
+        build_task_key(task_id, tenant_id),
         dump_task_status_payload(payload),
         ex=_TASK_CFG.task_ttl_seconds,
     )
@@ -229,9 +243,10 @@ async def write_task_status(
 async def read_task_status(
     redis_client: TaskStore,
     task_id: str,
+    tenant_id: str = "",
 ) -> TaskStatusPayload | None:
     """读取任务状态，不存在或格式异常时返回 None。"""
-    raw = await redis_client.get(f"{_TASK_CFG.task_key_prefix}{task_id}")
+    raw = await redis_client.get(build_task_key(task_id, tenant_id))
     return load_task_status_payload(raw)
 
 
@@ -256,10 +271,17 @@ async def run_task_with_status_updates(
     coro_func: TaskCallable,
     *args: Any,
     origin: str | None = None,
+    tenant_id: str = "",
     **kwargs: Any,
 ) -> None:
     """执行后台任务，并统一维护 Redis 状态流转与日志。"""
-    await write_task_status(redis_client, task_id, TaskStatus.RUNNING, origin=origin)
+    await write_task_status(
+        redis_client,
+        task_id,
+        TaskStatus.RUNNING,
+        origin=origin,
+        tenant_id=tenant_id,
+    )
     try:
         result = await coro_func(*args, **kwargs)
         await write_task_status(
@@ -268,6 +290,7 @@ async def run_task_with_status_updates(
             TaskStatus.COMPLETED,
             result=result,
             origin=origin,
+            tenant_id=tenant_id,
         )
         logger.info("任务完成 | task_id=%s", task_id)
     except Exception as exc:
@@ -277,6 +300,7 @@ async def run_task_with_status_updates(
             TaskStatus.FAILED,
             error=str(exc),
             origin=origin,
+            tenant_id=tenant_id,
         )
         logger.error("任务失败 | task_id=%s | %s", task_id, exc, exc_info=True)
 
@@ -293,11 +317,17 @@ class _TaskManager:
         self,
         coro_func: TaskCallable,
         *args: Any,
+        tenant_id: str = "",
         **kwargs: Any,
     ) -> str:
-        """提交一个后台协程任务并返回 task_id。"""
+        """提交一个后台协程任务并返回 task_id（可带租户 namespace）。"""
         task_id = uuid.uuid4().hex[:12]
-        await write_task_status(self._redis, task_id, TaskStatus.PENDING)
+        await write_task_status(
+            self._redis,
+            task_id,
+            TaskStatus.PENDING,
+            tenant_id=tenant_id,
+        )
         spawn_tracked_task(
             self._pending_tasks,
             task_id,
@@ -307,6 +337,7 @@ class _TaskManager:
                 task_id,
                 coro_func,
                 *args,
+                tenant_id=tenant_id,
                 **kwargs,
             ),
         )
@@ -317,9 +348,13 @@ class _TaskManager:
         )
         return task_id
 
-    async def get_status(self, task_id: str) -> TaskStatusPayload | None:
+    async def get_status(
+        self,
+        task_id: str,
+        tenant_id: str = "",
+    ) -> TaskStatusPayload | None:
         """读取任务状态，不存在时返回 None。"""
-        return await read_task_status(self._redis, task_id)
+        return await read_task_status(self._redis, task_id, tenant_id=tenant_id)
 
     async def reconcile_orphaned_tasks(self) -> int:
         """把上一代进程遗留的未完成任务标记为 interrupted。
@@ -332,22 +367,30 @@ class _TaskManager:
         Returns:
             被标记的任务数；扫描失败返回 0（不阻断启动）。
         """
-        pattern = f"{_TASK_CFG.task_key_prefix}*"
+        patterns = (f"{_TASK_CFG.task_key_prefix}*", tenant_task_key_prefix())
         reconciled = 0
         try:
-            async for key in self._redis.scan_iter(match=pattern):
-                payload = load_task_status_payload(await self._redis.get(key))
-                if payload is None:
-                    continue
-                if not is_orphaned_task(payload, current_worker_id=WORKER_ID):
-                    continue
-                await write_task_status(
-                    self._redis,
-                    payload["task_id"],
-                    TaskStatus.INTERRUPTED,
-                    error=INTERRUPTED_ERROR_MESSAGE,
-                )
-                reconciled += 1
+            for pattern in patterns:
+                async for key in self._redis.scan_iter(match=pattern):
+                    payload = load_task_status_payload(await self._redis.get(key))
+                    if payload is None:
+                        continue
+                    if not is_orphaned_task(payload, current_worker_id=WORKER_ID):
+                        continue
+                    # 保留原 key 的租户 namespace
+                    tenant_segment = ""
+                    if key.startswith("tenant:"):
+                        parts = key.split(":", 2)
+                        if len(parts) == 3:
+                            tenant_segment = parts[1]
+                    await write_task_status(
+                        self._redis,
+                        payload["task_id"],
+                        TaskStatus.INTERRUPTED,
+                        error=INTERRUPTED_ERROR_MESSAGE,
+                        tenant_id=tenant_segment,
+                    )
+                    reconciled += 1
         except Exception as exc:
             log_degradation(logger, "background_tasks.reconcile_orphaned_tasks", exc)
             return 0
@@ -394,6 +437,7 @@ __all__ = [
     "WORKER_ID",
     "TaskStatus",
     "TaskStatusPayload",
+    "build_task_key",
     "build_task_status_payload",
     "dump_task_status_payload",
     "get_task_manager",
@@ -402,5 +446,6 @@ __all__ = [
     "read_task_status",
     "run_task_with_status_updates",
     "spawn_tracked_task",
+    "tenant_task_key_prefix",
     "write_task_status",
 ]

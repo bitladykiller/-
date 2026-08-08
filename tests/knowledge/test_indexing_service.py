@@ -24,8 +24,10 @@ class FakeChunkIndexer:
         *,
         content_hash: str = "",
         owner_id: str = "global",
+        tenant_id: str = "",
+        visibility: str = "global",
     ) -> dict[str, int]:
-        self.reindex_calls.append((doc_id, chunks, content_hash))
+        self.reindex_calls.append((doc_id, chunks, content_hash, tenant_id, visibility))
         self.indexed_chunks = chunks
         return {
             "soft_deleted": 3,
@@ -209,11 +211,14 @@ def test_process_file_replace_calls_reindex(tmp_path: Path) -> None:
                 "mode": "replace",
                 "doc_id": "kb_faq_1",
                 "content_hash": "hash1",
+                "tenant_id": "t_1",
+                "owner_id": "7",
+                "visibility": "private",
             }
         )
     )
 
-    assert indexer.reindex_calls == [("kb_faq_1", chunks, "hash1")]
+    assert indexer.reindex_calls == [("kb_faq_1", chunks, "hash1", "t_1", "private")]
     assert result == {
         "status": "success",
         "chunks": 1,

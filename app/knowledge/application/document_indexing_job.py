@@ -24,11 +24,14 @@ async def run_document_indexing_job(
     """
     result = await IndexingService().process_file(file_info)
     doc_id = str(file_info.get("doc_id") or result.get("doc_id") or "")
+    # 租户边界显式从 file_info 透传（worker 无 HTTP 请求上下文）
+    tenant_id = str(file_info.get("tenant_id") or "default")
     if doc_id:
         # 把任务结果里的 doc_id 写回，便于前端轮询看到
         if not result.get("doc_id"):
             result["doc_id"] = doc_id
         await document_service.apply_indexing_result(
+            tenant_id=tenant_id,
             doc_id=doc_id,
             indexing_result=dict(result),
             task_id=task_id,

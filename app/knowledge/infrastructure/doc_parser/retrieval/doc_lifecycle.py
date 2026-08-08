@@ -38,9 +38,7 @@ def validate_doc_id(doc_id: str) -> str:
     if not value:
         raise ValueError("doc_id 不能为空")
     if not _DOC_ID_PATTERN.match(value):
-        raise ValueError(
-            "doc_id 仅允许字母、数字、下划线、点、冒号、连字符，且长度 1-64"
-        )
+        raise ValueError("doc_id 仅允许字母、数字、下划线、点、冒号、连字符，且长度 1-64")
     return value
 
 
@@ -81,6 +79,49 @@ def owner_scope_filter(user_owner: str | None, *, global_owner: str = "global") 
     return 'owner_id in ["' + safe_global + '", "' + safe_user + '"]'
 
 
+def tenant_boundary_filter(tenant_id: str) -> str:
+    """租户隔离过滤：本租户 chunk + 平台公共 chunk（tenant_id 为空串）。
+
+    SaaS 语义：租户边界是**常开**的隔离约束，不属于任何租户的公共
+    chunk（visibility=global）对全部租户可见。
+    未登录/脚本上下文 tenant_id 回落 "default"。
+    """
+    safe = escape_milvus_string(tenant_id or "default")
+    return f'(tenant_id == "{safe}") or (tenant_id == "")'
+
+
+def tenant_visibility_filter(
+    tenant_id: str,
+    user_owner: str | None,
+    *,
+    global_owner: str = "global",
+) -> str:
+    """三级可见性过滤（SaaS 知识库语义）。
+
+    用户可见知识 = 平台公共 + 本组织共享 + 本人私有：
+
+        visibility == "global"
+        OR (visibility == "tenant" AND tenant_id == {t})
+        OR (visibility == "private" AND tenant_id == {t} AND owner_id == {u})
+
+    匿名（user_owner 为 None）只能看公共 + 组织共享，看不到个人私有。
+
+    使用前提：`tenant_boundary_filter` 已把数据限定在本租户 + 公共域，
+    这里只做可见性精排。
+    """
+    safe_global = escape_milvus_string(global_owner)
+    safe_tenant = escape_milvus_string(tenant_id or "default")
+    public = f'visibility == "{safe_global}"'
+    tenant_scope = f'(visibility == "tenant") and (tenant_id == "{safe_tenant}")'
+    if not user_owner:
+        return f"({public}) or ({tenant_scope})"
+    safe_user = escape_milvus_string(str(user_owner))
+    private_scope = (
+        f'(visibility == "private") and (tenant_id == "{safe_tenant}") '
+        f'and (owner_id == "{safe_user}")'
+    )
+    return f"({public}) or ({tenant_scope}) or ({private_scope})"
+
 
 def next_version(max_version: int | None) -> int:
     """计算下一版本文档版本号（从 1 起）。"""
@@ -116,5 +157,7 @@ __all__ = [
     "next_version",
     "owner_scope_filter",
     "now_ts",
+    "tenant_boundary_filter",
+    "tenant_visibility_filter",
     "validate_doc_id",
 ]

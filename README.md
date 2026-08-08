@@ -116,7 +116,7 @@ flowchart TB
 - Redis Streams 消费组：`turn_completed`（历史落库+记忆写入）、
   `document_index_requested`（文档索引）
 - **进程崩溃自动续跑且业务幂等**：Streams 保持“至少一次投递”，MySQL
-  `processed_events` Inbox 以 `(event_type,event_id)` 认领/完成事件；已完成
+  `processed_events` Inbox 以 `(tenant_id, event_type, event_id)` 认领/完成事件；已完成
   事件重放只 ACK，不重复写历史、STM 或文档索引。payload hash 不一致会拒绝执行并
   最终进入死信流。
 - 成功路径严格按 **Inbox claim → 业务 handler → Inbox completed → XACK**
@@ -157,6 +157,27 @@ curl -s http://localhost:8000/api/conversations -H "Authorization: Bearer $TOKEN
 ```
 
 生产部署：`SECRET_KEY` 必须换成强随机值，并删除 init.sql 的种子用户。
+
+## 多租户（SaaS 化）
+
+自 v3.37 起支持 **SaaS 级多租户隔离**，设计文档见
+[docs/modules/08-SaaS多租户架构.md](docs/modules/08-SaaS多租户架构.md)。要点：
+
+- **身份**：`tenants` + `tenant_memberships`（用户可加入多个租户，注册自动创建
+  个人租户）；JWT 携带 `tenant_id`，请求鉴权时经 membership 校验后才建立
+  `TenantContext`（`tenant_id + user_id + role`，contextvars 承载）。
+- **MySQL**：全部业务表 `tenant_id` 化，唯一键改为租户内唯一
+  （`(tenant_id, doc_id)`、`(tenant_id, event_type, event_id)` 等）；
+  存量升级执行 `configs/mysql-init/migration_saas_tenancy.sql`。
+- **Redis**：STM 本就按 `{tenant}:{user}:{session}` 组织；画像缓存 / 任务状态
+  升级为 `tenant:{tenant_id}:...`；SSE 限流升级为租户级 + 用户级双层。
+- **Milvus**：RAG 升级为 `global | tenant | private` 三级可见性，检索常开
+  租户边界过滤；LTM 保持 `tenant_id + user_id` 过滤。
+- **Neo4j**：`tenant_cypher.inject_tenant_constraint` 在执行层确定性注入
+  tenant 条件（参数化绑定），不依赖 LLM 自觉；导入脚本自动打标。
+- **事件**：payload 顶层携带 `tenant_id`，worker 消费后恢复 TenantContext；
+  `processed_events` 幂等键升级为 `(tenant_id, event_type, event_id)`。
+- 存量账号自动归入 `default` 租户，全链路默认值向后兼容。
 
 ## 性能与工程约定
 

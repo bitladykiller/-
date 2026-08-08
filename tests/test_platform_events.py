@@ -6,6 +6,7 @@ import app.platform.events as events_module
 import pytest
 from app.platform.events import (
     build_core_handlers,
+    handle_document_index_requested,
     handle_turn_completed,
 )
 
@@ -15,7 +16,17 @@ class FakeMiddleware:
         self.calls: list[dict] = []
 
     async def after_agent(self, **kwargs) -> None:
+        from app.knowledge.infrastructure.orchestration.turn_view_tracker import (
+            TurnMemoryReport,
+            ViewName,
+            ViewStatus,
+        )
+
         self.calls.append(kwargs)
+        report = TurnMemoryReport(turn_id=str(kwargs.get("turn_id") or ""))
+        for view in ViewName:
+            report.views[view.value] = ViewStatus.COMPLETED
+        return report
 
 
 class FakeContainer:
@@ -40,10 +51,10 @@ def fake_container(monkeypatch):
 async def test_turn_completed_persists_history_and_writes_memory(
     monkeypatch, fake_container
 ) -> None:
-    persisted: list[tuple[str, str, str]] = []
+    persisted: list[tuple[str, str, str, str]] = []
 
-    async def fake_persist(session_id, user_message, assistant_message) -> None:
-        persisted.append((session_id, user_message, assistant_message))
+    async def fake_persist(tenant_id, session_id, user_message, assistant_message) -> None:
+        persisted.append((tenant_id, session_id, user_message, assistant_message))
 
     monkeypatch.setattr(events_module, "_persist_turn_history", fake_persist)
 
@@ -57,7 +68,7 @@ async def test_turn_completed_persists_history_and_writes_memory(
         }
     )
 
-    assert persisted == [("11", "问", "答")]
+    assert persisted == [("default", "11", "问", "答")]
     assert fake_container.calls == [
         {
             "tenant_id": "default",
@@ -65,6 +76,7 @@ async def test_turn_completed_persists_history_and_writes_memory(
             "session_id": "11",
             "user_message": "问",
             "assistant_message": "答",
+            "long_term_memories": [],
         }
     ]
 
@@ -94,7 +106,7 @@ async def test_turn_completed_history_failure_does_not_block_memory(
     # _persist_turn_history 内部自带降级；这里直接替换为抛错版本来验证
     # handler 层面的隔离——注意替换的是"已包含降级"的函数，因此 handler
     # 不应把该异常传导出去也不应跳过记忆。
-    async def degraded_persist(session_id, user_message, assistant_message) -> None:
+    async def degraded_persist(tenant_id, session_id, user_message, assistant_message) -> None:
         try:
             await broken_persist()
         except Exception:
@@ -120,6 +132,7 @@ async def test_turn_completed_passes_event_id_to_history_and_memory(
     persisted: list[dict[str, str]] = []
 
     async def fake_persist(
+        tenant_id,
         session_id,
         user_message,
         assistant_message,
@@ -128,6 +141,7 @@ async def test_turn_completed_passes_event_id_to_history_and_memory(
     ) -> None:
         persisted.append(
             {
+                "tenant_id": tenant_id,
                 "session_id": session_id,
                 "user_message": user_message,
                 "assistant_message": assistant_message,
@@ -158,6 +172,66 @@ def test_core_handler_registry_covers_all_event_types() -> None:
     handlers = build_core_handlers()
 
     assert set(handlers) == {"turn_completed", "document_index_requested"}
+
+
+async def test_document_index_requested_runs_task_with_tenant(monkeypatch) -> None:
+    """索引事件必须把 tenant_id 传给任务状态回写与上下文恢复。"""
+    from app.shared.core.identity import get_current_tenant_id
+
+    calls: list[dict] = []
+
+    async def fake_run_task(*args, **kwargs):
+        calls.append({"args": args, "kwargs": kwargs})
+
+    class FakeManager:
+        _redis = object()
+
+    async def fake_get_container():
+        container = FakeContainer(None)
+        container.task_manager = FakeManager()
+        return container
+
+    monkeypatch.setattr(
+        "app.shared.background_tasks.run_task_with_status_updates",
+        fake_run_task,
+    )
+    monkeypatch.setattr(
+        "app.platform.container.get_container",
+        fake_get_container,
+    )
+
+    await handle_document_index_requested(
+        {
+            "event_id": "evt-1",
+            "tenant_id": "t_index",
+            "task_id": "task-1",
+            "file_info": {"path": "/tmp/a.md", "user_id": 7, "tenant_id": "t_index"},
+        }
+    )
+
+    assert get_current_tenant_id() == "t_index"
+    assert calls[0]["kwargs"]["tenant_id"] == "t_index"
+    assert calls[0]["args"][2] == "task-1"
+    # file_info 内注入派生 event_id
+    assert calls[0]["args"][4]["event_id"] == "evt-1"
+
+
+async def test_document_index_requested_drops_incomplete_payload(monkeypatch) -> None:
+
+    touched: list[str] = []
+
+    async def fake_run_task(*args, **kwargs):
+        touched.append("run")
+
+    monkeypatch.setattr(
+        "app.shared.background_tasks.run_task_with_status_updates",
+        fake_run_task,
+    )
+
+    await handle_document_index_requested({"task_id": "task-1"})  # 缺 file_info
+    await handle_document_index_requested({"file_info": {}})  # 缺 task_id
+
+    assert touched == []
 
 
 def test_stream_origin_tasks_are_not_marked_orphaned() -> None:
